@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{6B3E0F52-4C1D-4E8A-9A57-E4F5A0C2B7D1}</ProjectGuid>
+    <TemplateGuid>{dd38f7fc-d7bd-488b-9242-7d8754cde80d}</TemplateGuid>
+    <RootNamespace>ext4</RootNamespace>
+    <Configuration>Release</Configuration>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>WDM</DriverType>
+    <ALLOW_DATE_TIME>1</ALLOW_DATE_TIME>
+    <DriverTargetPlatform>Windows Driver</DriverTargetPlatform>
+    <_NT_TARGET_VERSION>0xA00000B</_NT_TARGET_VERSION>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>WDM</DriverType>
+    <ALLOW_DATE_TIME>1</ALLOW_DATE_TIME>
+    <DriverTargetPlatform>Windows Driver</DriverTargetPlatform>
+    <_NT_TARGET_VERSION>0xA00000B</_NT_TARGET_VERSION>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
+    <TargetName>ext4</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)include\linux;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <AdditionalOptions>/std:clatest %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>__KERNEL__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
+    <TargetName>ext4</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)include\linux;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <AdditionalOptions>/std:clatest %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>__KERNEL__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <FilesToPackage Include="$(TargetPath)" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="core\extent_list.c" />
+    <ClCompile Include="unicode\casefold.c" />
+    <ClCompile Include="unicode\utf8data.c" />
+    <ClCompile Include="unicode\utf8norm.c" />
+    <ClCompile Include="core\fcb.c" />
+    <ClCompile Include="core\icb.c" />
+    <ClCompile Include="core\irp_context.c" />
+    <ClCompile Include="core\mcb.c" />
+    <ClCompile Include="core\reaper.c" />
+    <ClCompile Include="driver\dispatch.c" />
+    <ClCompile Include="driver\entry.c" />
+    <ClCompile Include="driver\exception.c" />
+    <ClCompile Include="driver\registry.c" />
+    <ClCompile Include="driver\unload.c" />
+    <ClCompile Include="ext4\balloc.c" />
+    <ClCompile Include="ext4\buffer.c" />
+    <ClCompile Include="ext4\csum.c" />
+    <ClCompile Include="ext4\dir_block.c" />
+    <ClCompile Include="ext4\dir_entry.c" />
+    <ClCompile Include="ext4\dir_hash.c" />
+    <ClCompile Include="ext4\dir_names.c" />
+    <ClCompile Include="ext4\dir_ops.c" />
+    <ClCompile Include="ext4\extent_map.c" />
+    <ClCompile Include="ext4\extents_insert.c" />
+    <ClCompile Include="ext4\extents_remove.c" />
+    <ClCompile Include="ext4\extents_split.c" />
+    <ClCompile Include="ext4\extents_tree.c" />
+    <ClCompile Include="ext4\group.c" />
+    <ClCompile Include="ext4\group_desc.c" />
+    <ClCompile Include="ext4\htree_insert.c" />
+    <ClCompile Include="ext4\htree_read.c" />
+    <ClCompile Include="ext4\ialloc.c" />
+    <ClCompile Include="ext4\indirect_map.c" />
+    <ClCompile Include="ext4\indirect_truncate.c" />
+    <ClCompile Include="ext4\inode.c" />
+    <ClCompile Include="ext4\super.c" />
+    <ClCompile Include="ext4\xattr.c" />
+    <ClCompile Include="ext4\xattr_api.c" />
+    <ClCompile Include="ext4\xattr_inode.c" />
+    <ClCompile Include="ext4\inline.c" />
+    <ClCompile Include="ext4\xattr_write.c" />
+    <ClCompile Include="fsd\access.c" />
+    <ClCompile Include="fsd\cc_callbacks.c" />
+    <ClCompile Include="fsd\cleanup.c" />
+    <ClCompile Include="fsd\close.c" />
+    <ClCompile Include="fsd\create.c" />
+    <ClCompile Include="fsd\create_file.c" />
+    <ClCompile Include="fsd\delete.c" />
+    <ClCompile Include="fsd\devctl.c" />
+    <ClCompile Include="fsd\dirctl.c" />
+    <ClCompile Include="fsd\dirctl_query.c" />
+    <ClCompile Include="fsd\ea.c" />
+    <ClCompile Include="fsd\fastio.c" />
+    <ClCompile Include="fsd\fastio_lock.c" />
+    <ClCompile Include="fsd\fileinfo_query.c" />
+    <ClCompile Include="fsd\fileinfo_set.c" />
+    <ClCompile Include="fsd\flush.c" />
+    <ClCompile Include="fsd\fsctl.c" />
+    <ClCompile Include="fsd\fsctl_retrieval.c" />
+    <ClCompile Include="fsd\lock.c" />
+    <ClCompile Include="fsd\lookup.c" />
+    <ClCompile Include="fsd\pnp.c" />
+    <ClCompile Include="fsd\read.c" />
+    <ClCompile Include="fsd\rename_link.c" />
+    <ClCompile Include="fsd\reparse.c" />
+    <ClCompile Include="fsd\shutdown.c" />
+    <ClCompile Include="fsd\volinfo.c" />
+    <ClCompile Include="fsd\write.c" />
+    <ClCompile Include="fsd\write_volume.c" />
+    <ClCompile Include="journal\jbd2_cache.c" />
+    <ClCompile Include="journal\jbd2_journal.c" />
+    <ClCompile Include="journal\jbd2_recovery.c" />
+    <ClCompile Include="journal\jbd2_revoke.c" />
+    <ClCompile Include="journal\jnl_checkpoint.c" />
+    <ClCompile Include="journal\jnl_commit.c" />
+    <ClCompile Include="journal\jnl_log.c" />
+    <ClCompile Include="journal\jnl_scope.c" />
+    <ClCompile Include="journal\jnl_session.c" />
+    <ClCompile Include="journal\mount_recovery.c" />
+    <ClCompile Include="linux\buffer_head.c" />
+    <ClCompile Include="linux\ext4_bh.c" />
+    <ClCompile Include="linux\ext4_jbd2.c" />
+    <ClCompile Include="linux\kernel.c" />
+    <ClCompile Include="linux\rbtree.c" />
+    <ClCompile Include="nls\nls.c" />
+    <ClCompile Include="nls\nls_ascii.c" />
+    <ClCompile Include="nls\nls_base.c" />
+    <ClCompile Include="nls\nls_cp1250.c" />
+    <ClCompile Include="nls\nls_cp1251.c" />
+    <ClCompile Include="nls\nls_cp1255.c" />
+    <ClCompile Include="nls\nls_cp437.c" />
+    <ClCompile Include="nls\nls_cp737.c" />
+    <ClCompile Include="nls\nls_cp775.c" />
+    <ClCompile Include="nls\nls_cp850.c" />
+    <ClCompile Include="nls\nls_cp852.c" />
+    <ClCompile Include="nls\nls_cp855.c" />
+    <ClCompile Include="nls\nls_cp857.c" />
+    <ClCompile Include="nls\nls_cp860.c" />
+    <ClCompile Include="nls\nls_cp861.c" />
+    <ClCompile Include="nls\nls_cp862.c" />
+    <ClCompile Include="nls\nls_cp863.c" />
+    <ClCompile Include="nls\nls_cp864.c" />
+    <ClCompile Include="nls\nls_cp865.c" />
+    <ClCompile Include="nls\nls_cp866.c" />
+    <ClCompile Include="nls\nls_cp869.c" />
+    <ClCompile Include="nls\nls_cp874.c" />
+    <ClCompile Include="nls\nls_cp932.c" />
+    <ClCompile Include="nls\nls_cp936.c" />
+    <ClCompile Include="nls\nls_cp949.c" />
+    <ClCompile Include="nls\nls_cp950.c" />
+    <ClCompile Include="nls\nls_euc-jp.c" />
+    <ClCompile Include="nls\nls_iso8859-1.c" />
+    <ClCompile Include="nls\nls_iso8859-13.c" />
+    <ClCompile Include="nls\nls_iso8859-14.c" />
+    <ClCompile Include="nls\nls_iso8859-15.c" />
+    <ClCompile Include="nls\nls_iso8859-2.c" />
+    <ClCompile Include="nls\nls_iso8859-3.c" />
+    <ClCompile Include="nls\nls_iso8859-4.c" />
+    <ClCompile Include="nls\nls_iso8859-5.c" />
+    <ClCompile Include="nls\nls_iso8859-6.c" />
+    <ClCompile Include="nls\nls_iso8859-7.c" />
+    <ClCompile Include="nls\nls_iso8859-9.c" />
+    <ClCompile Include="nls\nls_koi8-r.c" />
+    <ClCompile Include="nls\nls_koi8-ru.c" />
+    <ClCompile Include="nls\nls_koi8-u.c" />
+    <ClCompile Include="nls\nls_utf8.c" />
+    <ClCompile Include="support\charset.c" />
+    <ClCompile Include="support\debug.c" />
+    <ClCompile Include="support\debug_irp.c" />
+    <ClCompile Include="support\disk_io.c" />
+    <ClCompile Include="support\ntstatus_names.c" />
+    <ClCompile Include="support\pool.c" />
+    <ClCompile Include="support\status.c" />
+    <ClCompile Include="support\util.c" />
+    <ClCompile Include="crypto\xts.c" />
+    <ClCompile Include="volume\crypt.c" />
+    <ClCompile Include="volume\dismount.c" />
+    <ClCompile Include="volume\lvm.c" />
+    <ClCompile Include="volume\mmp.c" />
+    <ClCompile Include="volume\letter.c" />
+    <ClCompile Include="volume\mount.c" />
+    <ClCompile Include="volume\vcb.c" />
+    <ClCompile Include="volume\vcb_params.c" />
+    <ClCompile Include="volume\volume_lock.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="core\core_internal.h" />
+    <ClInclude Include="driver\driver_internal.h" />
+    <ClInclude Include="ext4\extents_internal.h" />
+    <ClInclude Include="ext4\htree_internal.h" />
+    <ClInclude Include="ext4\xattr_internal.h" />
+    <ClInclude Include="fsd\create_internal.h" />
+    <ClInclude Include="fsd\dirctl_internal.h" />
+    <ClInclude Include="fsd\fsctl_internal.h" />
+    <ClInclude Include="fsd\write_internal.h" />
+    <ClInclude Include="include\common.h" />
+    <ClInclude Include="include\ext4fs.h" />
+    <ClInclude Include="include\ext4fs_common.h" />
+    <ClInclude Include="include\ext4fs_config.h" />
+    <ClInclude Include="include\ext4fs_core.h" />
+    <ClInclude Include="include\ext4fs_driver.h" />
+    <ClInclude Include="include\ext4fs_ext4.h" />
+    <ClInclude Include="include\ext4fs_fsd.h" />
+    <ClInclude Include="include\ext4fs_global.h" />
+    <ClInclude Include="include\ext4fs_journal.h" />
+    <ClInclude Include="include\ext4fs_linux.h" />
+    <ClInclude Include="include\ext4fs_nls.h" />
+    <ClInclude Include="include\ext4fs_objects.h" />
+    <ClInclude Include="include\ext4fs_support.h" />
+    <ClInclude Include="include\ext4fs_volume.h" />
+    <ClInclude Include="include\linux\atomic.h" />
+    <ClInclude Include="include\linux\bit_spinlock.h" />
+    <ClInclude Include="include\linux\bitops.h" />
+    <ClInclude Include="include\linux\config.h" />
+    <ClInclude Include="include\linux\errno.h" />
+    <ClInclude Include="include\linux\ext4.h" />
+    <ClInclude Include="include\linux\ext4_ext.h" />
+    <ClInclude Include="include\linux\ext4_jbd2.h" />
+    <ClInclude Include="include\linux\ext4_xattr.h" />
+    <ClInclude Include="include\linux\fs.h" />
+    <ClInclude Include="include\linux\group.h" />
+    <ClInclude Include="include\linux\jbd.h" />
+    <ClInclude Include="include\linux\jbd2.h" />
+    <ClInclude Include="include\linux\journal-head.h" />
+    <ClInclude Include="include\linux\list.h" />
+    <ClInclude Include="include\linux\log2.h" />
+    <ClInclude Include="include\linux\module.h" />
+    <ClInclude Include="include\linux\rbtree.h" />
+    <ClInclude Include="include\linux\stddef.h" />
+    <ClInclude Include="include\linux\types.h" />
+    <ClInclude Include="include\version.h" />
+    <ClInclude Include="journal\jbd2_internal.h" />
+    <ClInclude Include="journal\jnl_internal.h" />
+    <ClInclude Include="linux\linux_internal.h" />
+    <ClInclude Include="include\ext4crypt.h" />
+    <ClInclude Include="include\ext4fs_unicode.h" />
+    <ClInclude Include="unicode\utf8n.h" />
+    <ClInclude Include="include\ext4xts.h" />
+  </ItemGroup>
+  <ItemDefinitionGroup>
+    <ResourceCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Link>
+      <!-- wdmsec: IoCreateDeviceSecure (control and LUKS devices for SYSTEM and administrators only); cng: AES for LUKS volumes -->
+      <AdditionalDependencies>$(DDK_LIB_PATH)wdmsec.lib;$(DDK_LIB_PATH)cng.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ResourceCompile Include="ext4.rc" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

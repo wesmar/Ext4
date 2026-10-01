@@ -1,0 +1,20 @@
+# build output
+bin/
+symbols/
+obj/
+.vs/
+*.vcxproj.user
+
+# test images and logs
+*.vhd
+*.vhdx
+tests/logs/
+
+# local tooling: VM deployment, kernel debugger helpers, release scripts
+utils/
+tests/testenv.local.psd1
+github.sh
+release-now.md
+release/
+dist/
+narzedzia/

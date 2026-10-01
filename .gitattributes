@@ -1,0 +1,20 @@
+# Auto detect text files
+* text=auto
+
+# Windows-native sources and scripts keep CRLF
+*.c text eol=crlf
+*.h text eol=crlf
+*.rc text eol=crlf
+*.inf text eol=crlf
+*.ps1 text eol=crlf
+*.vcxproj text eol=crlf
+*.vcxproj.filters text eol=crlf
+*.slnx text eol=crlf
+*.md text eol=crlf
+
+# shell scripts run in WSL/Linux
+*.sh text eol=lf
+
+# binaries
+*.sys binary
+*.pdb binary

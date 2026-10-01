@@ -1,0 +1,627 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="core">
+      <UniqueIdentifier>{BA648454-C0C7-5172-AE58-64D8C5523B0A}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="driver">
+      <UniqueIdentifier>{30F2C988-0254-514C-92A7-0E29704CD5C4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ext4">
+      <UniqueIdentifier>{609EF46C-C8E1-52F4-93F0-3B4DDAAAA435}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="fsd">
+      <UniqueIdentifier>{71CB37E4-E634-5D93-B0E2-A70D4162A4C5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="include">
+      <UniqueIdentifier>{4873B6F8-2ACD-58A2-B58A-9CC4ED0D2854}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="include\linux">
+      <UniqueIdentifier>{6056763F-8D44-505E-8987-BFCEC75C8A03}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="journal">
+      <UniqueIdentifier>{3F9ACB8A-D9E8-5D24-AA68-AB046505120F}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="linux">
+      <UniqueIdentifier>{984B933B-2A34-5240-85E8-205C5F5FF34E}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="nls">
+      <UniqueIdentifier>{315FCAAB-06B8-599E-BD9B-69EEA5680621}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="support">
+      <UniqueIdentifier>{0B5CF9BC-FE36-5209-BBAF-8142299EBE1A}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="unicode">
+      <UniqueIdentifier>{3F8C2D14-7A6B-4E59-8C1D-2B9E4A7F6D30}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="crypto">
+      <UniqueIdentifier>{6B1E2F0A-4C7D-4E8A-9B3C-5D2A1F0E7C41}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="volume">
+      <UniqueIdentifier>{0EB29B13-9D21-5D2E-9FC9-2AA9CB431AF2}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="core\extent_list.c">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="core\fcb.c">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="core\icb.c">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="core\irp_context.c">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="core\mcb.c">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="core\reaper.c">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="driver\dispatch.c">
+      <Filter>driver</Filter>
+    </ClCompile>
+    <ClCompile Include="driver\entry.c">
+      <Filter>driver</Filter>
+    </ClCompile>
+    <ClCompile Include="driver\exception.c">
+      <Filter>driver</Filter>
+    </ClCompile>
+    <ClCompile Include="driver\registry.c">
+      <Filter>driver</Filter>
+    </ClCompile>
+    <ClCompile Include="driver\unload.c">
+      <Filter>driver</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\balloc.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\buffer.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\csum.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\dir_block.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\dir_entry.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\dir_hash.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\dir_names.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\dir_ops.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\extent_map.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\extents_insert.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\extents_remove.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\extents_split.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\extents_tree.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\group.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\group_desc.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\htree_insert.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\htree_read.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\ialloc.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\indirect_map.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\indirect_truncate.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\inode.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\super.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\xattr.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\xattr_api.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\xattr_inode.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\inline.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\xattr_write.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\access.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\cc_callbacks.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\cleanup.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\close.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\create.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\create_file.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\delete.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\devctl.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\dirctl.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\dirctl_query.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\ea.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\fastio.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\fastio_lock.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\fileinfo_query.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\fileinfo_set.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\flush.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\fsctl.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\fsctl_retrieval.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\lock.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\lookup.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\pnp.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\read.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\rename_link.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\reparse.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\shutdown.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\volinfo.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\write.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\write_volume.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="journal\jbd2_cache.c">
+      <Filter>journal</Filter>
+    </ClCompile>
+    <ClCompile Include="journal\jbd2_journal.c">
+      <Filter>journal</Filter>
+    </ClCompile>
+    <ClCompile Include="journal\jbd2_recovery.c">
+      <Filter>journal</Filter>
+    </ClCompile>
+    <ClCompile Include="journal\jbd2_revoke.c">
+      <Filter>journal</Filter>
+    </ClCompile>
+    <ClCompile Include="journal\jnl_checkpoint.c">
+      <Filter>journal</Filter>
+    </ClCompile>
+    <ClCompile Include="journal\jnl_commit.c">
+      <Filter>journal</Filter>
+    </ClCompile>
+    <ClCompile Include="journal\jnl_log.c">
+      <Filter>journal</Filter>
+    </ClCompile>
+    <ClCompile Include="journal\jnl_scope.c">
+      <Filter>journal</Filter>
+    </ClCompile>
+    <ClCompile Include="journal\jnl_session.c">
+      <Filter>journal</Filter>
+    </ClCompile>
+    <ClCompile Include="journal\mount_recovery.c">
+      <Filter>journal</Filter>
+    </ClCompile>
+    <ClCompile Include="linux\buffer_head.c">
+      <Filter>linux</Filter>
+    </ClCompile>
+    <ClCompile Include="linux\ext4_bh.c">
+      <Filter>linux</Filter>
+    </ClCompile>
+    <ClCompile Include="linux\ext4_jbd2.c">
+      <Filter>linux</Filter>
+    </ClCompile>
+    <ClCompile Include="linux\kernel.c">
+      <Filter>linux</Filter>
+    </ClCompile>
+    <ClCompile Include="linux\rbtree.c">
+      <Filter>linux</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_ascii.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_base.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp1250.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp1251.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp1255.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp437.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp737.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp775.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp850.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp852.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp855.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp857.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp860.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp861.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp862.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp863.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp864.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp865.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp866.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp869.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp874.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp932.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp936.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp949.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_cp950.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_euc-jp.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_iso8859-1.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_iso8859-13.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_iso8859-14.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_iso8859-15.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_iso8859-2.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_iso8859-3.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_iso8859-4.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_iso8859-5.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_iso8859-6.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_iso8859-7.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_iso8859-9.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_koi8-r.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_koi8-ru.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_koi8-u.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="nls\nls_utf8.c">
+      <Filter>nls</Filter>
+    </ClCompile>
+    <ClCompile Include="support\charset.c">
+      <Filter>support</Filter>
+    </ClCompile>
+    <ClCompile Include="support\debug.c">
+      <Filter>support</Filter>
+    </ClCompile>
+    <ClCompile Include="support\debug_irp.c">
+      <Filter>support</Filter>
+    </ClCompile>
+    <ClCompile Include="support\disk_io.c">
+      <Filter>support</Filter>
+    </ClCompile>
+    <ClCompile Include="support\ntstatus_names.c">
+      <Filter>support</Filter>
+    </ClCompile>
+    <ClCompile Include="support\pool.c">
+      <Filter>support</Filter>
+    </ClCompile>
+    <ClCompile Include="support\status.c">
+      <Filter>support</Filter>
+    </ClCompile>
+    <ClCompile Include="support\util.c">
+      <Filter>support</Filter>
+    </ClCompile>
+    <ClCompile Include="unicode\casefold.c">
+      <Filter>unicode</Filter>
+    </ClCompile>
+    <ClCompile Include="unicode\utf8data.c">
+      <Filter>unicode</Filter>
+    </ClCompile>
+    <ClCompile Include="unicode\utf8norm.c">
+      <Filter>unicode</Filter>
+    </ClCompile>
+    <ClCompile Include="crypto\xts.c">
+      <Filter>crypto</Filter>
+    </ClCompile>
+    <ClCompile Include="volume\crypt.c">
+      <Filter>volume</Filter>
+    </ClCompile>
+    <ClCompile Include="volume\lvm.c">
+      <Filter>volume</Filter>
+    </ClCompile>
+    <ClCompile Include="volume\mmp.c">
+      <Filter>volume</Filter>
+    </ClCompile>
+    <ClCompile Include="volume\dismount.c">
+      <Filter>volume</Filter>
+    </ClCompile>
+    <ClCompile Include="volume\letter.c">
+      <Filter>volume</Filter>
+    </ClCompile>
+    <ClCompile Include="volume\mount.c">
+      <Filter>volume</Filter>
+    </ClCompile>
+    <ClCompile Include="volume\vcb.c">
+      <Filter>volume</Filter>
+    </ClCompile>
+    <ClCompile Include="volume\vcb_params.c">
+      <Filter>volume</Filter>
+    </ClCompile>
+    <ClCompile Include="volume\volume_lock.c">
+      <Filter>volume</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="core\core_internal.h">
+      <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="driver\driver_internal.h">
+      <Filter>driver</Filter>
+    </ClInclude>
+    <ClInclude Include="ext4\extents_internal.h">
+      <Filter>ext4</Filter>
+    </ClInclude>
+    <ClInclude Include="ext4\htree_internal.h">
+      <Filter>ext4</Filter>
+    </ClInclude>
+    <ClInclude Include="ext4\xattr_internal.h">
+      <Filter>ext4</Filter>
+    </ClInclude>
+    <ClInclude Include="fsd\create_internal.h">
+      <Filter>fsd</Filter>
+    </ClInclude>
+    <ClInclude Include="fsd\dirctl_internal.h">
+      <Filter>fsd</Filter>
+    </ClInclude>
+    <ClInclude Include="fsd\fsctl_internal.h">
+      <Filter>fsd</Filter>
+    </ClInclude>
+    <ClInclude Include="fsd\write_internal.h">
+      <Filter>fsd</Filter>
+    </ClInclude>
+    <ClInclude Include="include\common.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs_common.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs_config.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs_core.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs_driver.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs_ext4.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs_fsd.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs_global.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs_journal.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs_linux.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs_nls.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs_objects.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs_support.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ext4fs_volume.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\atomic.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\bit_spinlock.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\bitops.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\config.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\errno.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\ext4.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\ext4_ext.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\ext4_jbd2.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\ext4_xattr.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\fs.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\group.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\jbd.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\jbd2.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\journal-head.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\list.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\log2.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\module.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\rbtree.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\stddef.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\linux\types.h">
+      <Filter>include\linux</Filter>
+    </ClInclude>
+    <ClInclude Include="include\version.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="journal\jbd2_internal.h">
+      <Filter>journal</Filter>
+    </ClInclude>
+    <ClInclude Include="journal\jnl_internal.h">
+      <Filter>journal</Filter>
+    </ClInclude>
+    <ClInclude Include="linux\linux_internal.h">
+      <Filter>linux</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="ext4.rc" />
+  </ItemGroup>
+</Project>
