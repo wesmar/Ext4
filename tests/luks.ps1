@@ -23,12 +23,22 @@ function Check($name, $ok, $detail = '') { if ($ok) { "  ok   $name $detail" } e
 # attached a moment ago may still be on its way
 for ($i = 0; $i -lt 150; $i++) {
     $list = & $ctl list
-    if (@($list | Select-String 'LUKS').Count -ge 3) { break }
+    if (@($list | Select-String 'LUKS').Count -ge 5) { break }
     Start-Sleep -Milliseconds 100
 }
-$luks2 = @($list | Select-String 'LUKS2' | ForEach-Object { $_.Line -replace '.*UUID ([0-9a-f-]+).*', '$1' })
+function UuidOf($line) { $line -replace '.*UUID ([0-9a-f-]+).*', '$1' }
+$luks2 = @($list | Select-String 'LUKS2' | Where-Object { $_.Line -notmatch 'label (serpent|nodigest)' } | ForEach-Object { UuidOf $_.Line })
+$serpent = @($list | Select-String 'label serpent' | ForEach-Object { UuidOf $_.Line })
+$nodigest = @($list | Select-String 'label nodigest' | ForEach-Object { UuidOf $_.Line })
 $luks1 = @($list | Select-String 'LUKS1' | ForEach-Object { $_.Line -replace '.*UUID ([0-9a-f-]+).*', '$1' })
 if ($luks2.Count -lt 2 -or $luks1.Count -lt 1) { "  FAIL test disk not found (LUKS2: $($luks2.Count), LUKS1: $($luks1.Count))"; "LUKS-WIN: 1 failed"; exit 1 }
+
+"-- headers ext4ctl must not open"
+Check 'a cipher the driver lacks is listed as such' ([bool]($list -match 'cannot be opened here: cipher serpent-xts-plain64'))
+$r = $Pass | & $ctl unlock "UUID=$($serpent[0])" --passphrase-stdin 2>&1
+Check 'a serpent volume is refused, not opened into garbage' ($serpent.Count -eq 1 -and $LASTEXITCODE -ne 0 -and "$r" -match 'serpent') "($r)"
+$r = $Pass.ToUpper() | & $ctl unlock "UUID=$($nodigest[0])" --passphrase-stdin 2>&1
+Check 'an empty digest does not let a wrong passphrase in' ($nodigest.Count -eq 1 -and $LASTEXITCODE -ne 0) "($r)"
 
 "-- unlock"
 $r = $Pass.ToUpper() | & $ctl unlock "UUID=$($luks1[0])" --passphrase-stdin 2>&1

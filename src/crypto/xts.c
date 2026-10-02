@@ -121,6 +121,12 @@ Ext4XtsUnitCopy(PEXT4_XTS Xts, BOOLEAN Encrypt, ULONGLONG Unit,
     Status = Encrypt ?
         BCryptEncrypt(Xts->Data, Buffer, Length, NULL, NULL, 0, Buffer, Length, &Done, 0) :
         BCryptDecrypt(Xts->Data, Buffer, Length, NULL, NULL, 0, Buffer, Length, &Done, 0);
+    if (!NT_SUCCESS(Status)) {
+        /* nothing half-done leaves: neither the whitened input nor a
+           partial result */
+        RtlSecureZeroMemory(Buffer, Length);
+        return Status;
+    }
 
     /* and on the way out */
     for (i = 0; i < Words; i++) {

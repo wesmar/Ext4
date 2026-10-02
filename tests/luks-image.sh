@@ -6,6 +6,11 @@
 #                "qtest" with a linear LV "lin" (ext4) and a thin pool "pool"
 #                (64 KiB chunks, like Qubes root-pool) holding a thin LV "root" (ext4)
 #   partition 3: LUKS1 (pbkdf2) -> ext4, the older format
+#   partition 4: LUKS2 whose data segment says serpent-xts-plain64 - a cipher
+#                the driver does not have (luks-edit.py): ext4ctl must say so
+#                and not open it
+#   partition 5: LUKS2 whose volume-key digest is emptied (luks-edit.py): a
+#                wrong passphrase must still be refused
 #
 # Every file system gets the same small tree plus a manifest.sha256, so the
 # Windows side can be checked byte for byte.
@@ -32,10 +37,13 @@ label: gpt
 size=400MiB,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=luks-plain
 size=2000MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=luks-lvm
 size=300MiB,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=luks1-plain
+size=32MiB,   type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=luks-serpent
+size=32MiB,   type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=luks-nodigest
 EOT
 partprobe "$DEV" 2>/dev/null || true
 sleep 1
-P1=${DEV}1 P2=${DEV}2 P3=${DEV}3
+P1=${DEV}1 P2=${DEV}2 P3=${DEV}3 P4=${DEV}4 P5=${DEV}5
+HERE=${EXT4_TESTS:-$(cd "$(dirname "$0")" && pwd)}
 
 fill() {                        # fill <mountpoint> <tag>
     local m=$1 t=$2
@@ -74,6 +82,12 @@ printf '%s' "$PASS" | cryptsetup luksFormat -q --type luks1 --pbkdf-force-iterat
 printf '%s' "$PASS" | cryptsetup open --key-file=- "$P3" lt3
 mkfs_fill /dev/mapper/lt3 luks1-plain
 cryptsetup close lt3
+
+FAST=(--pbkdf pbkdf2 --pbkdf-force-iterations 1000)
+printf '%s' "$PASS" | cryptsetup luksFormat -q --type luks2 "${FAST[@]}" --label serpent --key-file=- "$P4"
+python3 "$HERE/luks-edit.py" "$P4" segment-cipher serpent-xts-plain64
+printf '%s' "$PASS" | cryptsetup luksFormat -q --type luks2 "${FAST[@]}" --label nodigest --key-file=- "$P5"
+python3 "$HERE/luks-edit.py" "$P5" zero-digest
 
 sync
 echo "image ready"

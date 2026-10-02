@@ -119,6 +119,7 @@ typedef struct _LUKS_VOLUME {
     ULONGLONG   IvOffset;
     ULONG       Keyslots;                       /* active ones */
     char        Kdf[16];                        /* of the first active keyslot */
+    char        Problem[128];                   /* set: a LUKS volume this tool must not open */
 } LUKS_VOLUME;
 
 typedef struct _LUKS_DEVICE {
@@ -133,6 +134,9 @@ BOOL LuksReadAt(LUKS_DEVICE *Dev, ULONGLONG Offset, void *Buffer, ULONG Length);
 
 /* 1: a LUKS header was read into Volume, 0: no LUKS here, -1: error */
 int  LuksProbe(LUKS_DEVICE *Dev, LUKS_VOLUME *Volume);
+
+/* the EXT4_CIPHER_* of the data the volume holds; 0: not one the driver has */
+ULONG LuksCipher(const LUKS_VOLUME *Volume);
 
 /* the volume key for Passphrase, verified against the header's digest */
 BOOL LuksUnlockKey(LUKS_DEVICE *Dev, const LUKS_VOLUME *Volume,

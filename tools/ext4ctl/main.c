@@ -198,6 +198,9 @@ CmdList(void)
             printf("%-28ls %8.1f G  LUKS%d %s, %lu-byte key, %lu-byte sectors, kdf %s, %lu keyslot(s), UUID %s%s%s\n",
                    Name, Dev.Size / 1073741824.0, V.Version, V.Cipher, V.KeyBytes, V.SectorSize,
                    V.Kdf, V.Keyslots, V.Uuid, V.Label[0] ? ", label " : "", V.Label);
+            if (V.Problem[0]) {
+                printf("%-28s cannot be opened here: %s\n", "", V.Problem);
+            }
         } else if (LuksReadAt(&Dev, EXT2_SUPER_MAGIC_OFFSET, Super, sizeof(Super)) &&
                    (Super[0] | (Super[1] << 8)) == EXT2_SUPER_MAGIC) {
             printf("%-28ls %8.1f G  ext2/3/4\n", Name, Dev.Size / 1073741824.0);
@@ -235,6 +238,13 @@ ReadPassphraseConsole(char *Out, ULONG Room, ULONG *Length)
     if (!Ok) {
         return FALSE;
     }
+    /* a line that filled the buffer without its end was longer: refused,
+       not cut (the rest would stay in the console, the start be used) */
+    if (Got == ARRAYSIZE(Wide) - 1 && Wide[Got - 1] != L'\n') {
+        SecureZeroMemory(Wide, sizeof(Wide));
+        Fail("the passphrase is longer than %u characters", (unsigned)(ARRAYSIZE(Wide) - 3));
+        return FALSE;
+    }
     while (Got > 0 && (Wide[Got - 1] == L'\n' || Wide[Got - 1] == L'\r')) {
         Got--;
     }
@@ -270,12 +280,20 @@ ReadPassphraseStdin(char *Out, ULONG Room, ULONG *Length)
 static BOOL
 ReadKeyFile(const WCHAR *Path, char *Out, ULONG Room, ULONG *Length)
 {
-    HANDLE  h = CreateFileW(Path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    DWORD   Got = 0;
-    BOOL    Ok;
+    HANDLE          h = CreateFileW(Path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    DWORD           Got = 0;
+    LARGE_INTEGER   Size;
+    BOOL            Ok;
 
     if (h == INVALID_HANDLE_VALUE) {
         Fail("cannot open key file %ls (error %lu)", Path, GetLastError());
+        return FALSE;
+    }
+    /* cryptsetup refuses a key file past its limit; the start of it is not
+       the key, so neither is it here */
+    if (!GetFileSizeEx(h, &Size) || (ULONGLONG)Size.QuadPart > Room) {
+        Fail("key file %ls is larger than %lu bytes", Path, Room);
+        CloseHandle(h);
         return FALSE;
     }
     Ok = ReadFile(h, Out, Room, &Got, NULL);
@@ -337,13 +355,22 @@ CmdUnlock(int argc, WCHAR **argv)
         LuksCloseDevice(&Dev);
         return 1;
     }
+    if (LuksCipher(&V) == 0) {
+        Fail("%ls cannot be opened here: %s", Name, V.Problem[0] ? V.Problem : "unsupported cipher");
+        LuksCloseDevice(&Dev);
+        return 1;
+    }
 
     Pass = (char *)VirtualAlloc(NULL, EXT4CTL_MAX_PASSPHRASE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (Pass == NULL) {
         LuksCloseDevice(&Dev);
         return 1;
     }
-    VirtualLock(Pass, 4096);
+    /* kept out of the page file, all of it: a key file may fill the buffer
+       (best effort: the working set may not allow it) */
+    SetProcessWorkingSetSize(GetCurrentProcess(), EXT4CTL_MAX_PASSPHRASE + 4 * 1024 * 1024,
+                             EXT4CTL_MAX_PASSPHRASE + 16 * 1024 * 1024);
+    VirtualLock(Pass, EXT4CTL_MAX_PASSPHRASE);
     Ok = KeyFile ? ReadKeyFile(KeyFile, Pass, EXT4CTL_MAX_PASSPHRASE, &PassLength) :
          Stdin   ? ReadPassphraseStdin(Pass, EXT4CTL_MAX_PASSPHRASE, &PassLength) :
                    ReadPassphraseConsole(Pass, EXT4CTL_MAX_PASSPHRASE, &PassLength) ||
@@ -372,8 +399,7 @@ CmdUnlock(int argc, WCHAR **argv)
     /* LUKS counts the IV in 512-byte sectors whatever the encryption sector
        size (cryptsetup never sets dm-crypt's iv_large_sectors for LUKS) */
     Req.Flags = ReadOnly ? EXT4_CRYPT_READ_ONLY : 0;
-    Req.Cipher = _stricmp(V.Cipher, "aes-xts-plain") == 0 ? EXT4_CIPHER_AES_XTS_PLAIN :
-                                                            EXT4_CIPHER_AES_XTS_PLAIN64;
+    Req.Cipher = LuksCipher(&V);
     Req.KeyBytes = V.KeyBytes;
     Req.SectorSize = V.SectorSize;
     Req.Letter = Letter;

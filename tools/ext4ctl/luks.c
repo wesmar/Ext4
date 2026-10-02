@@ -28,6 +28,7 @@
 #define LUKS2_MAX_HEADER        (4 * 1024 * 1024)
 #define LUKS_MAX_STRIPES        4000
 #define LUKS_MAX_SALT           64
+#define LUKS_MIN_DIGEST         20      /* SHA-1's, the shortest hash LUKS uses */
 
 static const UINT8 Luks1Magic[6] = { 'L', 'U', 'K', 'S', 0xBA, 0xBE };
 static const UINT8 Luks2Magic2[6] = { 'S', 'K', 'U', 'L', 0xBA, 0xBE };
@@ -35,6 +36,21 @@ static const UINT8 Luks2Magic2[6] = { 'S', 'K', 'U', 'L', 0xBA, 0xBE };
 static UINT16 Be16(const UINT8 *p) { return (UINT16)((p[0] << 8) | p[1]); }
 static UINT32 Be32(const UINT8 *p) { return ((UINT32)p[0] << 24) | ((UINT32)p[1] << 16) | ((UINT32)p[2] << 8) | p[3]; }
 static UINT64 Be64(const UINT8 *p) { return ((UINT64)Be32(p) << 32) | Be32(p + 4); }
+
+/* a text from the header, whole or not at all: a header with a longer one
+   than the field holds is not a header this tool reads (strcpy_s would end
+   the process, and every "list" probes every volume) */
+static BOOL
+CopyText(char *Out, size_t OutSize, const char *In)
+{
+    size_t n = strlen(In);
+
+    if (n >= OutSize) {
+        return FALSE;
+    }
+    memcpy(Out, In, n + 1);
+    return TRUE;
+}
 
 static void
 CopyField(char *Out, size_t OutSize, const UINT8 *Field, size_t FieldSize)
@@ -255,7 +271,8 @@ Luks1Probe(const UINT8 *H, LUKS_VOLUME *V)
         }
     }
     if (!ParseCipher(V->Cipher, &Cipher)) {
-        return 1;                   /* a LUKS volume all the same; unlock says why not */
+        /* a LUKS volume all the same: listed, not opened */
+        snprintf(V->Problem, sizeof(V->Problem), "cipher %s is not supported (aes-xts-plain64 is)", V->Cipher);
     }
     return 1;
 }
@@ -408,14 +425,25 @@ Luks2Load(LUKS_DEVICE *Dev, LUKS2_HEADER *H)
     return FALSE;
 }
 
-/* the first segment: where the data is and how it is encrypted */
+/*
+ * The data segment: where the data is and how it is encrypted. FALSE: the
+ * header is not one this tool reads. A volume it must not open is still
+ * described, with V->Problem saying why: data in a cipher the driver does
+ * not have would be "unlocked" into garbage - and written to with it - so
+ * the segment's own cipher is checked (not only the keyslots'), and so are
+ * the things cryptsetup refuses to open without knowing them: authenticated
+ * encryption (dm-integrity), a reencryption in progress (more than one
+ * segment), and mandatory requirements in the configuration.
+ */
 static BOOL
 Luks2Segment(const JSON *Root, LUKS_VOLUME *V)
 {
     const JSON *Segments = JsonGet(Root, "segments");
     const JSON *Seg = Segments ? Segments->Child : NULL;
+    const JSON *Need = JsonGet(JsonGet(JsonGet(Root, "config"), "requirements"), "mandatory");
     const char *Size;
     UINT64      Value;
+    LUKS_CIPHER Cipher;
 
     if (Seg == NULL || JsonText(JsonGet(Seg, "type")) == NULL ||
         strcmp(JsonText(JsonGet(Seg, "type")), "crypt") != 0 ||
@@ -435,8 +463,20 @@ Luks2Segment(const JSON *Root, LUKS_VOLUME *V)
     if (JsonU64(JsonGet(Seg, "sector_size"), &Value)) {
         V->SectorSize = (ULONG)Value;
     }
-    if (JsonText(JsonGet(Seg, "encryption"))) {
-        strcpy_s(V->Cipher, sizeof(V->Cipher), JsonText(JsonGet(Seg, "encryption")));
+    if (JsonText(JsonGet(Seg, "encryption")) == NULL ||
+        !CopyText(V->Cipher, sizeof(V->Cipher), JsonText(JsonGet(Seg, "encryption")))) {
+        return FALSE;
+    }
+
+    if (Seg->Next != NULL) {
+        snprintf(V->Problem, sizeof(V->Problem), "a reencryption is in progress (more than one data segment)");
+    } else if (Need != NULL && Need->Child != NULL) {
+        snprintf(V->Problem, sizeof(V->Problem), "the header has mandatory requirements (%s)",
+                 JsonText(Need->Child) ? JsonText(Need->Child) : "?");
+    } else if (JsonGet(Seg, "integrity") != NULL) {
+        snprintf(V->Problem, sizeof(V->Problem), "authenticated encryption (dm-integrity) is not supported");
+    } else if (!ParseCipher(V->Cipher, &Cipher)) {
+        snprintf(V->Problem, sizeof(V->Problem), "cipher %s is not supported (aes-xts-plain64 is)", V->Cipher);
     }
     return TRUE;
 }
@@ -467,8 +507,11 @@ Luks2Probe(LUKS_DEVICE *Dev, LUKS_VOLUME *V)
          Slot; Slot = Slot->Next) {
         if (V->Keyslots++ == 0) {
             const JSON *Kdf = JsonGet(Slot, "kdf");
-            if (JsonText(JsonGet(Kdf, "type"))) {
-                strcpy_s(V->Kdf, sizeof(V->Kdf), JsonText(JsonGet(Kdf, "type")));
+            if (JsonText(JsonGet(Kdf, "type")) &&
+                !CopyText(V->Kdf, sizeof(V->Kdf), JsonText(JsonGet(Kdf, "type")))) {
+                JsonFree(&Doc);
+                Luks2Free(&H);
+                return -1;
             }
             if (JsonU64(JsonGet(Slot, "key_size"), &Value)) {
                 V->KeyBytes = (ULONG)Value;
@@ -556,7 +599,10 @@ Luks2Verify(const JSON *Root, const char *SlotName, const UINT8 *Key, ULONG KeyB
             !JsonU64(JsonGet(D, "iterations"), &Iterations) ||
             JsonText(JsonGet(D, "salt")) == NULL || JsonText(JsonGet(D, "digest")) == NULL ||
             !Base64Decode(JsonText(JsonGet(D, "salt")), Salt, &SaltLength) ||
-            !Base64Decode(JsonText(JsonGet(D, "digest")), Want, &WantLength)) {
+            !Base64Decode(JsonText(JsonGet(D, "digest")), Want, &WantLength) ||
+            WantLength < LUKS_MIN_DIGEST || Iterations == 0) {
+            /* an empty or short digest compared nothing - any key "matched"
+               it, and the volume opened with a wrong key */
             continue;
         }
         if (CryptoPbkdf2(HashId, Key, KeyBytes, Salt, SaltLength, Iterations, Got, WantLength) &&
@@ -649,6 +695,14 @@ LuksProbe(LUKS_DEVICE *Dev, LUKS_VOLUME *V)
         return Luks2Probe(Dev, V);
     }
     return -1;
+}
+
+ULONG
+LuksCipher(const LUKS_VOLUME *V)
+{
+    LUKS_CIPHER Cipher;
+
+    return V->Problem[0] == 0 && ParseCipher(V->Cipher, &Cipher) ? Cipher.Cipher : 0;
 }
 
 BOOL

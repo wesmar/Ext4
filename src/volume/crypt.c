@@ -125,7 +125,7 @@ struct _EXT4_CRYPT_DEVICE {
     KQUEUE              Queue;              /* IRPs for the workers */
     ULONG               Workers;
     EXT4_CRYPT_WORKER   Worker[EXT4_CRYPT_WORKERS];
-    ERESOURCE           Rmw;                /* partial-sector writes */
+    ERESOURCE           Rmw;                /* partial-sector writes: exclusive; whole: shared */
     EX_RUNDOWN_REF      Rundown;            /* I/O in flight */
     volatile LONG       InlineBusy;         /* bit n set: Inline[n] in use */
     ULONG               InlineCount;
@@ -338,10 +338,18 @@ Ext4CryptBounced(IN PEXT4_CRYPT_DEVICE Crypt, IN PEXT4_CRYPT_WORKER Worker,
 
         IoBuildPartialMdl(Worker->BounceMdl, Worker->PartMdl, Worker->Bounce, Span);
 
-        if (Write && Partial) {
-            /* two partial writes of one sector must not interleave */
+        if (Write) {
+            /* A partial write reads its sectors, merges and writes them
+               back: nothing else may write them in between, or the merge
+               puts their old contents back. Partial writes take the lock
+               exclusively, whole-sector writes shared - they still run
+               side by side, only never inside a merge. */
             KeEnterCriticalRegion();
-            ExAcquireResourceExclusiveLite(&Crypt->Rmw, TRUE);
+            if (Partial) {
+                ExAcquireResourceExclusiveLite(&Crypt->Rmw, TRUE);
+            } else {
+                ExAcquireResourceSharedLite(&Crypt->Rmw, TRUE);
+            }
             Locked = TRUE;
         }
 
@@ -504,7 +512,7 @@ Ext4CryptQueue(IN PEXT4_CRYPT_DEVICE Crypt, IN PIRP Irp, IN ULONGLONG Byte, IN U
 {
     PEXT4_CRYPT_SPLIT   Split = NULL;
     PEXT4_CRYPT_PIECE   Piece;
-    ULONG               Pieces = (Length + EXT4_CRYPT_BOUNCE - 1) / EXT4_CRYPT_BOUNCE;
+    ULONG               Pieces = (ULONG)(((ULONGLONG)Length + EXT4_CRYPT_BOUNCE - 1) / EXT4_CRYPT_BOUNCE);
     ULONG               i;
 
     if (Pieces > 1 && ((Byte | Length) & (Crypt->SectorSize - 1)) == 0) {
