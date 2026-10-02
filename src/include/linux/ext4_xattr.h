@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Copyright (c) 2015 Grzegorz Kostka (kostka.grzegorz@gmail.com)
  * Copyright (c) 2015 Kaho Ng (ngkaho1234@gmail.com)
@@ -86,7 +87,6 @@ struct ext4_xattr_entry {
 
 #pragma pack(pop)
 
-//#define EXT4_GOOD_OLD_INODE_SIZE	EXT2_GOOD_OLD_INODE_SIZE
 
 #define EXT4_XATTR_PAD_BITS		2
 #define EXT4_XATTR_PAD		(1<<EXT4_XATTR_PAD_BITS)

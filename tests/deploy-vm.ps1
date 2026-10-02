@@ -1,4 +1,5 @@
 #Requires -Version 7.0
+# SPDX-License-Identifier: GPL-2.0-only
 # deploy-vm.ps1 - install or hot-swap bin\ext4.sys in the test guest.
 #
 # A copy of the driver is signed with the test-signing certificate (the build

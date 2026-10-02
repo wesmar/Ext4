@@ -14,7 +14,6 @@
 #include <linux/list.h>
 #include <linux/log2.h>
 
-//#include <linux/hash.h>
 
 static struct kmem_cache *jbd2_revoke_record_cache;
 static struct kmem_cache *jbd2_revoke_table_cache;

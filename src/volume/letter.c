@@ -46,6 +46,9 @@
 #define LETTER_TAG          'TL2E'
 #define FIRST_LETTER        L'D'
 
+/* how long a new interface may take to show up in the mount manager */
+#define ARRIVAL_TIMEOUT     ((LONGLONG)3 * 1000 * 1000 * 10)    /* 3 s, 100 ns units */
+
 /* GUID_DEVINTERFACE_HIDDEN_VOLUME: volmgr registers it, instead of the
    volume interface, for partition types the mount manager ignores. Spelled
    out because ntddstor.h is already in before initguid.h can define it. */
@@ -106,6 +109,69 @@ Ext2MountMgrIoctl(
         if (Returned) {
             *Returned = (ULONG)IoStatus.Information;
         }
+    }
+
+    ObDereferenceObject(FileObject);
+    return Status;
+}
+
+/*
+ * Wait for the mount manager's database to change from *Epic, which is
+ * updated: IOCTL_MOUNTMGR_CHANGE_NOTIFY completes at the next change, or at
+ * once when *Epic is not the current number (0 asks for the number). Ends
+ * early when the driver starts to stop. Timeout is relative, 100 ns units.
+ * Returns STATUS_TIMEOUT when nothing changed in time.
+ */
+static NTSTATUS
+Ext2MountMgrWaitChange(IN OUT PULONG Epic, IN LONGLONG Timeout)
+{
+    UNICODE_STRING                  Name;
+    PFILE_OBJECT                    FileObject = NULL;
+    PDEVICE_OBJECT                  DeviceObject = NULL;
+    MOUNTMGR_CHANGE_NOTIFY_INFO     Info;
+    KEVENT                          Event;
+    IO_STATUS_BLOCK                 IoStatus;
+    PVOID                           Objects[2];
+    LARGE_INTEGER                   Wait;
+    PIRP                            Irp;
+    NTSTATUS                        Status;
+
+    RtlInitUnicodeString(&Name, MOUNTMGR_DEVICE_NAME);
+    Status = IoGetDeviceObjectPointer(&Name, FILE_READ_ATTRIBUTES,
+                                      &FileObject, &DeviceObject);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+
+    Info.EpicNumber = *Epic;
+    KeInitializeEvent(&Event, NotificationEvent, FALSE);
+    Irp = IoBuildDeviceIoControlRequest(IOCTL_MOUNTMGR_CHANGE_NOTIFY, DeviceObject,
+                                        &Info, sizeof(Info), &Info, sizeof(Info),
+                                        FALSE, &Event, &IoStatus);
+    if (Irp == NULL) {
+        ObDereferenceObject(FileObject);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    Status = IoCallDriver(DeviceObject, Irp);
+    if (Status == STATUS_PENDING) {
+        Objects[0] = &Event;
+        Objects[1] = &Ext2Global->UnloadStarted;
+        Wait.QuadPart = -Timeout;
+        Status = KeWaitForMultipleObjects(2, Objects, WaitAny, Executive, KernelMode,
+                                          FALSE, &Wait, NULL);
+        if (Status != STATUS_WAIT_0) {
+            /* no change in time, or sc stop: the IRP is ours until it is
+               back, cancelled (the mount manager completes it then) */
+            IoCancelIrp(Irp);
+            KeWaitForSingleObject(&Event, Executive, KernelMode, FALSE, NULL);
+            Status = STATUS_TIMEOUT;
+        } else {
+            Status = IoStatus.Status;
+        }
+    }
+    if (NT_SUCCESS(Status)) {
+        *Epic = Info.EpicNumber;
     }
 
     ObDereferenceObject(FileObject);
@@ -408,8 +474,8 @@ Ext2AnnounceVolume(IN PEXT2_VCB Vcb, IN PDEVICE_OBJECT RealDevice,
 {
     PDEVICE_OBJECT  Pdo;
     UNICODE_STRING  Link = { 0, 0, NULL };
-    LARGE_INTEGER   Tick;
-    ULONG           i;
+    ULONGLONG       Deadline;
+    ULONG           Epic = 0;
     NTSTATUS        Status;
 
     *Letter = 0;
@@ -443,11 +509,16 @@ Ext2AnnounceVolume(IN PEXT2_VCB Vcb, IN PDEVICE_OBJECT RealDevice,
     Vcb->MountDevLink = Link;
     ExReleaseResourceLite(&Ext2Global->Resource);
 
-    /* the arrival is processed on the mount manager's own thread; it
-       creates the database letter in that same pass, so nothing may be
-       decided before it answers for the device (up to 3 s, interruptible) */
-    Tick.QuadPart = -20 * 10 * 1000;    /* 20 ms */
-    for (i = 0; i < 150; i++) {
+    /* The arrival is processed on the mount manager's own thread, which
+       creates the database letter in that same pass: nothing may be
+       decided before it answers for the device. Every pass of it moves its
+       epic number on, so the device is looked for again at each change
+       (IOCTL_MOUNTMGR_CHANGE_NOTIFY) - the first wait only fetches the
+       number - until it shows, sc stop comes, or ARRIVAL_TIMEOUT passes. */
+    Deadline = KeQueryInterruptTime() + ARRIVAL_TIMEOUT;
+    for (;;) {
+        LONGLONG Left;
+
         if (Ext2Global->UnloadState != EXT2_UNLOAD_IDLE ||
             IsFlagOn(Ext2Global->Flags, EXT2_UNLOAD_PENDING)) {
             return;
@@ -455,7 +526,16 @@ Ext2AnnounceVolume(IN PEXT2_VCB Vcb, IN PDEVICE_OBJECT RealDevice,
         if (Ext2MountMgrTracks(DeviceName, Letter)) {
             return;
         }
-        KeDelayExecutionThread(KernelMode, FALSE, &Tick);
+        Left = (LONGLONG)(Deadline - KeQueryInterruptTime());
+        if (Left <= 0) {
+            break;
+        }
+        Status = Ext2MountMgrWaitChange(&Epic, Left);
+        if (!NT_SUCCESS(Status) && Status != STATUS_TIMEOUT) {
+            DbgPrint("ext4: cannot follow the mount manager for %wZ (%xh)\n",
+                     DeviceName, Status);
+            return;
+        }
     }
     DbgPrint("ext4: the mount manager did not pick up %wZ\n", DeviceName);
 }

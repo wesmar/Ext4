@@ -64,7 +64,6 @@ Ext2LoadGroupBH(IN PEXT2_VCB Vcb)
             sbi->s_gd[i].bh = sb_getblk(sb, sbi->s_gd[i].block);
             if (!sbi->s_gd[i].bh) {
                 DEBUG(DL_ERR, ("Ext2LoadGroupBH: can't read group descriptor %d\n", i));
-                DbgBreak();
                 __leave;
             }
             /* held for the life of the mount: not a modification in
@@ -123,7 +122,6 @@ Ext2LoadGroup(IN PEXT2_VCB Vcb)
         }
 
         if (!ext4_check_descriptors(sb)) {
-            DbgBreak();
             DEBUG(DL_ERR, ("Ext2LoadGroup: group descriptors corrupted !\n"));
             __leave;
         }
@@ -157,7 +155,9 @@ Ext2SaveGroup(
     if (!gd)
         return 0;
 
-    ext4_group_desc_csum_set(&Vcb->sb, Group, gd);
+    /* computed and stored as one step: the block and the inode half of
+       the descriptor change under different locks (core\stripes.c) */
+    Ext2SetGroupDescCsum(Vcb, Group, gd);
     mark_buffer_dirty(gb);
     fini_bh(&gb);
 

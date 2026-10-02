@@ -56,15 +56,28 @@
   <ItemGroup>
     <ClCompile Include="argon2.c" />
     <ClCompile Include="blake2b.c" />
+    <ClCompile Include="cmd_crypt.c" />
     <ClCompile Include="crypto.c" />
+    <ClCompile Include="driver.c" />
     <ClCompile Include="json.c" />
     <ClCompile Include="luks.c" />
-    <ClCompile Include="lvm.c" />
+    <ClCompile Include="luks1.c" />
+    <ClCompile Include="luks2.c" />
+    <ClCompile Include="luks_device.c" />
+    <ClCompile Include="luks_keyslot.c" />
+    <ClCompile Include="lvm_cmd.c" />
+    <ClCompile Include="lvm_text.c" />
+    <ClCompile Include="lvm_thin.c" />
+    <ClCompile Include="lvm_vg.c" />
     <ClCompile Include="main.c" />
+    <ClCompile Include="passphrase.c" />
+    <ClCompile Include="selftest.c" />
     <ClCompile Include="..\..\src\crypto\xts.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ext4ctl.h" />
+    <ClInclude Include="luks_internal.h" />
+    <ClInclude Include="lvm_internal.h" />
     <ClInclude Include="..\..\src\include\ext4crypt.h" />
     <ClInclude Include="..\..\src\include\ext4xts.h" />
   </ItemGroup>

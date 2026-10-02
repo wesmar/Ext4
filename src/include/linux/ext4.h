@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  ext4.h
  *
@@ -41,29 +41,9 @@ struct work_struct;
 #include <linux/jbd2.h>
 #include <linux/rbtree.h>
 
-//
-// Use 1 byte packing of on-disk structures
-//
+/* Use 1 byte packing of on-disk structures */
 #include <pshpack1.h>
 
-//#include <linux/blkdev.h>
-//#include <linux/magic.h>
-//#include <linux/quota.h>
-//#include <linux/rwsem.h>
-//#include <linux/seqlock.h>
-//#include <linux/mutex.h>
-//#include <linux/timer.h>
-//#include <linux/version.h>
-//#include <linux/wait.h>
-//#include <linux/sched/signal.h>
-//#include <linux/blockgroup_lock.h>
-//#include <linux/percpu_counter.h>
-//#include <linux/ratelimit.h>
-//#include <crypto/hash.h>
-//#include <linux/falloc.h>
-//#include <linux/percpu-rwsem.h>
-//#include <linux/compat.h>
-//typedef struct handle_s handle_t;
 /* physical block number of the file system, logical block number in a file */
 typedef unsigned long long ext4_fsblk_t;
 typedef __u32 ext4_lblk_t;
@@ -73,9 +53,7 @@ typedef unsigned __int32 uint32_t;
 typedef unsigned __int64 uint64_t;
 #include <linux/ext4_ext.h>
 
-//#include <linux/fscrypt.h>
 
-//#include <linux/compiler.h>
 
 /*
  * First declarations to be able to compile the Windows driver with
@@ -957,7 +935,6 @@ struct move_extent {
 
 #endif /* defined(__KERNEL__) || defined(__linux__) */
 
-//#include "extents_status.h"
 
 /*
  * Lock subclasses for i_data_sem in the ext4_inode_info structure.
@@ -1087,7 +1064,6 @@ struct ext4_inode_info {
 					 EXT4_MOUNT2_##opt)
 
 #define ext4_test_and_set_bit		__test_and_set_bit_le
-//#define ext4_set_bit			__set_bit_le
 #define ext4_set_bit_atomic		ext2_set_bit_atomic
 #define ext4_test_and_clear_bit		__test_and_clear_bit_le
 #define ext4_clear_bit			__clear_bit_le
@@ -1360,7 +1336,6 @@ EXT4_INODE_BIT_FNS(flag, flags, 0)
 static inline int ext4_test_inode_state(struct inode *inode, int bit);
 static inline void ext4_set_inode_state(struct inode *inode, int bit);
 static inline void ext4_clear_inode_state(struct inode *inode, int bit);
-//EXT4_INODE_BIT_FNS(state, state_flags, 0)
 
 static inline void ext4_clear_state_flags(struct ext4_inode_info *ei)
 {
@@ -2629,12 +2604,10 @@ struct ext4_extent;
  */
 #define EXT_MAX_BLOCKS	0xffffffff
 
-//extern int ext4_ext_tree_init(handle_t *handle, struct inode *);
 extern int ext4_ext_writepage_trans_blocks(struct inode *, int);
 extern int ext4_ext_index_trans_blocks(struct inode *inode, int extents);
 extern int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 			       struct ext4_map_blocks *map, int flags);
-//extern int ext4_ext_truncate(handle_t *, struct inode *);
 /*extern int ext4_ext_remove_space(struct inode *inode, ext4_lblk_t start,
 				 ext4_lblk_t end);*/
 extern void ext4_ext_init(struct super_block *);
@@ -2882,7 +2855,6 @@ ext3_group_first_block_no(struct super_block *sb, unsigned long group_no)
  * Functions for metadata checksums in ext4_csum.c.
  */
 
-//int ext4_has_feature_metadata_csum(struct super_block *sb);
 __u32 ext4_chksum(struct ext4_sb_info *sbi, __u32 crc,
 			      const void *buffer, unsigned int length);
 int ext4_superblock_csum_verify(struct super_block *sb,
@@ -2921,9 +2893,7 @@ int ext4_xattr_block_csum_verify(struct inode *inode,
 void ext4_xattr_block_csum_set(struct inode *inode,
 				      struct buffer_head *bh);
 
-//
-// Use default packing of structures
-//
+/* Use default packing of structures */
 #include <poppack.h>
 
 #endif	/* _EXT4_H */

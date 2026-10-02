@@ -14,6 +14,127 @@
 #pragma alloc_text(PAGE, Ext2CreateFile)
 #endif
 
+/*
+ * The name exists: may this create have it? FILE_CREATE may not; a
+ * directory is only opened, never superseded, overwritten or opened as a
+ * file; a file is not opened as a directory.
+ */
+static NTSTATUS
+Ext2CheckExistingName(IN PEXT2_MCB Mcb, IN ULONG Disposition, IN BOOLEAN DirectoryFile,
+                      IN BOOLEAN NonDirectoryFile, OUT PULONG_PTR Information)
+{
+    if (Disposition == FILE_CREATE) {
+        *Information = FILE_EXISTS;
+        return STATUS_OBJECT_NAME_COLLISION;
+    }
+    if (IsMcbDirectory(Mcb)) {
+        if (Disposition != FILE_OPEN && Disposition != FILE_OPEN_IF) {
+            return STATUS_OBJECT_NAME_COLLISION;
+        }
+        if (NonDirectoryFile) {
+            return STATUS_FILE_IS_A_DIRECTORY;
+        }
+    } else if (DirectoryFile) {
+        return STATUS_NOT_A_DIRECTORY;
+    }
+    *Information = FILE_OPENED;
+    return STATUS_SUCCESS;
+}
+
+/* the last component of a path, separators at its end left out */
+static UNICODE_STRING
+Ext2LastComponent(IN PUNICODE_STRING Path)
+{
+    UNICODE_STRING  Last;
+    USHORT          End = Path->Length / sizeof(WCHAR), Start;
+
+    while (End > 0 && Path->Buffer[End - 1] == L'\\') {
+        End--;
+    }
+    for (Start = End; Start > 0 && Path->Buffer[Start - 1] != L'\\'; Start--) {
+    }
+    Last.Buffer = Path->Buffer + Start;
+    Last.Length = Last.MaximumLength = (USHORT)((End - Start) * sizeof(WCHAR));
+    return Last;
+}
+
+/*
+ * The open of a rename's or link's target directory (SL_OPEN_TARGET_DIRECTORY)
+ * leaves the file object named after the last component alone - what the
+ * rename then reads, as on NTFS. Name is a part of the file object's own
+ * name, so it fits.
+ */
+static VOID
+Ext2SetTargetName(IN PFILE_OBJECT FileObject, IN PUNICODE_STRING Name)
+{
+    RtlZeroMemory(FileObject->FileName.Buffer, FileObject->FileName.MaximumLength);
+    FileObject->FileName.Length = Name->Length;
+    RtlCopyMemory(FileObject->FileName.Buffer, Name->Buffer, Name->Length);
+}
+
+/*
+ * What the inode lets this open do, before any Fcb is touched: its mode
+ * bits for the caller, the read-only attribute and the chattr flags.
+ */
+static NTSTATUS
+Ext2CheckOpenAccess(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN ACCESS_MASK DesiredAccess,
+                    IN ULONG Options, IN ULONG Disposition)
+{
+    if (BooleanFlagOn(DesiredAccess, FILE_GENERIC_READ) &&
+        !Ext2CheckFileAccess(Vcb, Mcb, Ext2FileCanRead)) {
+        return STATUS_ACCESS_DENIED;
+    }
+    if (!Ext2CheckFileAccess(Vcb, Mcb, Ext2FileCanWrite)) {
+        if (BooleanFlagOn(DesiredAccess, FILE_WRITE_DATA | FILE_APPEND_DATA |
+                          FILE_ADD_SUBDIRECTORY | FILE_DELETE_CHILD)) {
+            return STATUS_ACCESS_DENIED;
+        }
+        if (IsFlagOn(Options, FILE_DELETE_ON_CLOSE)) {
+            return STATUS_CANNOT_DELETE;
+        }
+    }
+
+    /* the read-only attribute (owner write bit clear) holds for everybody,
+       root included, as on NTFS: no write handle, no delete-on-close. A
+       read-only directory still takes new entries - Windows treats that
+       attribute as decoration. */
+    if (!IsMcbDirectory(Mcb) && !Ext2IsOwnerWritable(Mcb->Inode->i_mode)) {
+        if (BooleanFlagOn(DesiredAccess, FILE_WRITE_DATA | FILE_APPEND_DATA)) {
+            return STATUS_ACCESS_DENIED;
+        }
+        if (IsFlagOn(Options, FILE_DELETE_ON_CLOSE)) {
+            return STATUS_CANNOT_DELETE;
+        }
+    }
+
+    /* chattr +i: no data, attribute or EA is written and the file does not
+       go (for a directory: nothing is added or removed); chattr +a: a file
+       grows at its end only - FILE_APPEND_DATA without FILE_WRITE_DATA - and
+       does not go, a directory only takes new entries. Linux refuses these
+       to root as well. */
+    if (Ext4IsSealed(Mcb->Inode)) {
+        ACCESS_MASK Refused = DELETE | FILE_DELETE_CHILD;
+        BOOLEAN     Rewrite = Disposition == FILE_SUPERSEDE ||
+                              Disposition == FILE_OVERWRITE ||
+                              Disposition == FILE_OVERWRITE_IF;
+
+        if (Ext4IsImmutable(Mcb->Inode)) {
+            Refused |= FILE_WRITE_DATA | FILE_APPEND_DATA |
+                       FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA;
+        } else if (!IsMcbDirectory(Mcb)) {
+            Refused |= FILE_WRITE_DATA;
+        }
+        if (BooleanFlagOn(DesiredAccess, Refused) || Rewrite) {
+            return STATUS_ACCESS_DENIED;
+        }
+        if (IsFlagOn(Options, FILE_DELETE_ON_CLOSE)) {
+            return STATUS_CANNOT_DELETE;
+        }
+    }
+
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS
 Ext2CreateFile(
     PEXT2_IRP_CONTEXT IrpContext,
@@ -38,12 +159,13 @@ Ext2CreateFile(
     ULONG               Options;
     ULONG               CreateDisposition;
 
-    BOOLEAN             bParentFcbCreated = FALSE;
     BOOLEAN             bFcbAllocated = FALSE;
     BOOLEAN             bCreated = FALSE;
 
     BOOLEAN             bMainResourceAcquired = FALSE;
     BOOLEAN             bFcbLockAcquired = FALSE;
+
+
 
     BOOLEAN             OpenDirectory;
     BOOLEAN             OpenTargetDirectory;
@@ -132,7 +254,6 @@ Ext2CreateFile(
                 Status = STATUS_SUCCESS;
                 goto McbExisting;
             } else {
-                DbgBreak();
                 Status = STATUS_INVALID_PARAMETER;
                 __leave;
             }
@@ -145,7 +266,7 @@ Ext2CreateFile(
                           );
 
         if (!FileName.Buffer) {
-            DEBUG(DL_ERR, ( "Ex2CreateFile: failed to allocate FileName.\n"));
+            DEBUG(DL_ERR, ( "Ext2CreateFile: failed to allocate FileName.\n"));
             Status = STATUS_INSUFFICIENT_RESOURCES;
             __leave;
         }
@@ -209,9 +330,7 @@ Ext2CreateFile(
                            &FileName.Buffer[1],
                            FileName.Length );
 
-            //
-            //  Bad Name if there are still beginning backslashes.
-            //
+            /* Bad Name if there are still beginning backslashes. */
 
             if ((FileName.Length > sizeof(WCHAR)) &&
                     (FileName.Buffer[1] == L'\\') &&
@@ -310,16 +429,21 @@ Dissecting:
                 /* deref ParentMcb */
                 Ext2DerefMcb(ParentMcb);
 
-                /* RetMcb is already refered */
+                /* RetMcb is already referenced */
                 ParentMcb = RetMcb;
                 PathName  = RemainName;
 
-                /* symlink must use it's target */
+                /* a symlink stands for its target, read under LinkLock
+                   (a dangling one leads nowhere) */
                 if (IsMcbSymLink(ParentMcb)) {
-                    Ext2ReferMcb(ParentMcb->Target);
+                    PEXT2_MCB Target = Ext2ReferDirectory(Vcb, ParentMcb);
+
                     Ext2DerefMcb(ParentMcb);
-                    ParentMcb = ParentMcb->Target;
-                    ASSERT(!IsMcbSymLink(ParentMcb));
+                    ParentMcb = Target;
+                    if (ParentMcb == NULL) {
+                        Status = STATUS_OBJECT_PATH_NOT_FOUND;
+                        __leave;
+                    }
                 }
 
                 goto Dissecting;
@@ -332,29 +456,14 @@ Dissecting:
                 __leave;
             }
 
-            if (!bFcbLockAcquired) {
-                ExAcquireResourceExclusiveLite(&Vcb->FcbLock, TRUE);
-                bFcbLockAcquired = TRUE;
-            }
-
             /* get the ParentFcb, allocate it if needed ... */
-            ParentFcb = ParentMcb->Icb->Fcb;
+            ParentFcb = Ext2ReferDcb(Vcb, ParentMcb);
             if (!ParentFcb) {
-                ParentFcb = Ext2AllocateFcb(Vcb, ParentMcb);
-                if (!ParentFcb) {
-                    Status = STATUS_INSUFFICIENT_RESOURCES;
-                    __leave;
-                }
-                bParentFcbCreated = TRUE;
-            }
-            Ext2ReferXcb(&ParentFcb->ReferenceCount);
-
-            if (bFcbLockAcquired) {
-                ExReleaseResourceLite(&Vcb->FcbLock);
-                bFcbLockAcquired = FALSE;
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                __leave;
             }
 
-            // We need to create a new one ?
+            /* We need to create a new one ? */
             if ((CreateDisposition == FILE_CREATE ) ||
                     (CreateDisposition == FILE_SUPERSEDE) ||
                     (CreateDisposition == FILE_OPEN_IF) ||
@@ -379,47 +488,22 @@ Dissecting:
 
                 if (DirectoryFile) {
                     if (TemporaryFile) {
-                        DbgBreak();
                         Status = STATUS_INVALID_PARAMETER;
                         __leave;
                     }
                 }
 
-                if (!ParentFcb) {
-                    Status = STATUS_OBJECT_PATH_NOT_FOUND;
-                    __leave;
-                }
-
-                /* allocate inode and construct entry for this file */
-                Status = Ext2CreateInode(
-                             IrpContext,
-                             Vcb,
-                             ParentFcb,
-                             DirectoryFile ? EXT2_FT_DIR : EXT2_FT_REG_FILE,
-                             IrpSp->Parameters.Create.FileAttributes,
-                             &RealName
-                         );
-
+                Status = Ext2CreateNewName(IrpContext, Vcb, ParentFcb, &RealName, DirectoryFile,
+                                           IrpSp->Parameters.Create.FileAttributes,
+                                           &Mcb, &bCreated);
                 if (!NT_SUCCESS(Status)) {
-                    DbgBreak();
                     __leave;
                 }
-
-                bCreated = TRUE;
-                DEBUG(DL_RES, ("Ext2CreateFile: Confirm creation: %wZ\\%wZ\n",
-                               &ParentMcb->FullName, &RealName));
-
+                if (!bCreated) {
+                    /* another create made it meanwhile: open what is there */
+                    goto McbExisting;
+                }
                 Irp->IoStatus.Information = FILE_CREATED;
-                Status = Ext2LookupFile (
-                             IrpContext,
-                             Vcb,
-                             &RealName,
-                             ParentMcb,
-                             &Mcb,
-                             0);
-                if (!NT_SUCCESS(Status)) {
-                    DbgBreak();
-                }
 
             } else if (OpenTargetDirectory) {
 
@@ -433,13 +517,7 @@ Dissecting:
                     __leave;
                 }
 
-                RtlZeroMemory( IrpSp->FileObject->FileName.Buffer,
-                               IrpSp->FileObject->FileName.MaximumLength);
-                IrpSp->FileObject->FileName.Length = RealName.Length;
-
-                RtlCopyMemory( IrpSp->FileObject->FileName.Buffer,
-                               RealName.Buffer,
-                               RealName.Length );
+                Ext2SetTargetName(IrpSp->FileObject, &RealName);
 
                 Fcb = ParentFcb;
                 Mcb = Fcb->Mcb;
@@ -454,21 +532,13 @@ Dissecting:
                 __leave;
             }
 
-        } else { // File / Dir already exists.
+        } else { /* File / Dir already exists. */
 
             /* here already get Mcb referred */
             if (OpenTargetDirectory) {
 
-                UNICODE_STRING  RealName = FileName;
-                USHORT          i = 0;
-
-                while (RealName.Buffer[RealName.Length/2 - 1] == L'\\') {
-                    RealName.Length -= sizeof(WCHAR);
-                    RealName.Buffer[RealName.Length/2] = 0;
-                }
-                i = RealName.Length/2;
-                while (i > 0 && RealName.Buffer[i - 1] != L'\\')
-                    i--;
+                UNICODE_STRING  Last = Ext2LastComponent(&FileName);
+                PEXT2_MCB       Dir;
 
                 if (IsVcbReadOnly(Vcb)) {
                     Status = STATUS_MEDIA_WRITE_PROTECTED;
@@ -476,74 +546,39 @@ Dissecting:
                     __leave;
                 }
 
+                /* the target's directory is what is opened; its name may
+                   be going at this moment (Ext2ReferParent) */
+                Dir = Ext2ReferParent(Vcb, Mcb);
+                Ext2DerefMcb(Mcb);
+                Mcb = Dir;
+                if (Mcb == NULL) {
+                    Status = STATUS_OBJECT_PATH_NOT_FOUND;
+                    __leave;
+                }
+
+                Ext2SetTargetName(IrpSp->FileObject, &Last);
                 Irp->IoStatus.Information = FILE_EXISTS;
                 Status = STATUS_SUCCESS;
-
-                RtlZeroMemory( IrpSp->FileObject->FileName.Buffer,
-                               IrpSp->FileObject->FileName.MaximumLength);
-                IrpSp->FileObject->FileName.Length = RealName.Length - i * sizeof(WCHAR);
-                RtlCopyMemory( IrpSp->FileObject->FileName.Buffer, &RealName.Buffer[i],
-                               IrpSp->FileObject->FileName.Length );
-
-                // use's it's parent since it's open-target operation
-                Ext2ReferMcb(Mcb->Parent);
-                Ext2DerefMcb(Mcb);
-                Mcb = Mcb->Parent;
-
                 goto Openit;
             }
 
-            // We can not create if one exists
-            if (CreateDisposition == FILE_CREATE) {
-                Irp->IoStatus.Information = FILE_EXISTS;
-                Status = STATUS_OBJECT_NAME_COLLISION;
+            Status = Ext2CheckExistingName(Mcb, CreateDisposition, DirectoryFile,
+                                           NonDirectoryFile, &Irp->IoStatus.Information);
+            if (!NT_SUCCESS(Status)) {
                 Ext2DerefMcb(Mcb);
                 __leave;
             }
-
-            /* directory forbits us to do the followings ... */
-            if (IsMcbDirectory(Mcb)) {
-
-                if ((CreateDisposition != FILE_OPEN) &&
-                    (CreateDisposition != FILE_OPEN_IF)) {
-
-                    Status = STATUS_OBJECT_NAME_COLLISION;
-                    Ext2DerefMcb(Mcb);
-                    __leave;
-                }
-
-                if (NonDirectoryFile) {
-                    Status = STATUS_FILE_IS_A_DIRECTORY;
-                    Ext2DerefMcb(Mcb);
-                    __leave;
-                }
-
-                if (Mcb->Inode->i_ino == EXT2_ROOT_INO) {
-
-                    if (OpenTargetDirectory) {
-                        DbgBreak();
-                        Status = STATUS_INVALID_PARAMETER;
-                        Ext2DerefMcb(Mcb);
-                        __leave;
-                    }
-                }
-
-            } else {
-
-                if (DirectoryFile) {
-                    Status = STATUS_NOT_A_DIRECTORY;;
-                    Ext2DerefMcb(Mcb);
-                    __leave;
-                }
-            }
-
-            Irp->IoStatus.Information = FILE_OPENED;
         }
 
 Openit:
 
+        /* Shared: an open of a file that has its Fcb already - the common
+           case - only reads Icb->Fcb and takes a reference (interlocked),
+           and everything that changes either (a new Fcb, the reaper, the
+           last close) holds the lock exclusively. Opens of the volume run
+           side by side; exclusive was one open at a time. */
         if (!bFcbLockAcquired) {
-            ExAcquireResourceExclusiveLite(&Vcb->FcbLock, TRUE);
+            ExAcquireResourceSharedLite(&Vcb->FcbLock, TRUE);
             bFcbLockAcquired = TRUE;
         }
 
@@ -555,14 +590,15 @@ Openit:
             /* Refer the target of a symlink, so both are referenced. Plain
                opens run side by side (shared volume resource): the link's
                type and Target are read and, for a dangling link, rewritten
-               under McbLock, which guards every such change - otherwise two
+               under LinkLock, which guards every such change - otherwise two
                opens of one dangling link would both drop its target.
                The flag test outside the lock only decides whether to take
                it: a name becomes a symlink under the exclusive volume
                resource alone (Ext2SetReparsePoint), never while an open
                holds it shared, and the test is repeated inside. */
             if (IsMcbSymLink(Mcb)) {
-                ExAcquireResourceExclusiveLite(&Vcb->McbLock, TRUE);
+                KeEnterCriticalRegion();
+                ExAcquireResourceExclusiveLite(&Vcb->LinkLock, TRUE);
                 if (IsMcbSymLink(Mcb)) {
 
                     if (OpenReparsePoint) {
@@ -588,7 +624,8 @@ Openit:
                         ASSERT (!IsMcbSymLink(Mcb));
                     }
                 }
-                ExReleaseResourceLite(&Vcb->McbLock);
+                ExReleaseResourceLite(&Vcb->LinkLock);
+                KeLeaveCriticalRegion();
             }
 
             /* A dangling link is demoted to a special file above or at
@@ -611,61 +648,9 @@ Openit:
                until the Ccb has taken its reference. */
             OpenMcb = Mcb;
 
-            // Check readonly flag
-            if (BooleanFlagOn(DesiredAccess,  FILE_GENERIC_READ) &&
-                !Ext2CheckFileAccess(Vcb, Mcb, Ext2FileCanRead)) {
-                Status = STATUS_ACCESS_DENIED;
+            Status = Ext2CheckOpenAccess(Vcb, Mcb, DesiredAccess, Options, CreateDisposition);
+            if (!NT_SUCCESS(Status)) {
                 __leave;
-            }
-            if (!Ext2CheckFileAccess(Vcb, Mcb, Ext2FileCanWrite)) {
-                if (BooleanFlagOn(DesiredAccess,  FILE_WRITE_DATA | FILE_APPEND_DATA |
-                                  FILE_ADD_SUBDIRECTORY | FILE_DELETE_CHILD)) {
-                    Status = STATUS_ACCESS_DENIED;
-                    __leave;
-                } else if (IsFlagOn(Options, FILE_DELETE_ON_CLOSE )) {
-                    Status = STATUS_CANNOT_DELETE;
-                    __leave;
-                }
-            }
-
-            /* the read-only attribute (owner write bit clear) holds for
-               everybody, root included, as on NTFS: no write handle, no
-               delete-on-close. A read-only directory still takes new
-               entries - Windows treats that attribute as decoration. */
-            if (!IsMcbDirectory(Mcb) && !Ext2IsOwnerWritable(Mcb->Inode->i_mode)) {
-                if (BooleanFlagOn(DesiredAccess, FILE_WRITE_DATA | FILE_APPEND_DATA)) {
-                    Status = STATUS_ACCESS_DENIED;
-                    __leave;
-                } else if (IsFlagOn(Options, FILE_DELETE_ON_CLOSE)) {
-                    Status = STATUS_CANNOT_DELETE;
-                    __leave;
-                }
-            }
-
-            /* chattr +i: no data, attribute or EA is written and the file
-               does not go (for a directory: nothing is added or removed);
-               chattr +a: a file grows at its end only - FILE_APPEND_DATA
-               without FILE_WRITE_DATA - and does not go, a directory only
-               takes new entries. Linux refuses these to root as well. */
-            if (Ext4IsSealed(Mcb->Inode)) {
-                ACCESS_MASK Refused = DELETE | FILE_DELETE_CHILD;
-                BOOLEAN     Rewrite = CreateDisposition == FILE_SUPERSEDE ||
-                                      CreateDisposition == FILE_OVERWRITE ||
-                                      CreateDisposition == FILE_OVERWRITE_IF;
-
-                if (Ext4IsImmutable(Mcb->Inode)) {
-                    Refused |= FILE_WRITE_DATA | FILE_APPEND_DATA |
-                               FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA;
-                } else if (!IsMcbDirectory(Mcb)) {
-                    Refused |= FILE_WRITE_DATA;
-                }
-                if (BooleanFlagOn(DesiredAccess, Refused) || Rewrite) {
-                    Status = STATUS_ACCESS_DENIED;
-                    __leave;
-                } else if (IsFlagOn(Options, FILE_DELETE_ON_CLOSE)) {
-                    Status = STATUS_CANNOT_DELETE;
-                    __leave;
-                }
             }
 
             Fcb = Mcb->Icb->Fcb;
@@ -677,6 +662,21 @@ Openit:
                 Status = STATUS_DELETE_PENDING;
                 Fcb = NULL;
                 __leave;
+            }
+            if (Fcb == NULL && !ExIsResourceAcquiredExclusiveLite(&Vcb->FcbLock)) {
+
+                /* none yet: making one takes the lock exclusively, and in
+                   between another open may have made it, or the name been
+                   marked for deletion */
+                ExReleaseResourceLite(&Vcb->FcbLock);
+                ExAcquireResourceExclusiveLite(&Vcb->FcbLock, TRUE);
+                Fcb = Mcb->Icb->Fcb;
+                if (IsFlagOn(Mcb->Flags, MCB_DELETE_PENDING) ||
+                    (Fcb && IsFlagOn(Fcb->Flags, FCB_DELETE_PENDING))) {
+                    Status = STATUS_DELETE_PENDING;
+                    Fcb = NULL;
+                    __leave;
+                }
             }
             if (Fcb == NULL) {
 
@@ -711,14 +711,13 @@ Openit:
 
             /* Open target directory ? */
             if (NULL == Mcb) {
-                DbgBreak();
                 Mcb = Fcb->Mcb;
             }
 
             /* check Mcb reference */
             ASSERT(Fcb->Mcb->Refercount > 0);
 
-            /* file delted ? */
+            /* file deleted ? */
             if (IsInodeDeleted(Fcb)) {
                 Status = STATUS_FILE_DELETED;
                 __leave;
@@ -734,7 +733,7 @@ Openit:
             /* check access and oplock access for opened files */
             if (!bFcbAllocated  && !IsDirectory(Fcb)) {
 
-                /* whether there's batch oplock grabed on the file */
+                /* whether there's batch oplock grabbed on the file */
                 if (FsRtlCurrentBatchOplock(&Fcb->Oplock)) {
 
                     Irp->IoStatus.Information = FILE_OPBATCH_BREAK_UNDERWAY;
@@ -756,45 +755,17 @@ Openit:
 
             if (bCreated) {
 
-                //
-                //  This file is just created.
-                //
-
-				Status = Ext2OverwriteEa(IrpContext, Vcb, Fcb, &Irp->IoStatus);
-				if (!NT_SUCCESS(Status)) {
-					Ext2DeleteFile(IrpContext, Vcb, Fcb, Mcb);
-					__leave;
-				}
-
-                /* the SELinux label of the directory, as Linux would give */
-                Ext4InheritSecurityLabel(IrpContext, Vcb,
-                                         ParentFcb ? ParentFcb->Mcb : NULL, Mcb);
-
-                if (DirectoryFile) {
-
-                    Status = Ext2AddDotEntries(IrpContext, ParentMcb->Inode, Mcb->Inode);
-                    if (!NT_SUCCESS(Status)) {
-                        Ext2DeleteFile(IrpContext, Vcb, Fcb, Mcb);
-                        __leave;
-                    }
-
-                } else {
-
-                    if ((LONGLONG)ext3_free_blocks_count(SUPER_BLOCK) <=
-                            Ext2TotalBlocks(Vcb, &Irp->Overlay.AllocationSize, NULL)) {
-                        DbgBreak();
-                        Status = STATUS_DISK_FULL;
-                        __leave;
-                    }
-
-                    /* disable data blocks allocation */
+                /* just made: EAs, label, "." and ".." (a failure takes
+                   the name away again, in the finally block below) */
+                Status = Ext2InitializeCreatedFile(IrpContext, Vcb, Fcb, Mcb,
+                                                   ParentFcb->Mcb, DirectoryFile);
+                if (!NT_SUCCESS(Status)) {
+                    __leave;
                 }
 
             } else {
 
-                //
-                //  This file alreayd exists.
-                //
+                /* This file already exists. */
 
                 if (DeleteOnClose) {
 
@@ -816,9 +787,7 @@ Openit:
 
                 } else {
 
-                    //
-                    // Just to Open file (Open/OverWrite ...)
-                    //
+                    /* Just to Open file (Open/OverWrite ...) */
 
                     if ((!IsDirectory(Fcb)) && (IsFlagOn(IrpSp->FileObject->Flags,
                                                          FO_NO_INTERMEDIATE_BUFFERING))) {
@@ -857,9 +826,7 @@ Openit:
 
                 if (!bFcbAllocated) {
 
-                    //
-                    //  check the oplock state of the file
-                    //
+                    /* check the oplock state of the file */
 
                     Status = FsRtlCheckOplock(  &Fcb->Oplock,
                                                 IrpContext->Irp,
@@ -877,7 +844,7 @@ Openit:
 
             if (Fcb->OpenHandleCount > 0) {
 
-                /* check the shrae access conflicts */
+                /* check the share access conflicts */
                 Status = IoCheckShareAccess( DesiredAccess,
                                              ShareAccess,
                                              IrpSp->FileObject,
@@ -899,7 +866,6 @@ Openit:
             Ccb = Ext2AllocateCcb(CcbFlags, Mcb, SymLink);
             if (!Ccb) {
                 Status = STATUS_INSUFFICIENT_RESOURCES;
-                DbgBreak();
                 __leave;
             }
 
@@ -983,7 +949,6 @@ Openit:
                     }
 
                     if (SymLink != NULL) {
-                        DbgBreak();
                         Status = STATUS_INVALID_PARAMETER;
                         __leave;
                     }
@@ -1010,7 +975,6 @@ Openit:
                                  CreateDisposition );
 
                     if (!NT_SUCCESS(Status)) {
-                        DbgBreak();
                         __leave;
                     }
 
@@ -1033,11 +997,11 @@ Openit:
             }
 
         } else {
-            DbgBreak();
             __leave;
         }
 
     } __finally {
+
 
         if (bFcbLockAcquired) {
             ExReleaseResourceLite(&Vcb->FcbLock);
@@ -1052,7 +1016,6 @@ Openit:
 
             if (Ccb != NULL) {
 
-                DbgBreak();
 
                 ASSERT(Fcb != NULL);
                 ASSERT(Fcb->Mcb != NULL);

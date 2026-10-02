@@ -30,9 +30,7 @@ Ext2LoadInternalJournal(
     }
 
     /* the journal inode gets an Icb like any other name */
-    ExAcquireResourceExclusiveLite(&Vcb->McbLock, TRUE);
     Attached = Ext2AttachIcb(Vcb, Jcb, jNo);
-    ExReleaseResourceLite(&Vcb->McbLock);
     if (!Attached) {
         Ext2FreeMcb(Vcb, Jcb);
         Jcb = NULL;
@@ -41,7 +39,6 @@ Ext2LoadInternalJournal(
 
     if (!IsFlagOn(Jcb->Icb->Flags, ICB_INODE_LOADED)) {
         if (!Ext2LoadInode(Vcb, Jcb->Inode)) {
-            DbgBreak();
             Ext2FreeMcb(Vcb, Jcb);
             Jcb = NULL;
             goto errorout;

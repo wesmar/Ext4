@@ -77,7 +77,7 @@ Ext2FastIoCheckIfPossible (
             ASSERT((Fcb->Identifier.Type == EXT2FCB) &&
                    (Fcb->Identifier.Size == sizeof(EXT2_FCB)));
 
-            /* do nothing if target fie was deleted */
+            /* do nothing if target file was deleted */
             if (FlagOn(Fcb->Flags, FCB_DELETE_PENDING)) {
                 __leave;
             }
@@ -499,7 +499,6 @@ Ext2FastIoQueryNetworkOpenInfo (
 
         Fcb = (PEXT2_FCB) FileObject->FsContext;
         if (Fcb == NULL || Fcb->Identifier.Type == EXT2VCB) {
-            DbgBreak();
             IoStatus->Status = STATUS_INVALID_PARAMETER;
             __leave;
         }

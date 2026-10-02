@@ -85,7 +85,6 @@ static void jbd2_journal_destroy_slabs(void)
 int jbd2_journal_create_slab(size_t size)
 {
 	/*static DEFINE_MUTEX(jbd2_slab_create_mutex);*/
-	//int i = order_base_2(size) - 10;
     int i = ilog2(__roundup_pow_of_two((unsigned long)size)) - 10;
 	size_t slab_size;
 
@@ -193,7 +192,6 @@ int __init journal_init(void)
 {
 	int ret;
 
-    //DbgPrint("journal_init: begin\n");
 
 	/*BUILD_BUG_ON(sizeof(struct journal_superblock_s) != 1024);*/
 
@@ -203,16 +201,13 @@ int __init journal_init(void)
 	} else {
 		jbd2_journal_destroy_caches();
 	}
-    //DbgPrint("journal_init: end\n");
 	return ret;
 }
 
 void __exit journal_exit(void)
 {
-    //DbgPrint("journal_exit: begin\n");
 	jbd2_remove_jbd_stats_proc_entry();
 	jbd2_journal_destroy_caches();
-    //DbgPrint("journal_exit: end\n");
 }
 
 int __init jbd2_journal_init_transaction_cache(void)

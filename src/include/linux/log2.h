@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Integer base 2 logarithm calculation
  *
  * Copyright (C) 2006 Red Hat, Inc. All Rights Reserved.

@@ -50,18 +50,18 @@ Ext2DeleteFile(
 )
 {
     PEXT2_FCB       Dcb = NULL;
+    PEXT2_ICB       ParentDir = NULL;
+    PEXT2_ICB       OwnDir = NULL;
 
     NTSTATUS        Status = STATUS_UNSUCCESSFUL;
 
     BOOLEAN         VcbResourceAcquired = FALSE;
     BOOLEAN         FcbPagingIoAcquired = FALSE;
     BOOLEAN         FcbResourceAcquired = FALSE;
-    BOOLEAN         DcbResourceAcquired = FALSE;
+    BOOLEAN         LastName = FALSE;
 
     LARGE_INTEGER   Size;
     LARGE_INTEGER   SysTime;
-
-    BOOLEAN         bFcbLockAcquired = FALSE;
 
     DEBUG(DL_INF, ( "Ext2DeleteFile: File %wZ (%xh) will be deleted!\n",
                     &Mcb->FullName, Mcb->Inode->i_ino));
@@ -70,47 +70,71 @@ Ext2DeleteFile(
         return STATUS_SUCCESS;
     }
 
-    if (!IsMcbSymLink(Mcb) && IsMcbDirectory(Mcb)) {
-        if (!Ext2IsDirectoryEmpty(IrpContext, Vcb, Mcb)) {
-            return STATUS_DIRECTORY_NOT_EMPTY;
-        }
-    }
-
     __try {
 
         Ext2ReferMcb(Mcb);
 
-        ExAcquireResourceExclusiveLite(&Vcb->MainResource, TRUE);
+        /* Shared: deletes in different directories run side by side, the
+           parent's DirResource orders those in one. Rename, which moves
+           names between directories, still takes the volume exclusively.
+           The journal is joined before any of it (Ext2JournalJoin). */
+        Ext2JournalJoin(Vcb);
+        ExAcquireResourceSharedLite(&Vcb->MainResource, TRUE);
         VcbResourceAcquired = TRUE;
-
-        ExAcquireResourceExclusiveLite(&Vcb->FcbLock, TRUE);
-        bFcbLockAcquired = TRUE;
 
         /* Mcb->Parent could be NULL when working with layered file systems */
         if (Mcb->Parent) {
-            Dcb = Mcb->Parent->Icb->Fcb;
-            if (!Dcb)
-                Dcb = Ext2AllocateFcb(Vcb, Mcb->Parent);
+            Dcb = Ext2ReferDcb(Vcb, Mcb->Parent);
         }
-        if (Dcb)
-            Ext2ReferXcb(&Dcb->ReferenceCount);
 
-        if (bFcbLockAcquired) {
-            ExReleaseResourceLite(&Vcb->FcbLock);
-            bFcbLockAcquired = FALSE;
+        /* Two DirResources are held at once only as a parent and its child,
+           always the parent first - a create of a directory holds its
+           parent's while it gives the new one "." and "..". */
+        if (Dcb) {
+            ParentDir = Dcb->Mcb->Icb;
+            ExAcquireResourceExclusiveLite(&ParentDir->DirResource, TRUE);
+        }
+
+        /* A directory goes only empty, and stays so until its entry is
+           gone: a create inside it waits on its own DirResource, then
+           finds it deleted. */
+        if (!IsMcbSymLink(Mcb) && IsMcbDirectory(Mcb)) {
+            OwnDir = Mcb->Icb;
+            ExAcquireResourceExclusiveLite(&OwnDir->DirResource, TRUE);
+            if (!Ext2IsDirectoryEmpty(IrpContext, Vcb, Mcb)) {
+                Status = STATUS_DIRECTORY_NOT_EMPTY;
+                __leave;
+            }
         }
 
         if (Dcb) {
-            DcbResourceAcquired =
-                ExAcquireResourceExclusiveLite(&Dcb->MainResource, TRUE);
+            /* another delete of this name got here first */
+            if (IsFlagOn(Mcb->Flags, MCB_FILE_DELETED)) {
+                Status = STATUS_SUCCESS;
+                __leave;
+            }
 
-            /* remove it's entry form it's parent */
-            Status = Ext2RemoveEntry(IrpContext, Vcb, Dcb, Mcb);
+            /* remove its entry form its parent */
+            /* Hard links of one inode can go at the same time, each under
+               its own directory's lock: the delete that took the last name
+               frees the inode, the others leave it be */
+            Status = Ext2RemoveEntry(IrpContext, Vcb, Dcb, Mcb, &LastName);
+            if (NT_SUCCESS(Status)) {
+                SetLongFlag(Mcb->Flags, MCB_FILE_DELETED);
+            }
+        }
+
+        if (OwnDir) {
+            ExReleaseResourceLite(&OwnDir->DirResource);
+            OwnDir = NULL;
+        }
+        if (ParentDir) {
+            ExReleaseResourceLite(&ParentDir->DirResource);
+            ParentDir = NULL;
         }
 
         if (NT_SUCCESS(Status)) {
 
-            SetLongFlag(Mcb->Flags, MCB_FILE_DELETED);
             Ext2RemoveMcb(Vcb, Mcb);
 
             if (Fcb) {
@@ -121,24 +145,19 @@ Ext2DeleteFile(
                     ExAcquireResourceExclusiveLite(&Fcb->PagingIoResource, TRUE);
             }
 
-            if (DcbResourceAcquired) {
-                ExReleaseResourceLite(&Dcb->MainResource);
-                DcbResourceAcquired = FALSE;
-            }
-
             if (VcbResourceAcquired) {
                 ExReleaseResourceLite(&Vcb->MainResource);
                 VcbResourceAcquired = FALSE;
             }
 
             if (IsMcbSymLink(Mcb)) {
-                if (Mcb->Inode->i_nlink > 0) {
+                if (!LastName) {
                     Ext2NameUnlinked(Vcb, Mcb);
                     Status = STATUS_CANNOT_DELETE;
                     __leave;
                 }
             } else if (!IsMcbDirectory(Mcb)) {
-                if (Mcb->Inode->i_nlink > 0) {
+                if (!LastName) {
                     /* other hard links keep the inode: only this name
                        is gone, an open Fcb moves over to a live one */
                     Ext2NameUnlinked(Vcb, Mcb);
@@ -146,10 +165,8 @@ Ext2DeleteFile(
                 }
             } else {
                 /* a directory has no hard links: with its own entry gone
-                   (it was checked to be empty above) the inode goes too.
-                   ext3_dec_count deliberately leaves a directory at 2, the
-                   way Linux does - rmdir clears the count itself. */
-                if (Mcb->Inode->i_nlink > 2) {
+                   (it was checked to be empty above) the inode goes too */
+                if (!LastName) {
                     __leave;
                 }
             }
@@ -245,12 +262,12 @@ Ext2DeleteFile(
             ExReleaseResourceLite(&Fcb->MainResource);
         }
 
-        if (DcbResourceAcquired) {
-            ExReleaseResourceLite(&Dcb->MainResource);
+        if (ParentDir) {
+            ExReleaseResourceLite(&ParentDir->DirResource);
         }
 
-        if (bFcbLockAcquired) {
-            ExReleaseResourceLite(&Vcb->FcbLock);
+        if (OwnDir) {
+            ExReleaseResourceLite(&OwnDir->DirResource);
         }
 
         if (VcbResourceAcquired) {
@@ -265,7 +282,7 @@ Ext2DeleteFile(
     }
 
     DEBUG(DL_INF, ( "Ext2DeleteFile: %wZ Succeed... EXT2SB->S_FREE_BLOCKS = %I64xh .\n",
-                    &Mcb->FullName, ext3_free_blocks_count(SUPER_BLOCK)));
+                    &Mcb->FullName, Ext2FreeBlocks(Vcb)));
 
     return Status;
 }

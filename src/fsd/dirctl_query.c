@@ -60,9 +60,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
 
         DeviceObject = IrpContext->DeviceObject;
 
-        //
-        // This request is not allowed on the main device object
-        //
+        /* This request is not allowed on the main device object */
         if (IsExt2FsDevice(DeviceObject)) {
             Status = STATUS_INVALID_DEVICE_REQUEST;
             __leave;
@@ -96,9 +94,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
         }
         ASSERT (!IsMcbSymLink(Mcb));
 
-        //
-        // This request is not allowed on volumes
-        //
+        /* This request is not allowed on volumes */
         if (Fcb->Identifier.Type == EXT2VCB) {
             Status = STATUS_INVALID_PARAMETER;
             __leave;
@@ -145,7 +141,6 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
 
         Buffer = Ext2GetUserBuffer(Irp);
         if (Buffer == NULL) {
-            DbgBreak();
             Status = STATUS_INVALID_USER_BUFFER;
             __leave;
         }
@@ -183,7 +178,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                                      EXT2_DIRSP_MAGIC);
 
                 if (Ccb->DirectorySearchPattern.Buffer == NULL) {
-                    DEBUG(DL_ERR, ( "Ex2QueryDirectory: failed to allocate SerarchPattern.\n"));
+                    DEBUG(DL_ERR, ( "Ext2QueryDirectory: failed to allocate SearchPattern.\n"));
                     Status = STATUS_INSUFFICIENT_RESOURCES;
                     __leave;
                 }
@@ -218,7 +213,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                 Ext2AllocatePool(PagedPool, 4, EXT2_DIRSP_MAGIC);
 
             if (Ccb->DirectorySearchPattern.Buffer == NULL) {
-                DEBUG(DL_ERR, ( "Ex2QueryDirectory: failed to allocate SerarchPattern (1st).\n"));
+                DEBUG(DL_ERR, ( "Ext2QueryDirectory: failed to allocate SearchPattern (1st).\n"));
                 Status = STATUS_INSUFFICIENT_RESOURCES;
                 __leave;
             }
@@ -341,7 +336,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                );
 
         if (!pDir) {
-            DEBUG(DL_ERR, ( "Ex2QueryDirectory: failed to allocate pDir.\n"));
+            DEBUG(DL_ERR, ( "Ext2QueryDirectory: failed to allocate pDir.\n"));
             Status = STATUS_INSUFFICIENT_RESOURCES;
             __leave;
         }
@@ -349,7 +344,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
         INC_MEM_COUNT(PS_DIR_ENTRY, pDir, sizeof(EXT2_DIR_ENTRY2));
         ByteOffset = FileIndex;
 
-        DEBUG(DL_CP, ("Ex2QueryDirectory: Dir: %wZ Index=%xh Pattern : %wZ.\n",
+        DEBUG(DL_CP, ("Ext2QueryDirectory: Dir: %wZ Index=%xh Pattern : %wZ.\n",
                       &Fcb->Mcb->FullName, FileIndex, &Ccb->DirectorySearchPattern));
 
         while ((ByteOffset < Ext4DirSize(Mcb->Inode)) &&
@@ -368,7 +363,6 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                          &EntrySize);
 
             if (!NT_SUCCESS(Status)) {
-                DbgBreak();
                 __leave;
             }
 
@@ -430,7 +424,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                                      EXT2_INAME_MAGIC
                                  );
                 if (!Unicode.Buffer) {
-                    DEBUG(DL_ERR, ( "Ex2QueryDirectory: failed to "
+                    DEBUG(DL_ERR, ( "Ext2QueryDirectory: failed to "
                                     "allocate InodeFileName.\n"));
                     Status = STATUS_INSUFFICIENT_RESOURCES;
                     __leave;
@@ -443,12 +437,12 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
 
             Status = Ext2OEMToUnicode(Vcb, &Unicode, &Oem);
             if (!NT_SUCCESS(Status)) {
-                DEBUG(DL_ERR, ( "Ex2QueryDirectory: Ext2OEMtoUnicode failed with %xh.\n", Status));
+                DEBUG(DL_ERR, ( "Ext2QueryDirectory: Ext2OEMtoUnicode failed with %xh.\n", Status));
                 Status = STATUS_INSUFFICIENT_RESOURCES;
                 __leave;
             }
 
-            DEBUG(DL_CP, ( "Ex2QueryDirectory: process inode: %xh / %wZ (%d).\n",
+            DEBUG(DL_CP, ( "Ext2QueryDirectory: process inode: %xh / %wZ (%d).\n",
                            pDir->inode, &Unicode, Unicode.Length));
 
             if (FsRtlDoesNameContainWildCards(
@@ -482,8 +476,6 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                     if (EntrySize > 0) {
                         fc.efc_prev  = CEILING_ALIGNED(ULONG, fc.efc_start, 8);
                         fc.efc_start = fc.efc_prev + EntrySize;
-                    } else {
-                        DbgBreak();
                     }
                 } else {
                     if (Status == STATUS_BUFFER_OVERFLOW) {

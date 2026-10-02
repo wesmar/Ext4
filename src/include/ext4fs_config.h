@@ -16,15 +16,6 @@
 # define EXT2_DEBUG   0
 #endif
 
-#if EXT2_DEBUG
-#if _X86_
-#define DbgBreak()      __asm int 3
-#else
-#define DbgBreak()      KdBreakPoint()
-#endif
-#else
-#define DbgBreak()
-#endif
 
 #include "version.h"
 
@@ -34,21 +25,17 @@
 
 /* COMPILER SWITCH / OPTIONS ********************************************/
 
-//
-// Ext2Fsd build options
-//
+/* Ext2Fsd build options */
 
-// To support driver dynamics unload
+/* To support driver dynamics unload */
 
 #define EXT2_UNLOAD                     TRUE
 
-// To support inode size expansion (fallocate)
+/* To support inode size expansion (fallocate) */
 
 #define EXT2_PRE_ALLOCATION_SUPPORT     TRUE
 
-//
-// Constants
-//
+/* Constants */
 
 #define EXT2_MAX_NESTED_LINKS           (8)
 #define EXT2_LINKLEN_IN_INODE           (60)
@@ -115,7 +102,7 @@ typedef struct ext3_dir_entry_2 EXT2_DIR_ENTRY2, *PEXT2_DIR_ENTRY2;
 #define DEVICE_NAME     L"\\ext4"
 #define CDROM_NAME      L"\\ext4cd"
 
-// Registry
+/* Registry */
 
 #define PARAMETERS_KEY      L"\\Parameters"
 #define VOLUMES_KEY         L"\\Volumes"
@@ -136,10 +123,9 @@ typedef struct ext3_dir_entry_2 EXT2_DIR_ENTRY2, *PEXT2_DIR_ENTRY2;
 
 #define DOS_DEVICE_NAME L"\\DosDevices\\ext4"
 
-// To support ext2fsd unload routine
-//
-// Private IOCTL to make the driver ready to unload
-//
+/* To support ext2fsd unload routine
+
+   Private IOCTL to make the driver ready to unload */
 #define IOCTL_PREPARE_TO_UNLOAD \
 CTL_CODE(FILE_DEVICE_UNKNOWN, 2048, METHOD_NEITHER, FILE_WRITE_ACCESS)
 
@@ -191,9 +177,7 @@ typedef IO_STACK_LOCATION EXTENDED_IO_STACK_LOCATION, *PEXTENDED_IO_STACK_LOCATI
     ExRaiseStatus(FsRtlNormalizeNtstatus((STATUS),STATUS_UNEXPECTED_IO_ERROR)); \
 }
 
-//
-// Define IsWritingToEof for write (append) operations
-//
+/* Define IsWritingToEof for write (append) operations */
 
 #define FILE_WRITE_TO_END_OF_FILE       0xffffffff
 
@@ -206,9 +190,7 @@ typedef IO_STACK_LOCATION EXTENDED_IO_STACK_LOCATION, *PEXTENDED_IO_STACK_LOCATI
 #define IsInodeSymLink(I)   S_ISLNK((I)->i_mode)
 #define IsRoot(Fcb)         IsMcbRoot((Fcb)->Mcb)
 
-//
-// Pool Tags
-//
+/* Pool Tags */
 
 #define TAG_VPB  ' bpV'
 #define VPB_SIZE sizeof(VPB)
@@ -228,9 +210,7 @@ typedef IO_STACK_LOCATION EXTENDED_IO_STACK_LOCATION, *PEXTENDED_IO_STACK_LOCATI
 #define EXT4_TAG_GLOBAL         'LG2E'  /* EXT2_GLOBAL and the registry path */
 #define EXT2_RWC_MAGIC          'WR2E'
 
-//
-// Bug Check Codes Definitions
-//
+/* Bug Check Codes Definitions */
 
 #define EXT2_FILE_SYSTEM   (FILE_SYSTEM)
 
@@ -265,18 +245,14 @@ typedef IO_STACK_LOCATION EXTENDED_IO_STACK_LOCATION, *PEXTENDED_IO_STACK_LOCATI
 
 /* Ext2 file system definions *******************************************/
 
-//
-// The second extended file system magic number
-//
+/* The second extended file system magic number */
 
 #define EXT2_SUPER_MAGIC        0xEF53
 
 #define EXT2_MIN_BLOCK          1024
 #define EXT2_MIN_FRAG           1024
 #define EXT2_MAX_USER_BLKSIZE   65536
-//
-// Inode flags (Linux uses octad number, but why ? strange!!!)
-//
+/* Inode flags (Linux uses octad number, but why ? strange!!!) */
 
 #define S_IFMT   0x0F000            /* 017 0000 */
 #define S_IFSOCK 0x0C000            /* 014 0000 */

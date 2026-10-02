@@ -65,7 +65,7 @@ Ext2Pnp (IN PEXT2_IRP_CONTEXT IrpContext)
 
         if ( !((Vcb->Identifier.Type == EXT2VCB) &&
                 (Vcb->Identifier.Size == sizeof(EXT2_VCB)))) {
-            __leave; // Status = STATUS_INVALID_PARAMETER
+            __leave; /* Status = STATUS_INVALID_PARAMETER */
         }
 
         Irp = IrpContext->Irp;
@@ -111,9 +111,7 @@ Ext2Pnp (IN PEXT2_IRP_CONTEXT IrpContext)
 
             if (Irp) {
 
-                //
-                // Here we need pass the IRP to the disk driver.
-                //
+                /* Here we need pass the IRP to the disk driver. */
 
                 IoSkipCurrentIrpStackLocation( Irp );
 
@@ -252,9 +250,7 @@ Ext2PnpRemove (
            does not track hidden volumes and would leave ours dangling */
         Ext2ReleaseLetter(Vcb, FALSE);
 
-        //
-        // Setup the Irp. We'll send it to the lower disk driver.
-        //
+        /* Setup the Irp. We'll send it to the lower disk driver. */
 
         IoCopyCurrentIrpStackLocationToNext(IrpContext->Irp);
 
@@ -339,9 +335,7 @@ Ext2PnpSurpriseRemove (
            does not track hidden volumes and would leave ours dangling */
         Ext2ReleaseLetter(Vcb, FALSE);
 
-        //
-        // Setup the Irp. We'll send it to the lower disk driver.
-        //
+        /* Setup the Irp. We'll send it to the lower disk driver. */
 
         IoCopyCurrentIrpStackLocationToNext(IrpContext->Irp);
 

@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # features.sh <disk size>: what Windows did on the Linux features disk,
 # seen from Linux. e2fsck checks every index block of the casefolded
 # directory against the folded hashes (an entry hashed from its unfolded

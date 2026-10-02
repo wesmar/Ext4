@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # race.ps1 - concurrent opens against namespace changes of the same names.
 #
 # Plain opens run under the shared volume resource and resolve names from

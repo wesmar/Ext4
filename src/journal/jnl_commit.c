@@ -121,8 +121,9 @@ VOID JnlAbort(PEXT2_JOURNAL J, NTSTATUS Status)
     J->jbd->j_flags |= JBD2_ABORT;
     J->jbd->j_errno = -EIO;
 
-    /* let e2fsck know */
-    J->Vcb->SuperBlock->s_state |= EXT4_ERROR_FS;
+    /* let e2fsck know (Ext2SaveSuperDirect takes the superblock's lock;
+       the flag is one bit set, which a concurrent writer cannot lose) */
+    InterlockedOr16((volatile SHORT *)&J->Vcb->SuperBlock->s_state, EXT4_ERROR_FS);
     Ext2SaveSuperDirect(J->Vcb);
     jbd2_journal_update_sb_errno(J->jbd);
 

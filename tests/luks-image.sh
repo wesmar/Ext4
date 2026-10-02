@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # luks-image.sh - build the encrypted test disk the way Qubes OS lays it out (WSL).
 #
 #   partition 1: LUKS2 (argon2id, aes-xts-plain64) -> ext4 directly

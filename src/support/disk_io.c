@@ -51,7 +51,6 @@ Ext2CreateMdl (
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             IoFreeMdl (Mdl);
             Mdl = NULL;
-            DbgBreak();
             Status = STATUS_INVALID_USER_BUFFER;
         }
     }
@@ -98,7 +97,6 @@ Ext2LockUserBuffer (IN PIRP     Irp,
 
     } __except (EXCEPTION_EXECUTE_HANDLER) {
 
-        DbgBreak();
         IoFreeMdl(Irp->MdlAddress);
         Irp->MdlAddress = NULL;
         Status = STATUS_INVALID_USER_BUFFER;
@@ -236,7 +234,7 @@ Ext2ReadWriteBlocks(
         pContext = Ext2AllocatePool(NonPagedPool, sizeof(EXT2_RW_CONTEXT), EXT2_RWC_MAGIC);
 
         if (!pContext) {
-            DEBUG(DL_ERR, ( "Ex2ReadWriteBlocks: failed to allocate pContext.\n"));
+            DEBUG(DL_ERR, ( "Ext2ReadWriteBlocks: failed to allocate pContext.\n"));
             Status = STATUS_INSUFFICIENT_RESOURCES;
             __leave;
         }
@@ -461,7 +459,7 @@ Ext2ReadSync(
         Event = Ext2AllocatePool(NonPagedPool, sizeof(KEVENT), 'EK2E');
 
         if (NULL == Event) {
-            DEBUG(DL_ERR, ( "Ex2ReadSync: failed to allocate Event.\n"));
+            DEBUG(DL_ERR, ( "Ext2ReadSync: failed to allocate Event.\n"));
             __leave;
         }
 

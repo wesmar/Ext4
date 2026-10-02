@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # luks.sh <disk size> <passphrase>: open the ext4-in-LUKS partitions written
 # from Windows, check what Windows wrote (and what Linux wrote before),
 # e2fsck, close again; then the LVM volumes of partition 2 (e2fsck).

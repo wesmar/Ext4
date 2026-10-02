@@ -1,4 +1,5 @@
-﻿# ext4hold.ps1 - keep a file on the ext4 volume open for a few seconds; the host pulls
+﻿# SPDX-License-Identifier: GPL-2.0-only
+# ext4hold.ps1 - keep a file on the ext4 volume open for a few seconds; the host pulls
 # the disk meanwhile to test surprise removal with a live handle. Prints what the close
 # and a later access reported.
 param([string]$Path, [int]$Seconds = 8)

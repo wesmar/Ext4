@@ -151,6 +151,12 @@ Ext2FlushVcb(IN PEXT2_VCB Vcb)
     struct rb_node      *node;
     struct buffer_head  *bh;
 
+    /* the free totals live in the Vcb: into the superblock first (on a
+       journaled volume Ext2JournalFlush does it) */
+    if (!Vcb->Journal) {
+        Ext2SyncSuperTotals(NULL, Vcb);
+    }
+
     /* journaled metadata reaches disk only through commit + checkpoint;
        the cache flush below never sees it (invariant I1) */
     if (Vcb->Journal) {
@@ -169,7 +175,7 @@ Ext2FlushVcb(IN PEXT2_VCB Vcb)
 
     __try {
 
-        /* acqurie gd block */
+        /* acquire gd block */
         ExAcquireResourceExclusiveLite(&Vcb->sbi.s_gd_lock, TRUE);
 
         /* acquire bd lock to avoid bh creation */
@@ -230,7 +236,6 @@ Ext2LoadBlock (IN PEXT2_VCB Vcb,
 
         if (!bh) {
             DEBUG(DL_ERR, ("Ext2Loadblock: can't load block %u\n", Index));
-            DbgBreak();
             __leave;
         }
 
@@ -270,11 +275,7 @@ Ext2SaveBlock ( IN PEXT2_IRP_CONTEXT    IrpContext,
 
         if (!bh) {
             DEBUG(DL_ERR, ("Ext2Saveblock: can't load block %u\n", Index));
-            DbgBreak();
             __leave;
-        }
-
-        if (!buffer_uptodate(bh)) {
         }
 
         RtlCopyMemory(bh->b_data, Buf, BLOCK_SIZE);
@@ -317,7 +318,6 @@ Ext2LoadBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
             bh = sb_getblk(&Vcb->sb, block);
             if (!bh) {
                 DEBUG(DL_ERR, ("Ext2SaveBuffer: can't load block %I64u\n", block));
-                DbgBreak();
                 __leave;
             }
 
@@ -384,7 +384,6 @@ Ext2ZeroBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
 
             if (!bh) {
                 DEBUG(DL_ERR, ("Ext2SaveBuffer: can't load block %I64u\n", block));
-                DbgBreak();
                 __leave;
             }
 
@@ -455,7 +454,6 @@ Ext2SaveBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
 
             if (!bh) {
                 DEBUG(DL_ERR, ("Ext2SaveBuffer: can't load block %I64u\n", block));
-                DbgBreak();
                 __leave;
             }
 

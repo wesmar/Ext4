@@ -10,13 +10,9 @@
 #include <linux/errno.h>
 #include "linux_internal.h"
 
-//
-// kernel timer routines
-//
+/* kernel timer routines */
 
-//
-// buffer head routines
-//
+/* buffer head routines */
 
 struct _EXT2_BUFFER_HEAD {
     kmem_cache_t *  bh_cache;
@@ -95,9 +91,7 @@ free_buffer_head(struct buffer_head * bh)
     }
 }
 
-//
-// Red-black tree insert routine.
-//
+/* Red-black tree insert routine. */
 
 static struct buffer_head *__buffer_head_search(struct rb_root *root,
                        sector_t blocknr)
@@ -172,7 +166,6 @@ get_block_bh_pin(
 
     /* check the block is valid or not */
     if (block >= TOTAL_BLOCKS) {
-        DbgBreak();
         goto errorout;
     }
 
@@ -372,6 +365,7 @@ void __brelse(struct buffer_head *bh)
 {
     struct block_device *bdev = bh->b_bdev;
     PEXT2_VCB Vcb = (PEXT2_VCB)bdev->bd_priv;
+    BOOLEAN JournalHeld;
 
     ASSERT(Vcb->Identifier.Type == EXT2VCB);
 
@@ -389,33 +383,49 @@ void __brelse(struct buffer_head *bh)
         ll_rw_block(WRITE, 1, &bh);
     }
 
+    /* Snapshot the notification hint while our reference keeps bh alive.
+       After releasing it, another thread may drop the last reference. */
+    JournalHeld = (bh->b_jrefs != 0);
+
     /* Fast path: a reference that is not the last one changes nothing but
-       the count. Only the 1 -> 0 step moves the bh onto the free list, and
-       only that step needs the volume-wide lock, exclusively, against a
-       concurrent lookup reviving it. Group descriptors and bitmaps stay
-       referenced for long stretches, so most releases end here instead of
-       serialising every thread of the volume on bd_bh_lock. */
+       the count. Group descriptors and bitmaps stay referenced for long
+       stretches, so most releases end here. */
     if (atomic_add_unless(&bh->b_count, -1, 1)) {
+        /* the journal's records keep their own references: a buffer it
+           holds only ever gets here, and a checkpoint may wait for it */
+        if (JournalHeld) {
+            Ext2JournalBufferReleased(Vcb);
+        }
         return;
     }
 
-    ExAcquireResourceExclusiveLite(&bdev->bd_bh_lock, TRUE);
+    /* The 1 -> 0 step puts the bh at the young end of the free list. The
+       tree lock is held shared - only the reaper, the teardown and a new
+       bh entering the tree take it exclusively, and those take no bh off
+       the tree while a release is here - and the list itself is guarded
+       by its spin lock. A lookup may revive the bh meanwhile: the reaper
+       finds it referenced and takes it off the list, as it always has.
+       Exclusive here, every last release - one per block touched by an
+       operation - queued all threads of the volume behind each other. */
+    ExAcquireResourceSharedLite(&bdev->bd_bh_lock, TRUE);
     if (atomic_dec_and_test(&bh->b_count)) {
-        ASSERT(0 == atomic_read(&bh->b_count));
+        KIRQL Irql;
+
+        KeQuerySystemTime(&bh->b_ts_drop);
+        KeAcquireSpinLock(&bdev->bd_bh_free_lock, &Irql);
+        RemoveEntryList(&bh->b_link);
+        InsertTailList(&Vcb->bd.bd_bh_free, &bh->b_link);
+        KeReleaseSpinLock(&bdev->bd_bh_free_lock, Irql);
+        KeClearEvent(&Vcb->bd.bd_bh_notify);
+        DEBUG(DL_BH, ("brelse: cnt=%u size=%u blk=%10.10xh bh=%p ptr=%p\n",
+                      atomic_read(&g_jbh.bh_count) - 1, bh->b_size,
+                      bh->b_blocknr, bh, bh->b_data ));
+        ExReleaseResourceLite(&bdev->bd_bh_lock);
+        Ext2ReaperKick(&Ext2Global->bhReaper, FALSE);
     } else {
         ExReleaseResourceLite(&bdev->bd_bh_lock);
         return;
     }
-    KeQuerySystemTime(&bh->b_ts_drop);
-    RemoveEntryList(&bh->b_link);
-    InsertTailList(&Vcb->bd.bd_bh_free, &bh->b_link);
-    KeClearEvent(&Vcb->bd.bd_bh_notify);
-    ExReleaseResourceLite(&bdev->bd_bh_lock);
-    Ext2ReaperKick(&Ext2Global->bhReaper, FALSE);
-
-    DEBUG(DL_BH, ("brelse: cnt=%u size=%u blk=%10.10xh bh=%p ptr=%p\n",
-                  atomic_read(&g_jbh.bh_count) - 1, bh->b_size,
-                  bh->b_blocknr, bh, bh->b_data ));
 }
 
 void __bforget(struct buffer_head *bh)
@@ -529,9 +539,7 @@ __find_get_block(struct block_device *bdev, sector_t block, unsigned long size)
     return __getblk(bdev, block, size);
 }
 
-//
-// inode block mapping
-//
+/* inode block mapping */
 
 ULONGLONG bmap(struct inode *i, ULONGLONG b)
 {

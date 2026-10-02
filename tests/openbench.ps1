@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # openbench.ps1 - parallel open/close and create/delete throughput, run in the guest.
 #
 # Measures what the volume-wide create lock costs: N threads that only open,

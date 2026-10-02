@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # ext4sys.ps1 - driver life-cycle checks, run on the test machine by run-ext4test.ps1.
 # Drive letters must be there while the driver runs, `sc stop` must complete promptly
 # even with a shell-style directory handle open, and `sc start` must bring the letters

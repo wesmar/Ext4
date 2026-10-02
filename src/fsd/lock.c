@@ -74,10 +74,8 @@ Ext2LockControl (IN PEXT2_IRP_CONTEXT IrpContext)
             __leave;
         }
 
-        //
-        // FsRtlProcessFileLock acquires FileObject->FsContext->Resource while
-        // modifying the file locks and calls IoCompleteRequest when it's done.
-        //
+        /* FsRtlProcessFileLock acquires FileObject->FsContext->Resource while
+           modifying the file locks and calls IoCompleteRequest when it's done. */
 
         Status = FsRtlProcessFileLock(
                      &Fcb->FileLockAnchor,

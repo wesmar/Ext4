@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # interop.ps1 - Windows side of the metadata interoperability test (guest).
 #
 # Reads what interop.sh prepare built in \interop-linux (symlinks of every

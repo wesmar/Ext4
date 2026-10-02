@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 param([string]$Root='E:\stress',[int]$Threads=8,[int]$Iters=2000)
 $ErrorActionPreference='Stop'
 Add-Type -TypeDefinition @"

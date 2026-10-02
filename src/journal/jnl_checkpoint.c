@@ -50,11 +50,16 @@ NTSTATUS JnlCheckpointOldest(PEXT2_JOURNAL J, BOOLEAN Wait, BOOLEAN AllowCommit)
     NTSTATUS             Status = STATUS_SUCCESS;
     PJNL_CPENTRY         batch;
     ULONG                batchMax = J->GroupBlocks + 1;
-    ULONG                spins = 0;
+    ULONGLONG            heldSince = 0;  /* 0: not waiting for held buffers */
 
     batch = Ext2AllocatePool(NonPagedPool, batchMax * sizeof(JNL_CPENTRY), JNL_TAG);
     if (!batch)
         return STATUS_INSUFFICIENT_RESOURCES;
+
+    /* a release of a journaled buffer from here on wakes the wait for held
+       ones below (Ext2JournalBufferReleased); CommitLock makes this the
+       only checkpoint */
+    InterlockedIncrement(&J->HeldWaiters);
 
     for (;;) {
 
@@ -65,6 +70,10 @@ NTSTATUS JnlCheckpointOldest(PEXT2_JOURNAL J, BOOLEAN Wait, BOOLEAN AllowCommit)
         BOOLEAN     pendingLocked = FALSE;
 
         InitializeListHead(&done);
+
+        /* cleared before the records are looked at: a holder letting go
+           after this point is not missed */
+        KeClearEvent(&J->HeldEvent);
 
         /* classify records under both locks; copy what can be written */
         ExAcquireResourceExclusiveLite(&bdev->bd_bh_lock, TRUE);
@@ -201,7 +210,7 @@ NTSTATUS JnlCheckpointOldest(PEXT2_JOURNAL J, BOOLEAN Wait, BOOLEAN AllowCommit)
         JnlUnlock(J, irql);
 
         if (count) {
-            spins = 0;
+            heldSince = 0;
             continue;           /* more to write */
         }
 
@@ -227,20 +236,31 @@ NTSTATUS JnlCheckpointOldest(PEXT2_JOURNAL J, BOOLEAN Wait, BOOLEAN AllowCommit)
                     break;
             }
             /* (else the owner committed meanwhile: classify again) */
-            spins = 0;
+            heldSince = 0;
             continue;
         }
 
-        /* held buffers: give the holders a moment */
-        if (++spins > 2000) {       /* ~100 s: something is stuck */
-            DEBUG(DL_ERR, ("Ext2Jnl: checkpoint of tid %u stuck (held=%u pending=%u)\n",
-                           t->Tid, held, pending));
-            Status = STATUS_PENDING;
-            break;
+        /* held buffers: wait until a holder lets one go, then look again;
+           past JNL_HELD_STUCK without progress something is stuck */
+        {
+            ULONGLONG       now = KeQueryInterruptTime();
+            LARGE_INTEGER   wait;
+
+            if (heldSince == 0) {
+                heldSince = now;
+            }
+            if (now - heldSince >= (ULONGLONG)JNL_HELD_STUCK) {
+                DEBUG(DL_ERR, ("Ext2Jnl: checkpoint of tid %u stuck (held=%u pending=%u)\n",
+                               t->Tid, held, pending));
+                Status = STATUS_PENDING;
+                break;
+            }
+            wait.QuadPart = -(LONGLONG)(heldSince + JNL_HELD_STUCK - now);
+            KeWaitForSingleObject(&J->HeldEvent, Executive, KernelMode, FALSE, &wait);
         }
-        JnlSleep(JNL_WAIT_TICK);
     }
 
+    InterlockedDecrement(&J->HeldWaiters);
     Ext2FreePool(batch, JNL_TAG);
     return Status;
 }

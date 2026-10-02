@@ -164,7 +164,6 @@ Ext2QueryRetrievalPointers (
 
         DeviceObject = IrpContext->DeviceObject;
 
-        DbgBreak();
 
         /* This request is not allowed on the main device object */
         if (IsExt2FsDevice(DeviceObject)) {
@@ -225,7 +224,6 @@ Ext2QueryRetrievalPointers (
         RequestVbn  = EIrpSp->Parameters.FileSystemControl.Type3InputBuffer;
         pMappedRuns = Irp->UserBuffer;
 
-        DbgBreak();
 
         /* request size beyonds whole file size */
         if (RequestVbn->QuadPart >= Fcb->Header.AllocationSize.QuadPart) {

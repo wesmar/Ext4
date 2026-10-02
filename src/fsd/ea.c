@@ -9,28 +9,28 @@
 #include "ext4fs.h"
 #include <linux/ext4_xattr.h>
 
-// Ea iterator
+/* Ea iterator */
 struct EaIterator {
-	// Return only an entry
+	/* Return only an entry */
 	BOOLEAN ReturnSingleEntry;
 
-	// Is the buffer overflowing?
+	/* Is the buffer overflowing? */
 	BOOL OverFlow;
 
-	// FILE_FULL_EA_INFORMATION output buffer
+	/* FILE_FULL_EA_INFORMATION output buffer */
 	PFILE_FULL_EA_INFORMATION FullEa;
 	PFILE_FULL_EA_INFORMATION LastFullEa;
 
-	// UserBuffer's size
+	/* UserBuffer's size */
 	ULONG UserBufferLength;
 
-	// Remaining UserBuffer's size
+	/* Remaining UserBuffer's size */
 	ULONG RemainingUserBufferLength;
 
-	// Start scanning from this EA
+	/* Start scanning from this EA */
 	ULONG EaIndex;
 
-	// Next EA index returned by Ext2IterateAllEa
+	/* Next EA index returned by Ext2IterateAllEa */
 	ULONG EaIndexCounter;
 };
 
@@ -55,7 +55,7 @@ static int Ext2IterateAllEa(struct ext4_xattr_ref *xattr_ref, struct ext4_xattr_
 	if (!is_last && !pEaIterator->ReturnSingleEntry)
 		EaEntrySize = ALIGN_UP(EaEntrySize, ULONG);
 
-	// Start iteration from index specified
+	/* Start iteration from index specified */
 	if (pEaIterator->EaIndexCounter < pEaIterator->EaIndex) {
 		pEaIterator->EaIndexCounter++;
 		return EXT4_XATTR_ITERATE_CONT;
@@ -77,7 +77,7 @@ static int Ext2IterateAllEa(struct ext4_xattr_ref *xattr_ref, struct ext4_xattr_
 		item->data,
 		item->data_size);
 
-	// Link FullEa and LastFullEa together
+	/* Link FullEa and LastFullEa together */
 	if (pEaIterator->LastFullEa) {
 		pEaIterator->LastFullEa->NextEntryOffset = (ULONG)
 			((PCHAR)pEaIterator->FullEa - (PCHAR)pEaIterator->LastFullEa);
@@ -199,9 +199,7 @@ Ext2QueryEa (
 
 		Irp->IoStatus.Information = 0;
 
-		//
-		// Receive input parameter from caller
-		//
+		/* Receive input parameter from caller */
 		UserBuffer = Ext2GetUserBuffer(Irp);
 		if (!UserBuffer) {
 			Status = STATUS_INSUFFICIENT_RESOURCES;
@@ -297,15 +295,13 @@ Ext2QueryEa (
 			Status = STATUS_SUCCESS;
 		} else if (IndexSpecified) {
 			struct EaIterator EaIterator;
-			//
-			//  The user supplied an index into the Ea list.
-			//
+			/* The user supplied an index into the Ea list. */
 			if (RemainingUserBufferLength)
 				RtlZeroMemory(FullEa, RemainingUserBufferLength);
 
 			EaIterator.OverFlow = FALSE;
 			EaIterator.RemainingUserBufferLength = UserBufferLength;
-			// In this case, return only an entry.
+			/* In this case, return only an entry. */
 			EaIterator.ReturnSingleEntry = TRUE;
 			EaIterator.FullEa = (PFILE_FULL_EA_INFORMATION)UserBuffer;
 			EaIterator.LastFullEa = NULL;
@@ -320,7 +316,7 @@ Ext2QueryEa (
 
 			Status = STATUS_SUCCESS;
 
-			// It seems that the item isn't found
+			/* It seems that the item isn't found */
 			if (RemainingUserBufferLength == UserBufferLength)
 				Status = STATUS_OBJECTID_NOT_FOUND;
 
@@ -333,10 +329,8 @@ Ext2QueryEa (
 
 		} else {
 			struct EaIterator EaIterator;
-			//
-			//  Else perform a simple scan, taking into account the restart
-			//  flag and the position of the next Ea stored in the Ccb.
-			//
+			/* Else perform a simple scan, taking into account the restart
+			   flag and the position of the next Ea stored in the Ccb. */
 			if (RestartScan)
 				Ccb->EaIndex = 1;
 
@@ -411,16 +405,12 @@ Ext2IsEaNameValid(
 	ULONG Index;
 	UCHAR Char;
 
-	//
-	//  Empty names are not valid
-	//
+	/* Empty names are not valid */
 
 	if (Name.Length == 0)
 		return FALSE;
 
-	//
-	// Do not allow EA name longer than 255 bytes
-	//
+	/* Do not allow EA name longer than 255 bytes */
 	if (Name.Length > 255)
 		return FALSE;
 
@@ -428,9 +418,7 @@ Ext2IsEaNameValid(
 
 		Char = Name.Buffer[Index];
 
-		//
-		//  Skip over and Dbcs chacters
-		//
+		/* Skip over and Dbcs chacters */
 		if (FsRtlIsLeadDbcsCharacter(Char)) {
 
 			ASSERT(Index != (ULONG)(Name.Length - 1));
@@ -438,10 +426,8 @@ Ext2IsEaNameValid(
 			continue;
 		}
 
-		//
-		//  Make sure this character is legal, and if a wild card, that
-		//  wild cards are permissible.
-		//
+		/* Make sure this character is legal, and if a wild card, that
+		   wild cards are permissible. */
 		if (!FsRtlIsAnsiCharacterLegalFat(Char, FALSE))
 			return FALSE;
 
@@ -492,13 +478,11 @@ Ext2SetEa (
 
 		Irp->IoStatus.Information = 0;
 
-		//
-		// Receive input parameter from caller
-		//
+		/* Receive input parameter from caller */
 		UserBufferLength = IrpSp->Parameters.SetEa.Length;
 		UserBuffer = Irp->UserBuffer;
 
-		// Check if the EA buffer provided is valid
+		/* Check if the EA buffer provided is valid */
 		Status = IoCheckEaBufferValidity((PFILE_FULL_EA_INFORMATION)UserBuffer,
 			UserBufferLength,
 			(PULONG)&Irp->IoStatus.Information);
@@ -511,9 +495,7 @@ Ext2SetEa (
 		if (!Mcb)
 			__leave;
 
-		//
-		// We do not allow multiple instance gaining EA access to the same file
-		//
+		/* We do not allow multiple instance gaining EA access to the same file */
 		if (!ExAcquireResourceExclusiveLite(
 			&Fcb->MainResource,
 			IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT))) {
@@ -541,7 +523,7 @@ Ext2SetEa (
 		xattr_ref.dirty = TRUE;
 		Status = STATUS_SUCCESS;
 
-		// Iterate the whole EA buffer to do inspection
+		/* Iterate the whole EA buffer to do inspection */
 		for (FullEa = (PFILE_FULL_EA_INFORMATION)UserBuffer;
 			FullEa < (PFILE_FULL_EA_INFORMATION)&UserBuffer[UserBufferLength];
 			FullEa = (PFILE_FULL_EA_INFORMATION)(FullEa->NextEntryOffset == 0 ?
@@ -553,7 +535,7 @@ Ext2SetEa (
 			EaName.MaximumLength = EaName.Length = FullEa->EaNameLength;
 			EaName.Buffer = &FullEa->EaName[0];
 
-			// Check if EA's name is valid
+			/* Check if EA's name is valid */
 			if (!Ext2IsEaNameValid(EaName)) {
 				Irp->IoStatus.Information = (PCHAR)FullEa - UserBuffer;
 				Status = STATUS_INVALID_EA_NAME;
@@ -561,7 +543,7 @@ Ext2SetEa (
 			}
 		}
 
-		// Now add EA entries to the inode
+		/* Now add EA entries to the inode */
 		for (FullEa = (PFILE_FULL_EA_INFORMATION)UserBuffer;
 			FullEa < (PFILE_FULL_EA_INFORMATION)&UserBuffer[UserBufferLength];
 			FullEa = (PFILE_FULL_EA_INFORMATION)(FullEa->NextEntryOffset == 0 ?

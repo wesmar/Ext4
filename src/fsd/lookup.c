@@ -10,16 +10,17 @@
 #include <linux/ext4_xattr.h>
 #include "create_internal.h"
 
-static NTSTATUS Ext2LookupFileLocked(PEXT2_IRP_CONTEXT, PEXT2_VCB, PUNICODE_STRING,
-                                     PEXT2_MCB, PEXT2_MCB *, ULONG, BOOLEAN, PBOOLEAN);
+static NTSTATUS Ext2LookupComponent(PEXT2_IRP_CONTEXT, PEXT2_VCB, PEXT2_MCB, PUNICODE_STRING,
+                                    ULONG, BOOLEAN, PEXT2_MCB *);
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, Ext2IsNameValid)
 #pragma alloc_text(PAGE, Ext2FollowLink)
 #pragma alloc_text(PAGE, Ext2IsSpecialSystemFile)
 #pragma alloc_text(PAGE, Ext2LookupFile)
-#pragma alloc_text(PAGE, Ext2LookupFileLocked)
+#pragma alloc_text(PAGE, Ext2LookupComponent)
 #pragma alloc_text(PAGE, Ext2ScanDir)
+#pragma alloc_text(PAGE, Ext2InsertName)
 #endif
 
 BOOLEAN
@@ -259,394 +260,295 @@ Ext2IsSpecialSystemFile(
 }
 
 /*
- * One pass of the path walk. Shared: McbLock is held shared and only the
- * name cache is consulted; the first component that would change the tree
- * (a name to read from disk, a dangling link to demote) ends the pass with
- * *Retry set and every reference it took dropped. Exclusive: the full walk,
- * reading directories and inserting what it finds.
+ * Put the name FileName of directory Parent - entry de, inode Ino - into
+ * the name tree: a new Mcb joined to the inode's Icb (loaded from disk
+ * unless another name has it), with its attributes. The caller holds the
+ * name's stripe exclusively, so nobody else inserts it meanwhile. A symlink
+ * goes in unresolved (MCB_TYPE_SPECIAL): following it looks up other names,
+ * which must not happen under a stripe; Ext2ResolveLink does it after. On
+ * success *Result is the new name, referenced for the caller. de becomes
+ * the name's, or goes with it on failure.
+ *
+ * Fresh: the inode was made a moment ago by the caller. A new directory
+ * then comes back with its DirResource held, taken before the name can be
+ * found: nobody makes a name in it before the caller has written "." and
+ * ".." (Ext2CreateNewName), and nobody can be waiting for it yet.
  */
-static NTSTATUS
-Ext2LookupFileLocked (
+NTSTATUS
+Ext2InsertName (
     IN PEXT2_IRP_CONTEXT    IrpContext,
     IN PEXT2_VCB            Vcb,
-    IN PUNICODE_STRING      FullName,
     IN PEXT2_MCB            Parent,
-    OUT PEXT2_MCB *         Ext2Mcb,
-    IN ULONG                Linkdep,
-    IN BOOLEAN              Shared,
-    OUT PBOOLEAN            Retry
+    IN PUNICODE_STRING      FileName,
+    IN ULONG                Ino,
+    IN struct dentry       *de,
+    IN BOOLEAN              Fresh,
+    OUT PEXT2_MCB          *Result
 )
 {
-    NTSTATUS        Status = STATUS_OBJECT_NAME_NOT_FOUND;
-    UNICODE_STRING  FileName;
-    PEXT2_MCB       Mcb = NULL;
-    struct dentry  *de = NULL;
+    PEXT2_MCB   Mcb;
+    PEXT2_ICB   Icb;
 
-    USHORT          i = 0, End;
-    ULONG           Inode;
+    UNREFERENCED_PARAMETER(IrpContext);
+    ASSERT(!IsMcbSymLink(Parent));
+    *Result = NULL;
 
-    BOOLEAN         bParent = FALSE;
-    BOOLEAN         bDirectory = FALSE;
-    BOOLEAN         LockAcquired = FALSE;
-    BOOLEAN         bNotFollow = FALSE;
+    Mcb = Ext2AllocateMcb(Vcb, FileName, &Parent->FullName, 0);
+    if (!Mcb) {
+        Ext2FreeEntry(de);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    Mcb->de = de;
 
-    *Retry = FALSE;
+    /* join the inode node: another name of the same inode (hard link) may
+       have loaded it already */
+    if (!Ext2AttachIcb(Vcb, Mcb, Ino)) {
+        Ext2FreeMcb(Vcb, Mcb);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    Mcb->de->d_inode = Mcb->Inode;
+    Icb = Mcb->Icb;
 
-    __try {
+    /* Load the inode once: a second name of it, in another directory under
+       another stripe, may be at this very point - and loading it again
+       over an inode already in use would throw away its changes */
+    if (!IsFlagOn(Icb->Flags, ICB_INODE_LOADED)) {
+        BOOLEAN Loaded = TRUE;
 
-        if (Shared) {
-            ExAcquireResourceSharedLite(&Vcb->McbLock, TRUE);
-        } else {
-            ExAcquireResourceExclusiveLite(&Vcb->McbLock, TRUE);
-        }
-        LockAcquired = TRUE;
+        KeEnterCriticalRegion();
+        ExAcquireResourceExclusiveLite(&Icb->EntryResource, TRUE);
+        if (!IsFlagOn(Icb->Flags, ICB_INODE_LOADED)) {
+            Loaded = Ext2LoadInode(Vcb, Mcb->Inode);
+            if (Loaded) {
+                struct inode *Inode = Mcb->Inode;
 
-        bNotFollow = IsFlagOn(Linkdep, EXT2_LOOKUP_NOT_FOLLOW);
-        Linkdep = ClearFlag(Linkdep, EXT2_LOOKUP_FLAG_MASK);
-
-        *Ext2Mcb = NULL;
-
-        DEBUG(DL_RES, ("Ext2LookupFile: %wZ\n", FullName));
-
-        /* check names and parameters */
-        if (FullName->Buffer[0] == L'\\') {
-            Parent = Vcb->McbTree;
-        } else if (Parent) {
-            bParent = TRUE;
-        } else {
-            Parent = Vcb->McbTree;
-        }
-
-        /* make sure the parent is NULL */
-        if (!IsMcbDirectory(Parent)) {
-            Status =  STATUS_NOT_A_DIRECTORY;
-            __leave;
-        }
-
-        /* use symlink's target as parent directory */
-        if (IsMcbSymLink(Parent)) {
-            Parent = Parent->Target;
-            ASSERT(!IsMcbSymLink(Parent));
-            if (IsFileDeleted(Parent)) {
-                Status =  STATUS_NOT_A_DIRECTORY;
-                __leave;
+                Icb->LastAccessTime = Ext2GetInodeTime(Inode->i_atime, Inode->i_atime_extra);
+                Icb->LastWriteTime = Ext2GetInodeTime(Inode->i_mtime, Inode->i_mtime_extra);
+                Icb->ChangeTime = Ext2GetInodeTime(Inode->i_ctime, Inode->i_ctime_extra);
+                if (Inode->i_crtime)
+                    Icb->CreationTime = Ext2GetInodeTime(Inode->i_crtime, Inode->i_crtime_extra);
+                else
+                    Icb->CreationTime = Ext2GetInodeTime(Inode->i_ctime, Inode->i_ctime_extra);
+                SetLongFlag(Icb->Flags, ICB_INODE_LOADED);
             }
         }
+        ExReleaseResourceLite(&Icb->EntryResource);
+        KeLeaveCriticalRegion();
 
-        if (NULL == Parent) {
-            Status =  STATUS_NOT_A_DIRECTORY;
-            __leave;
-        }
-
-        /* default is the parent Mcb*/
-        Ext2ReferMcb(Parent);
-        Mcb = Parent;
-
-        /* is empty file name or root node */
-        End = FullName->Length/sizeof(WCHAR);
-        if ( (End == 0) || (End == 1 &&
-                            FullName->Buffer[0] == L'\\')) {
-            Status = STATUS_SUCCESS;
-            __leave;
-        }
-
-        /* is a directory expected ? */
-        while (FullName->Buffer[End - 1] == L'\\') {
-            bDirectory = TRUE;
-            End -= 1;
-        }
-
-        /* loop with every sub name */
-        while (i < End) {
-
-            USHORT Start = 0;
-
-            /* zero the prefix '\' */
-            while (i < End && FullName->Buffer[i] == L'\\') i++;
-            Start = i;
-
-            /* zero the suffix '\' */
-            while (i < End && (FullName->Buffer[i] != L'\\')) i++;
-
-            if (i > Start) {
-
-                FileName = *FullName;
-                FileName.Buffer += Start;
-                FileName.Length = (USHORT)((i - Start) * 2);
-
-                /* make sure the parent is NULL */
-                if (!IsMcbDirectory(Parent)) {
-                    Status =  STATUS_NOT_A_DIRECTORY;
-                    Ext2DerefMcb(Parent);
-                    break;
-                }
-
-                if (IsMcbSymLink(Parent)) {
-                    if (IsFileDeleted(Parent->Target)) {
-                        Status =  STATUS_NOT_A_DIRECTORY;
-                        Ext2DerefMcb(Parent);
-                        break;
-                    } else {
-                        Ext2ReferMcb(Parent->Target);
-                        Ext2DerefMcb(Parent);
-                        Parent = Parent->Target;
-                    }
-                }
-
-                /* search cached Mcb nodes */
-                Mcb = Ext2SearchMcbWithoutLock(Parent, &FileName);
-
-                if (Mcb) {
-
-                    /* derefer the parent Mcb */
-                    Ext2DerefMcb(Parent);
-                    Status = STATUS_SUCCESS;
-                    Parent = Mcb;
-
-                    if (IsMcbSymLink(Mcb) && IsFileDeleted(Mcb->Target) &&
-                        Mcb->Refercount == 1) {
-
-                        if (Shared) {
-                            /* demoting the link changes the node */
-                            Ext2DerefMcb(Mcb);
-                            Status = STATUS_RETRY;
-                            *Retry = TRUE;
-                            break;
-                        }
-
-                        ASSERT(Mcb->Target);
-                        ASSERT(Mcb->Target->Refercount > 0);
-                        Ext2DerefMcb(Mcb->Target);
-                        Mcb->Target = NULL;
-                        ClearLongFlag(Mcb->Flags, MCB_TYPE_SYMLINK);
-                        SetLongFlag(Mcb->Flags, MCB_TYPE_SPECIAL);
-                        /* still a link on disk, shown as one (NTFS lists a dangling
-                           symlink as a reparse point too); no longer a directory */
-                        ClearFlag(Mcb->FileAttr, FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_NORMAL);
-                        SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_REPARSE_POINT);
-                    }
-
-                    /* A symlink demoted to a special file while its target
-                       was missing resolves by path again, as on Linux: the
-                       target may exist by now. Only the exclusive pass may
-                       rewrite the node; a target still missing leaves it
-                       special, at the cost of one link read per open. */
-                    if (!bNotFollow && IsFlagOn(Mcb->Flags, MCB_TYPE_SPECIAL) &&
-                        S_ISLNK(Mcb->Inode->i_mode) && Mcb->Parent != NULL) {
-
-                        if (Shared) {
-                            Ext2DerefMcb(Mcb);
-                            Status = STATUS_RETRY;
-                            *Retry = TRUE;
-                            break;
-                        }
-
-                        /* on disk it is a link either way; the directory
-                           bit, when the target is one, comes from
-                           Ext2FollowLink */
-                        ClearFlag(Mcb->FileAttr, FILE_ATTRIBUTE_NORMAL);
-                        SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_REPARSE_POINT);
-                        Ext2FollowLink(IrpContext, Vcb, Mcb->Parent, Mcb, Linkdep + 1);
-                    }
-
-                } else {
-
-                    /* need create new Mcb node */
-
-                    if (Shared) {
-                        /* not cached: the directory must be read and the
-                           name added to the tree, which the shared pass
-                           may not do */
-                        Ext2DerefMcb(Parent);
-                        Status = STATUS_RETRY;
-                        *Retry = TRUE;
-                        break;
-                    }
-
-                    /* is a valid ext2 name */
-                    if (!Ext2IsNameValid(&FileName)) {
-                        Status = STATUS_OBJECT_NAME_INVALID;
-                        Ext2DerefMcb(Parent);
-                        break;
-                    }
-
-                    /* seach the disk */
-                    de = NULL;
-                    Status = Ext2ScanDir (
-                                 IrpContext,
-                                 Vcb,
-                                 Parent,
-                                 &FileName,
-                                 &Inode,
-                                 &de);
-
-                    if (NT_SUCCESS(Status)) {
-
-                        /* check it's real parent */
-                        ASSERT (!IsMcbSymLink(Parent));
-
-                        /* allocate Mcb ... */
-                        Mcb = Ext2AllocateMcb(Vcb, &FileName, &Parent->FullName, 0);
-                        if (!Mcb) {
-                            Status = STATUS_INSUFFICIENT_RESOURCES;
-                            Ext2DerefMcb(Parent);
-                            break;
-                        }
-                        Mcb->de = de;
-                        de = NULL;
-
-                        /* join the inode node: another name of the same
-                           inode (hard link) may have loaded it already */
-                        if (!Ext2AttachIcb(Vcb, Mcb, Inode)) {
-                            Status = STATUS_INSUFFICIENT_RESOURCES;
-                            Ext2DerefMcb(Parent);
-                            Ext2FreeMcb(Vcb, Mcb);
-                            break;
-                        }
-                        Mcb->de->d_inode = Mcb->Inode;
-
-                        /* load inode information */
-                        if (!IsFlagOn(Mcb->Icb->Flags, ICB_INODE_LOADED)) {
-                            if (!Ext2LoadInode(Vcb, Mcb->Inode)) {
-                                Status = STATUS_CANT_WAIT;
-                                Ext2DerefMcb(Parent);
-                                Ext2FreeMcb(Vcb, Mcb);
-                                break;
-                            }
-                            SetLongFlag(Mcb->Icb->Flags, ICB_INODE_LOADED);
-
-                            Mcb->Icb->LastAccessTime = Ext2GetInodeTime(Mcb->Inode->i_atime, Mcb->Inode->i_atime_extra);
-                            Mcb->Icb->LastWriteTime = Ext2GetInodeTime(Mcb->Inode->i_mtime, Mcb->Inode->i_mtime_extra);
-                            Mcb->Icb->ChangeTime = Ext2GetInodeTime(Mcb->Inode->i_ctime, Mcb->Inode->i_ctime_extra);
-                            if (Mcb->Inode->i_crtime)
-                                Mcb->Icb->CreationTime = Ext2GetInodeTime(Mcb->Inode->i_crtime, Mcb->Inode->i_crtime_extra);
-                            else
-                                Mcb->Icb->CreationTime = Ext2GetInodeTime(Mcb->Inode->i_ctime, Mcb->Inode->i_ctime_extra);
-                        }
-
-                        /* a directory has one name: a second one (an entry
-                           naming its own directory, the root, an ancestor -
-                           a corrupt file system) would make the name tree a
-                           loop that never ends nor frees. Linux refuses the
-                           alias the same way (EIO, "found a directory alias") */
-                        if (S_ISDIR(Mcb->Inode->i_mode) &&
-                            Mcb->Icb->Names.Flink != Mcb->Icb->Names.Blink) {
-                            DbgPrint("ext4: directory inode %u has a second name, refused\n",
-                                     Mcb->Inode->i_ino);
-                            Status = STATUS_FILE_CORRUPT_ERROR;
-                            Ext2DerefMcb(Parent);
-                            Ext2FreeMcb(Vcb, Mcb);
-                            break;
-                        }
-
-                        /* set inode attribute: read-only when the owner
-                           write bit is clear (that is what the attribute
-                           maps to, both ways) or we cannot write it */
-                        if (!Ext2IsOwnerWritable(Mcb->Inode->i_mode) ||
-                            Ext4IsImmutable(Mcb->Inode) ||
-                            !Ext2CheckFileAccess(Vcb, Mcb, Ext2FileCanWrite)) {
-                            SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_READONLY);
-                        }
-
-                        if (S_ISDIR(Mcb->Inode->i_mode)) {
-                            SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_DIRECTORY);
-                        } else {
-                            if (S_ISREG(Mcb->Inode->i_mode)) {
-                                SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_NORMAL);
-                            } else if (S_ISLNK(Mcb->Inode->i_mode)) {
-                                SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_REPARSE_POINT);
-                            } else {
-                                SetLongFlag(Mcb->Flags, MCB_TYPE_SPECIAL);
-                            }
-                        }
-
-                        /* process special files under root directory */
-                        if (IsMcbRoot(Parent)) {
-                            /* set hidden and system attributes for
-                               Recycled / RECYCLER / pagefile.sys */
-                            BOOLEAN IsDirectory = IsMcbDirectory(Mcb);
-                            if (Ext2IsSpecialSystemFile(&Mcb->ShortName, IsDirectory)) {
-                                SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_HIDDEN);
-                                SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_SYSTEM);
-                            }
-                        }
-
-                        /* process symlink */
-                        if (S_ISLNK(Mcb->Inode->i_mode) && !bNotFollow) {
-                            Ext2FollowLink( IrpContext,
-                                            Vcb,
-                                            Parent,
-                                            Mcb,
-                                            Linkdep+1
-                                          );
-                        }
-
-                        /* add reference ... */
-                        Ext2ReferMcb(Mcb);
-
-                        /* add Mcb to it's parent tree*/
-                        Ext2InsertMcb(Vcb, Parent, Mcb);
-
-                        /* it's safe to deref Parent Mcb */
-                        Ext2DerefMcb(Parent);
-
-                        /* linking this Mcb*/
-                        Ext2LinkTailMcb(Vcb, Mcb);
-
-                        /* set parent to preare re-scan */
-                        Parent = Mcb;
-
-                    } else {
-
-                        /* derefernce it's parent */
-                        Ext2DerefMcb(Parent);
-                        break;
-                    }
-                }
-
-            } else {
-
-                /* there seems too many \ or / */
-                /* Mcb should be already set to Parent */
-                ASSERT(Mcb == Parent);
-                Status = STATUS_SUCCESS;
-                break;
-            }
-        }
-
-    } __finally {
-
-        if (de) {
-            Ext2FreeEntry(de);
-        }
-
-        if (NT_SUCCESS(Status)) {
-            if (bDirectory) {
-                if (IsMcbDirectory(Mcb)) {
-                    *Ext2Mcb = Mcb;
-                } else {
-                    Ext2DerefMcb(Mcb);
-                    Status = STATUS_NOT_A_DIRECTORY;
-                }
-            } else {
-                *Ext2Mcb = Mcb;
-            }
-        }
-
-        if (LockAcquired) {
-            ExReleaseResourceLite(&Vcb->McbLock);
+        if (!Loaded) {
+            Ext2FreeMcb(Vcb, Mcb);
+            return STATUS_CANT_WAIT;
         }
     }
 
-    return Status;
+    /* a directory has one name: a second one (an entry naming its own
+       directory, the root, an ancestor - a corrupt file system) would make
+       the name tree a loop that never ends nor frees. Linux refuses the
+       alias the same way (EIO, "found a directory alias") */
+    if (S_ISDIR(Mcb->Inode->i_mode) &&
+        Icb->Names.Flink != Icb->Names.Blink) {
+        DbgPrint("ext4: directory inode %u has a second name, refused\n",
+                 Mcb->Inode->i_ino);
+        Ext2FreeMcb(Vcb, Mcb);
+        return STATUS_FILE_CORRUPT_ERROR;
+    }
+
+    /* set inode attribute: read-only when the owner write bit is clear
+       (that is what the attribute maps to, both ways) or we cannot write it */
+    if (!Ext2IsOwnerWritable(Mcb->Inode->i_mode) ||
+        Ext4IsImmutable(Mcb->Inode) ||
+        !Ext2CheckFileAccess(Vcb, Mcb, Ext2FileCanWrite)) {
+        SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_READONLY);
+    }
+
+    if (S_ISDIR(Mcb->Inode->i_mode)) {
+        SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_DIRECTORY);
+    } else if (S_ISREG(Mcb->Inode->i_mode)) {
+        SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_NORMAL);
+    } else if (S_ISLNK(Mcb->Inode->i_mode)) {
+        /* unresolved until Ext2ResolveLink follows it */
+        SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_REPARSE_POINT);
+        SetLongFlag(Mcb->Flags, MCB_TYPE_SPECIAL);
+    } else {
+        SetLongFlag(Mcb->Flags, MCB_TYPE_SPECIAL);
+    }
+
+    /* process special files under root directory */
+    if (IsMcbRoot(Parent)) {
+        /* set hidden and system attributes for Recycled / RECYCLER /
+           pagefile.sys */
+        BOOLEAN IsDirectory = IsMcbDirectory(Mcb);
+        if (Ext2IsSpecialSystemFile(&Mcb->ShortName, IsDirectory)) {
+            SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_HIDDEN);
+            SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_SYSTEM);
+        }
+    }
+
+    if (Fresh && S_ISDIR(Mcb->Inode->i_mode)) {
+        KeEnterCriticalRegion();
+        ExAcquireResourceExclusiveLite(&Icb->DirResource, TRUE);
+    }
+
+    /* the caller's reference; into the parent's tree and the reaper's list */
+    Ext2ReferMcb(Mcb);
+    Ext2InsertMcb(Vcb, Parent, Mcb);
+    Ext2LinkTailMcb(Vcb, Mcb);
+
+    *Result = Mcb;
+    return STATUS_SUCCESS;
 }
 
 /*
- * Path lookup. Opens of cached names are the common case and run side by
- * side under the shared McbLock; only a pass that has to read a directory
- * or change a node is repeated with the lock held exclusively. Measured on
- * 8 threads opening existing files: an exclusive walk per open made them
- * queue on McbLock once the volume resource stopped serialising opens.
+ * The symlink state of a name just found, brought up to date under
+ * LinkLock (never called with a stripe held: following a link looks up
+ * its target). Two cases, as on Linux, where a link resolves by path at
+ * every use:
+ *  - a link whose target has gone, and which nobody else holds, becomes a
+ *    special file again - still a link on disk, shown as one (NTFS lists
+ *    a dangling symlink as a reparse point too), no longer a directory;
+ *  - an unresolved link (new, or demoted while its target was missing) is
+ *    followed, unless the caller asked not to: the target may exist by
+ *    now. One still missing leaves it special, at the cost of one link
+ *    read per open.
+ */
+VOID
+Ext2ResolveLink(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb,
+                IN PEXT2_MCB Mcb, IN ULONG Linkdep, IN BOOLEAN NotFollow)
+{
+    BOOLEAN Dangling = FALSE, Unresolved;
+
+    /* flags read unlocked only decide whether to look closer; a resolved
+       link - the common case - is checked under LinkLock shared, and only
+       a change takes it exclusively (the target is read only under it: a
+       demotion drops the reference that keeps it alive) */
+    Unresolved = !NotFollow && IsFlagOn(Mcb->Flags, MCB_TYPE_SPECIAL) &&
+                 S_ISLNK(Mcb->Inode->i_mode);
+    if (IsMcbSymLink(Mcb)) {
+        KeEnterCriticalRegion();
+        ExAcquireResourceSharedLite(&Vcb->LinkLock, TRUE);
+        Dangling = IsMcbSymLink(Mcb) && Mcb->Target != NULL &&
+                   IsFileDeleted(Mcb->Target) && Mcb->Refercount == 1;
+        ExReleaseResourceLite(&Vcb->LinkLock);
+        KeLeaveCriticalRegion();
+    }
+    if (!Dangling && !Unresolved) {
+        return;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&Vcb->LinkLock, TRUE);
+
+    if (IsMcbSymLink(Mcb) && Mcb->Target != NULL &&
+        IsFileDeleted(Mcb->Target) && Mcb->Refercount == 1) {
+        Ext2DerefMcb(Mcb->Target);
+        Mcb->Target = NULL;
+        ClearLongFlag(Mcb->Flags, MCB_TYPE_SYMLINK);
+        SetLongFlag(Mcb->Flags, MCB_TYPE_SPECIAL);
+        ClearFlag(Mcb->FileAttr, FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_NORMAL);
+        SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_REPARSE_POINT);
+    }
+
+    if (!NotFollow && IsFlagOn(Mcb->Flags, MCB_TYPE_SPECIAL) &&
+        S_ISLNK(Mcb->Inode->i_mode)) {
+        PEXT2_MCB Parent = Ext2ReferParent(Vcb, Mcb);
+        if (Parent) {
+            /* on disk it is a link either way; the directory bit, when the
+               target is one, comes from Ext2FollowLink */
+            ClearFlag(Mcb->FileAttr, FILE_ATTRIBUTE_NORMAL);
+            SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_REPARSE_POINT);
+            Ext2FollowLink(IrpContext, Vcb, Parent, Mcb, Linkdep + 1);
+            Ext2DerefMcb(Parent);
+        }
+    }
+
+    ExReleaseResourceLite(&Vcb->LinkLock);
+    KeLeaveCriticalRegion();
+}
+
+/*
+ * One component of a path: the name FileName of directory Dir (referenced
+ * by the caller, no symlink), referenced into *Result.
+ *
+ * A name in the cache costs one chain walk under its stripe, shared. One
+ * that is not cached is looked for on disk, still shared - every create of
+ * a new file asks for a name that is not there, and those answers need no
+ * change to the tree. A name found on disk goes into the tree under the
+ * stripe held exclusively, from a second check of the cache through the
+ * directory read to the insertion: a delete removes the disk entry of a
+ * name it holds in the tree, so in that window the name is either still
+ * in the tree or gone from the disk - never inserted stale.
+ */
+static NTSTATUS
+Ext2LookupComponent (
+    IN PEXT2_IRP_CONTEXT    IrpContext,
+    IN PEXT2_VCB            Vcb,
+    IN PEXT2_MCB            Dir,
+    IN PUNICODE_STRING      FileName,
+    IN ULONG                Linkdep,
+    IN BOOLEAN              NotFollow,
+    OUT PEXT2_MCB          *Result
+)
+{
+    PEXT2_MCB       Mcb;
+    PERESOURCE      Stripe;
+    struct dentry  *de = NULL;
+    ULONG           Hash, Ino;
+    NTSTATUS        Status;
+
+    *Result = NULL;
+
+    if (Ext2IsDot(FileName) || Ext2IsDotDot(FileName)) {
+        Mcb = Ext2SearchMcb(Vcb, Dir, FileName);
+        if (Mcb == NULL) {
+            return STATUS_OBJECT_PATH_NOT_FOUND;
+        }
+        *Result = Mcb;
+        return STATUS_SUCCESS;
+    }
+
+    Hash = Ext2HashMcbName(FileName);
+    Stripe = Ext2AcquireNameStripe(Vcb, Dir, Hash, FALSE);
+    Mcb = Ext2FindMcbLocked(Vcb, Dir, FileName, Hash);
+    if (Mcb == NULL) {
+        if (!Ext2IsNameValid(FileName)) {
+            Ext2ReleaseNameStripe(Stripe);
+            return STATUS_OBJECT_NAME_INVALID;
+        }
+        Status = Ext2ScanDir(IrpContext, Vcb, Dir, FileName, &Ino, &de);
+        Ext2ReleaseNameStripe(Stripe);
+        if (!NT_SUCCESS(Status)) {
+            return Status;
+        }
+        Ext2FreeEntry(de);
+        de = NULL;
+
+        Stripe = Ext2AcquireNameStripe(Vcb, Dir, Hash, TRUE);
+        Mcb = Ext2FindMcbLocked(Vcb, Dir, FileName, Hash);
+        if (Mcb == NULL) {
+            Status = Ext2ScanDir(IrpContext, Vcb, Dir, FileName, &Ino, &de);
+            if (NT_SUCCESS(Status)) {
+                Status = Ext2InsertName(IrpContext, Vcb, Dir, FileName, Ino, de, FALSE, &Mcb);
+            }
+        }
+        Ext2ReleaseNameStripe(Stripe);
+        if (Mcb == NULL) {
+            return Status;
+        }
+    } else {
+        Ext2ReleaseNameStripe(Stripe);
+    }
+
+    Ext2ResolveLink(IrpContext, Vcb, Mcb, Linkdep, NotFollow);
+
+    *Result = Mcb;
+    return STATUS_SUCCESS;
+}
+
+/*
+ * Path lookup: FullName from directory Parent (the root for an absolute
+ * name or none), one component at a time. No lock is held from one
+ * component to the next - the directory reached is held by its reference
+ * - so walks of different paths, or of one path, run side by side.
  */
 NTSTATUS
 Ext2LookupFile (
@@ -658,16 +560,91 @@ Ext2LookupFile (
     IN ULONG                Linkdep
 )
 {
-    BOOLEAN     Retry;
-    NTSTATUS    Status;
+    NTSTATUS        Status = STATUS_SUCCESS;
+    UNICODE_STRING  FileName;
+    PEXT2_MCB       Mcb, Dir, Next;
+    USHORT          i = 0, End, Start;
+    BOOLEAN         bDirectory = FALSE;
+    BOOLEAN         NotFollow;
 
-    Status = Ext2LookupFileLocked(IrpContext, Vcb, FullName, Parent, Ext2Mcb,
-                                  Linkdep, TRUE, &Retry);
-    if (Retry) {
-        Status = Ext2LookupFileLocked(IrpContext, Vcb, FullName, Parent, Ext2Mcb,
-                                      Linkdep, FALSE, &Retry);
+    NotFollow = IsFlagOn(Linkdep, EXT2_LOOKUP_NOT_FOLLOW);
+    Linkdep = ClearFlag(Linkdep, EXT2_LOOKUP_FLAG_MASK);
+
+    *Ext2Mcb = NULL;
+
+    DEBUG(DL_RES, ("Ext2LookupFile: %wZ\n", FullName));
+
+    if (Parent == NULL || (FullName->Length > 0 && FullName->Buffer[0] == L'\\')) {
+        Parent = Vcb->McbTree;
     }
-    return Status;
+    if (!IsMcbDirectory(Parent)) {
+        return STATUS_NOT_A_DIRECTORY;
+    }
+    /* a symlink parent stands for its target */
+    Mcb = Ext2ReferDirectory(Vcb, Parent);
+    if (Mcb == NULL) {
+        return STATUS_NOT_A_DIRECTORY;
+    }
+
+    /* the root or the parent itself */
+    End = FullName->Length / sizeof(WCHAR);
+    if (End == 0 || (End == 1 && FullName->Buffer[0] == L'\\')) {
+        *Ext2Mcb = Mcb;
+        return STATUS_SUCCESS;
+    }
+
+    /* is a directory expected ? */
+    while (End > 0 && FullName->Buffer[End - 1] == L'\\') {
+        bDirectory = TRUE;
+        End -= 1;
+    }
+
+    while (i < End) {
+
+        /* skip separators, then take one name */
+        while (i < End && FullName->Buffer[i] == L'\\') i++;
+        Start = i;
+        while (i < End && FullName->Buffer[i] != L'\\') i++;
+        if (i == Start) {
+            break;
+        }
+
+        FileName = *FullName;
+        FileName.Buffer += Start;
+        FileName.Length = (USHORT)((i - Start) * sizeof(WCHAR));
+
+        /* go on in the directory Mcb is (or a symlink to one leads to) */
+        Dir = IsMcbDirectory(Mcb) ? Ext2ReferDirectory(Vcb, Mcb) : NULL;
+        Ext2DerefMcb(Mcb);
+        Mcb = NULL;
+        if (Dir == NULL) {
+            Status = STATUS_NOT_A_DIRECTORY;
+            break;
+        }
+
+        Status = Ext2LookupComponent(IrpContext, Vcb, Dir, &FileName,
+                                     Linkdep, NotFollow, &Next);
+        Ext2DerefMcb(Dir);
+        if (!NT_SUCCESS(Status)) {
+            break;
+        }
+        Mcb = Next;
+    }
+
+    if (!NT_SUCCESS(Status)) {
+        if (Mcb) {
+            Ext2DerefMcb(Mcb);
+        }
+        return Status;
+    }
+
+    if (bDirectory && !IsMcbDirectory(Mcb)) {
+        Ext2DerefMcb(Mcb);
+        return STATUS_NOT_A_DIRECTORY;
+    }
+
+    *Ext2Mcb = Mcb;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS
@@ -699,32 +676,37 @@ Ext2ScanDir (
             __leave;
         }
 
-        /* parent is a symlink ? */
-        if IsMcbSymLink(Parent) {
-            if (Parent->Target) {
-                Ext2ReferMcb(Parent->Target);
-                Ext2DerefMcb(Parent);
-                Parent = Parent->Target;
-                ASSERT(!IsMcbSymLink(Parent));
-            } else {
-                DbgBreak();
+        /* a symlink stands for its target (read under LinkLock) */
+        if (IsMcbSymLink(Parent)) {
+            PEXT2_MCB Target = Ext2ReferDirectory(Vcb, Parent);
+
+            if (Target == NULL) {
                 Status = STATUS_NOT_A_DIRECTORY;
                 __leave;
             }
+            Ext2DerefMcb(Parent);
+            Parent = Target;
         }
 
         de = Ext2BuildEntry(Vcb, Parent, FileName);
         if (!de) {
-            DEBUG(DL_ERR, ( "Ex2ScanDir: failed to allocate dentry.\n"));
+            DEBUG(DL_ERR, ( "Ext2ScanDir: failed to allocate dentry.\n"));
             Status = STATUS_INSUFFICIENT_RESOURCES;
             __leave;
         }
 
-        bh = ext3_find_entry(IrpContext, de, &dir_entry);
-        if (dir_entry) {
-            Status = STATUS_SUCCESS;
-            *Inode = dir_entry->inode;
-            *dentry = de;
+        /* the blocks hold still while an entry change waits (dir_ops.c);
+           the entry is read before they may move again */
+        ExAcquireResourceSharedLite(&Parent->Icb->EntryResource, TRUE);
+        __try {
+            bh = ext3_find_entry(IrpContext, de, &dir_entry);
+            if (dir_entry) {
+                Status = STATUS_SUCCESS;
+                *Inode = dir_entry->inode;
+                *dentry = de;
+            }
+        } __finally {
+            ExReleaseResourceLite(&Parent->Icb->EntryResource);
         }
 
     } __finally {

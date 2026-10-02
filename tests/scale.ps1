@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # scale.ps1 - how the file system scales with threads (guest).
 #
 # The same work split over 1, 2, 4, 8 ... threads, on each target volume:
@@ -11,7 +12,7 @@
 # thread. A file system that serialises its threads stays near 1.0x.
 #
 #   powershell -File scale.ps1 [-Targets C,E] [-Threads 1,2,4,8] [-Files 2000] [-BigMB 128]
-param([string]$Targets = 'C,E', [string]$Threads = '1,2,4,8', [int]$Files = 2000, [int]$BigMB = 128)
+param([string[]]$Targets = @('C', 'E'), [int[]]$Threads = @(1, 2, 4, 8), [int]$Files = 2000, [int]$BigMB = 128)
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @"
 using System;
@@ -77,8 +78,8 @@ public static class Scale {
     }
 }
 "@
-$counts = $Threads -split ',' | ForEach-Object { [int]$_ }
-foreach ($drive in ($Targets -split ',')) {
+$counts = $Threads
+foreach ($drive in $Targets) {
     $fs = (Get-Volume -DriveLetter $drive).FileSystem
     "== ${drive}: ($fs)"
     $base = @{}

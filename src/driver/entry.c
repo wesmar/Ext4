@@ -47,6 +47,7 @@ DriverUnload (IN PDRIVER_OBJECT DriverObject)
 
     DEBUG(DL_FUN, ( "ext4: Unloading routine.\n"));
     DbgPrint("ext4: DriverUnload\n");
+    Ext2UnloadStep(L"UnloadStep", EXT2_STEP_DRIVER_UNLOAD);
 
     /*
      *  Stop the volume watch, the unload watch and the reaper threads
@@ -54,10 +55,13 @@ DriverUnload (IN PDRIVER_OBJECT DriverObject)
      *  gone before we tear any of it down.
      */
     Ext2StopLetterService();
+    Ext2UnloadStep(L"UnloadStep", EXT2_STEP_LETTERS_STOPPED);
     Ext2StopUnloadWatch();
+    Ext2UnloadStep(L"UnloadStep", EXT2_STEP_WATCH_STOPPED);
     Ext2StopReaper(&Ext2Global->FcbReaper);
     Ext2StopReaper(&Ext2Global->McbReaper);
     Ext2StopReaper(&Ext2Global->bhReaper);
+    Ext2UnloadStep(L"UnloadStep", EXT2_STEP_REAPERS_STOPPED);
     if (Ext2Global->LowMemoryHandle) {
         ZwClose(Ext2Global->LowMemoryHandle);
         Ext2Global->LowMemoryHandle = NULL;
@@ -80,10 +84,11 @@ DriverUnload (IN PDRIVER_OBJECT DriverObject)
      */
     Ext2DeleteControlDevices();
 
-    /* the VPBs a forced dismount left on devices go back to their owners */
-    Ext2ReclaimVpbs();
+    /* Prepare-to-unload returned every published VPB before handing off. */
+    ASSERT(!Ext2VpbsPending());
 
     Ext2UnloadAllNls();
+    Ext2UnloadStep(L"UnloadStep", EXT2_STEP_UNLOADED);
 
     ExDeleteResourceLite(&Ext2Global->Resource);
 
@@ -122,9 +127,8 @@ Ext2EresourceAlignmentChecking()
     CL_ASSERT((FIELD_OFFSET(EXT2_GLOBAL, Resource) & 7) == 0);
     CL_ASSERT((FIELD_OFFSET(EXT2_VCB, MainResource) & 7) == 0);
     CL_ASSERT((FIELD_OFFSET(EXT2_VCB, PagingIoResource) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_VCB, MetaInode) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_VCB, MetaBlock) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_VCB, McbLock) & 7) == 0);
+    CL_ASSERT((FIELD_OFFSET(EXT2_VCB, SuperLock) & 7) == 0);
+    CL_ASSERT((FIELD_OFFSET(EXT2_VCB, LinkLock) & 7) == 0);
     CL_ASSERT((FIELD_OFFSET(EXT2_VCB, FcbLock) & 7) == 0);
     CL_ASSERT((FIELD_OFFSET(EXT2_VCB, bd.bd_bh_lock) & 7) == 0);
     CL_ASSERT((FIELD_OFFSET(EXT2_VCB, sbi.s_gd_lock) & 7) == 0);
@@ -132,6 +136,8 @@ Ext2EresourceAlignmentChecking()
     CL_ASSERT((FIELD_OFFSET(EXT2_FCBVCB, PagingIoResource) & 7) == 0);
     CL_ASSERT((FIELD_OFFSET(EXT2_FCB, MainResource) & 7) == 0);
     CL_ASSERT((FIELD_OFFSET(EXT2_FCB, PagingIoResource) & 7) == 0);
+    CL_ASSERT((FIELD_OFFSET(EXT2_ICB, DirResource) & 7) == 0);
+    CL_ASSERT((FIELD_OFFSET(EXT2_ICB, EntryResource) & 7) == 0);
 }
 
 /*
@@ -232,6 +238,7 @@ DriverEntry (
 
     /* query registry settings */
     Ext2QueryRegistrySettings(RegistryPath);
+    Ext2UnloadStep(L"UnloadStep", EXT2_STEP_LOADED);
 
     /* The control devices take the driver's own IOCTLs (volume properties,
        mount points, statistics): SYSTEM and administrators only, enforced
@@ -332,9 +339,7 @@ DriverEntry (
 
     DriverObject->DriverUnload                              = DriverUnload;
 
-    //
-    // Initialize the fast I/O entry points
-    //
+    /* Initialize the fast I/O entry points */
 
     FastIoDispatch = &(Ext2Global->FastIoDispatch);
 
@@ -359,10 +364,8 @@ DriverEntry (
 
     DriverObject->FastIoDispatch = FastIoDispatch;
 
-    //
-    //  initializing structure sizes for statistics
-    //  1 means flexible/not fixed for all allocations (for different volumes).
-    //
+    /* initializing structure sizes for statistics
+       1 means flexible/not fixed for all allocations (for different volumes). */
     Ext2Global->PerfStat.Magic   = EXT2_PERF_STAT_MAGIC;
     Ext2Global->PerfStat.Version = EXT2_PERF_STAT_VER2;
     Ext2Global->PerfStat.Length  = sizeof(EXT2_PERF_STATISTICS_V2);
@@ -407,9 +410,7 @@ DriverEntry (
         break;
     }
 
-    //
-    // Initialize the Cache Manager callbacks
-    //
+    /* Initialize the Cache Manager callbacks */
 
     CacheManagerCallbacks = &(Ext2Global->CacheManagerCallbacks);
     CacheManagerCallbacks->AcquireForLazyWrite  = Ext2AcquireForLazyWrite;
@@ -422,9 +423,7 @@ DriverEntry (
     Ext2Global->CacheManagerNoOpCallbacks.AcquireForReadAhead  = Ext2NoOpAcquire;
     Ext2Global->CacheManagerNoOpCallbacks.ReleaseFromReadAhead = Ext2NoOpRelease;
 
-    //
-    // Initialize FS Filter callbacks
-    //
+    /* Initialize FS Filter callbacks */
 
     RtlZeroMemory(&Ext2Global->FilterCallbacks,  sizeof(FS_FILTER_CALLBACKS));
     Ext2Global->FilterCallbacks.SizeOfFsFilterCallbacks = sizeof(FS_FILTER_CALLBACKS);
@@ -432,9 +431,7 @@ DriverEntry (
     FsRtlRegisterFileSystemFilterCallbacks(DriverObject,  &Ext2Global->FilterCallbacks );
 
 
-    //
-    // Initialize the global data
-    //
+    /* Initialize the global data */
 
     ExInitializeNPagedLookasideList( &(Ext2Global->Ext2IrpContextLookasideList),
                                      NULL,

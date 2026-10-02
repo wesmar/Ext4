@@ -1,6 +1,10 @@
 /**
  * registry.c - driver-wide settings read from the service registry key.
  *
+ * Copyright (c) 2026 Marek Wesolowski (WESMAR)
+ * Derived from Ext2Fsd (Matt Wu), Ext4Fsd (Bo Branten) and Linux ext4/jbd2.
+ * SPDX-License-Identifier: GPL-2.0-only
+ *
  * Values under Services\ext4\Parameters (every one optional):
  *
  *   WritingSupport    REG_DWORD  0: mount every volume read-only

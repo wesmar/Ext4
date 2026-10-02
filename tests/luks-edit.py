@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 # luks-edit.py <device> zero-digest | segment-cipher <spec>
 # Rewrite the JSON metadata of a LUKS2 header - both copies, checksums
 # recomputed, so the header still reads as valid - into what a corrupt or

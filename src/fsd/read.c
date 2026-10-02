@@ -194,7 +194,6 @@ Ext2ReadVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 
                 Buffer = Ext2GetUserBuffer(Irp);
                 if (Buffer == NULL) {
-                    DbgBreak();
                     Status = STATUS_INVALID_USER_BUFFER;
                     __leave;
                 }
@@ -363,9 +362,7 @@ Ext2ReadInode (
             __leave;
         }
 
-        //
-        // Build the scatterred block ranges to be read
-        //
+        /* Build the scatterred block ranges to be read */
 
         if (bDirectIo) {
             RealSize = CEILING_ALIGNED(ULONG, Size, SECTOR_SIZE - 1);
@@ -417,7 +414,7 @@ Ext2ReadInode (
 
             ASSERT(IrpContext != NULL);
 
-            // Offset should be SECTOR_SIZE aligned ...
+            /* Offset should be SECTOR_SIZE aligned ... */
             Status = Ext2ReadWriteBlocks(
                          IrpContext,
                          Vcb,
@@ -531,7 +528,7 @@ Ext2ReadFile(IN PEXT2_IRP_CONTEXT IrpContext)
             __leave;
         }
 
-        if ((IsSymLink(Fcb) && IsFileDeleted(Fcb->Mcb->Target)) ||
+        if ((IsSymLink(Fcb) && Ext2IsLinkDangling(Vcb, Fcb->Mcb)) ||
             IsInodeDeleted(Fcb)) {
             Status = STATUS_FILE_DELETED;
             __leave;
@@ -551,14 +548,12 @@ Ext2ReadFile(IN PEXT2_IRP_CONTEXT IrpContext)
         if (Nocache && (ByteOffset.LowPart & (SECTOR_SIZE - 1) ||
                         Length & (SECTOR_SIZE - 1))) {
             Status = STATUS_INVALID_PARAMETER;
-            DbgBreak();
             __leave;
         }
 
         if (FlagOn(IrpContext->MinorFunction, IRP_MN_DPC)) {
             ClearFlag(IrpContext->MinorFunction, IRP_MN_DPC);
             Status = STATUS_PENDING;
-            DbgBreak();
             __leave;
         }
 
@@ -646,9 +641,7 @@ Ext2ReadFile(IN PEXT2_IRP_CONTEXT IrpContext)
                 __leave;
             }
 
-            //
-            //  Set the flag indicating if Fast I/O is possible
-            //
+            /* Set the flag indicating if Fast I/O is possible */
 
             Fcb->Header.IsFastIoPossible = Ext2IsFastIoPossible(Fcb);
         }
@@ -686,7 +679,6 @@ Ext2ReadFile(IN PEXT2_IRP_CONTEXT IrpContext)
                 Buffer = Ext2GetUserBuffer(Irp);
                 if (Buffer == NULL) {
                     Status = STATUS_INVALID_USER_BUFFER;
-                    DbgBreak();
                     __leave;
                 }
 
@@ -909,8 +901,7 @@ Ext2Read (IN PEXT2_IRP_CONTEXT IrpContext)
                 Status = Ext2ReadFile(IrpContext);
                 bCompleteRequest = FALSE;
             } else {
-                DEBUG(DL_ERR, ( "Ext2Read: Inavlid FileObject (Vcb or Fcb corrupted)\n"));
-                DbgBreak();
+                DEBUG(DL_ERR, ( "Ext2Read: Invalid FileObject (Vcb or Fcb corrupted)\n"));
 
                 Status = STATUS_INVALID_PARAMETER;
                 bCompleteRequest = TRUE;

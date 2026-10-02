@@ -144,7 +144,6 @@ Ext2DoExtentExpand(
                                   *Number, &bh_got, 1, flags)) < 0) {
         DEBUG(DL_ERR, ("Expand Block insufficient resources, Number: %u,"
                        " err: %d\n", *Number, rc));
-        DbgBreak();
         return Ext2WinntError(rc);
     }
 
@@ -191,7 +190,6 @@ Ext2ExpandExtent(
 
         if (Block && IsZoneInited(Mcb)) {
             if (!Ext2AddBlockExtent(Vcb, Mcb, Start + Count, Block, Number)) {
-                DbgBreak();
                 ClearLongFlag(Mcb->Icb->Flags, ICB_ZONE_INITED);
                 Ext2ClearAllExtents(&Mcb->Icb->Extents);
             }
@@ -432,9 +430,10 @@ int ext4_ext_get_blocks(void *icb, handle_t *handle, struct inode *inode, ext4_l
                                  flags & EXT4_GET_BLOCKS_PRE_IO);
 
 	if (err) {
-		/* free data blocks we just allocated */
-		ext4_free_blocks(icb, handle, inode, NULL, ext4_ext_pblock(&newex),
-				le16_to_cpu(newex.ee_len), get_default_free_blocks_flags(inode));
+		/* Roll back exactly this allocation. ee_len also carries the
+		 * unwritten flag (0x8000), which is not part of the block count. */
+		ext4_free_blocks(icb, handle, inode, NULL, newblock,
+				(int)allocated, get_default_free_blocks_flags(inode));
 		goto out2;
 	}
 	

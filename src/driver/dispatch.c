@@ -34,23 +34,17 @@ Ext2OplockComplete (
     IN PIRP Irp
 )
 {
-    //
-    //  Check on the return value in the Irp.
-    //
+    /* Check on the return value in the Irp. */
 
     if (Irp->IoStatus.Status == STATUS_SUCCESS) {
 
-        //
-        //  queue the Irp context in the workqueue.
-        //
+        /* queue the Irp context in the workqueue. */
 
         Ext2QueueRequest((PEXT2_IRP_CONTEXT)Context);
 
     } else {
 
-        //
-        //  complete the request in case of failure
-        //
+        /* complete the request in case of failure */
 
         Ext2CompleteIrpContext( (PEXT2_IRP_CONTEXT) Context,
                                 Irp->IoStatus.Status );
@@ -92,9 +86,7 @@ Ext2LockIrp (
     if ( IrpContext->MajorFunction == IRP_MJ_READ ||
             IrpContext->MajorFunction == IRP_MJ_WRITE ) {
 
-        //
-        //  lock the user's buffer to MDL, if the I/O is bufferred
-        //
+        /* lock the user's buffer to MDL, if the I/O is bufferred */
 
         if (!IsFlagOn(IrpContext->MinorFunction, IRP_MN_MDL)) {
 
@@ -129,7 +121,7 @@ Ext2LockIrp (
         }
     }
 
-    //  Mark the request as pending status
+    /* Mark the request as pending status */
 
     IoMarkIrpPending( Irp );
 
@@ -404,13 +396,6 @@ Ext2BuildRequest (PDEVICE_OBJECT   DeviceObject, PIRP Irp)
                 Ext2CompleteRequest(Irp, TRUE, IO_NO_INCREMENT);
 
             } else {
-
-                if ((IrpContext->MajorFunction == IRP_MJ_CREATE) &&
-                        !AtIrqlPassiveLevel) {
-
-                    DbgBreak();
-                }
-
                 Status = Ext2DispatchRequest(IrpContext);
             }
         } __except (Ext2ExceptionFilter(IrpContext, GetExceptionInformation())) {

@@ -189,9 +189,10 @@ ext4_ext_rm_leaf(void *icb, handle_t *handle, struct inode *inode,
 
 
 		if (a != ex_ee_block && b != ex_ee_block + ex_ee_len - 1) {
-			block = 0;
-			num = 0;
-			BUG();
+			/* a cut inside one extent: removal runs from start to the
+			   end of the file, so only a corrupt tree asks for it */
+			err = -EFSCORRUPTED;
+			goto out;
 		} else if (a != ex_ee_block) {
 			/* remove tail of the extent */
 			block = ex_ee_block;
@@ -200,8 +201,10 @@ ext4_ext_rm_leaf(void *icb, handle_t *handle, struct inode *inode,
 			/* remove head of the extent */
 			block = a;
 			num = b - a;
-			/* there is no "make a hole" API yet */
-			BUG();
+			/* removal runs to the end of the file: a head cut means the
+			   extent runs past the last logical block (corrupt tree) */
+			err = -EFSCORRUPTED;
+			goto out;
 		} else {
 			/* remove whole extent: excellent! */
 			block = ex_ee_block;

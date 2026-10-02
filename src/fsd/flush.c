@@ -58,7 +58,7 @@ Ext2FlushFile (
 
     __try {
 
-        /* do nothing if target fie was deleted */
+        /* do nothing if target file was deleted */
         if (FlagOn(Fcb->Flags, FCB_DELETE_PENDING)) {
             IoStatus.Status = STATUS_FILE_DELETED;
             __leave;
@@ -122,7 +122,11 @@ Ext2FlushFiles(
 
     DEBUG(DL_INF, ( "Flushing Files ...\n"));
 
-    // Flush all Fcbs in Vcb list queue.
+    /* the list changes under FcbLock (opens, closes, the reaper): walked
+       under it too */
+    ExAcquireResourceSharedLite(&Vcb->FcbLock, TRUE);
+
+    /* Flush all Fcbs in Vcb list queue. */
     for (ListEntry = Vcb->FcbList.Flink;
             ListEntry != &Vcb->FcbList;
             ListEntry = ListEntry->Flink ) {
@@ -140,6 +144,7 @@ Ext2FlushFiles(
         }
         ExReleaseResourceLite(&Fcb->MainResource);
     }
+    ExReleaseResourceLite(&Vcb->FcbLock);
 
     return IoStatus.Status;
 }
@@ -173,9 +178,7 @@ Ext2Flush (IN PEXT2_IRP_CONTEXT IrpContext)
 
         DeviceObject = IrpContext->DeviceObject;
 
-        //
-        // This request is not allowed on the main device object
-        //
+        /* This request is not allowed on the main device object */
         if (IsExt2FsDevice(DeviceObject)) {
             Status = STATUS_INVALID_DEVICE_REQUEST;
             __leave;
@@ -276,7 +279,7 @@ Ext2Flush (IN PEXT2_IRP_CONTEXT IrpContext)
 
             if (Vcb && Irp && IrpSp && NT_SUCCESS(Status) && !IsVcbReadOnly(Vcb)) {
 
-                // Call the disk driver to flush the physial media.
+                /* Call the disk driver to flush the physial media. */
                 NTSTATUS DriverStatus;
                 PIO_STACK_LOCATION NextIrpSp;
 

@@ -33,7 +33,6 @@ Ext2GetInodeLba (
     gd = ext4_get_group_desc(&Vcb->sb, group, &bh);
     if (!bh) {
         *offset = 0;
-        DbgBreak();
         return FALSE;
     }
     loc = (LONGLONG)ext4_inode_table(&Vcb->sb, gd);
@@ -516,8 +515,7 @@ int ext3_inode_blocks_set(struct ext4_inode *raw_inode,
     }
 
     if (!EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HUGE_FILE)) {
-        EXT3_SET_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
-        Ext2SaveSuper(NULL, Vcb);
+        Ext2SetSuperRoCompat(NULL, Vcb, EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
     }
 
     if (i_blocks <= 0xffffffffffff) {

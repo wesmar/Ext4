@@ -86,7 +86,7 @@ Ext2NiPrintf(
 
     va_end(ap);
 
-} // Ext2NiPrintf()
+} /* Ext2NiPrintf() */
 
 ULONG
 Ext2GetProcessNameOffset ( VOID )

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef _LINUX_TYPES_H
 #define _LINUX_TYPES_H
 
@@ -42,9 +43,7 @@ typedef __u64       u64;
 
 #define bool        BOOLEAN
 
-//
-// gcc special keyworks
-//
+/* gcc special keyworks */
 #define __attribute__(x)
 #define __bitwise
 #define __releases(x)
@@ -92,9 +91,7 @@ typedef unsigned long ulong_ptr_t;
 # define CFS_ORDER_PER_LONG (05)
 #endif
 
-//
-// bit spin lock
-//
+/* bit spin lock */
 
 #define __acquire(x)
 #define __release(x)
@@ -102,9 +99,7 @@ typedef unsigned long ulong_ptr_t;
 #define preempt_enable()
 #define preempt_disable()
 
-//
-// __FUNCTION__ issue
-//
+/* __FUNCTION__ issue */
 
 #if _MSC_VER <= 1300
 #define __FUNCTION__ ("jbd")

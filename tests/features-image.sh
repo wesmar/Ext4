@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # features-image.sh <disk size>: the Linux features test disk. One partition,
 # ext4 with -O casefold (as SteamOS formats its microSD cards):
 #   /cf    a casefolded directory of 300 files with mixed-case, Polish and

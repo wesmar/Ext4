@@ -9,15 +9,11 @@
 #ifndef _EXT4_EXT4FS_GLOBAL_H_
 #define _EXT4_EXT4FS_GLOBAL_H_
 
-//
-// Ext2Fsd Driver Definitions
-//
+/* Ext2Fsd Driver Definitions */
 
-//
-// EXT2_IDENTIFIER_TYPE
-//
-// Identifiers used to mark the structures
-//
+/* EXT2_IDENTIFIER_TYPE
+
+   Identifiers used to mark the structures */
 
 typedef enum _EXT2_IDENTIFIER_TYPE {
 #ifdef _MSC_VER
@@ -45,11 +41,9 @@ typedef enum _EXT2_IDENTIFIER_TYPE {
 #endif
 } EXT2_IDENTIFIER_TYPE;
 
-//
-// EXT2_IDENTIFIER
-//
-// Header used to mark the structures
-//
+/* EXT2_IDENTIFIER
+
+   Header used to mark the structures */
 typedef struct _EXT2_IDENTIFIER {
     EXT2_IDENTIFIER_TYPE     Type;
     ULONG                    Size;
@@ -60,6 +54,22 @@ typedef struct _EXT2_IDENTIFIER {
 
 typedef struct _EXT2_MCB  EXT2_MCB, *PEXT2_MCB;
 typedef struct _EXT2_ICB  EXT2_ICB, *PEXT2_ICB;
+
+/* one lock of a striped set (core\stripes.c), alone on its cache lines:
+   stripes are taken by different processors at once, and two sharing a
+   line would bounce it between them as one lock does */
+typedef struct DECLSPEC_CACHEALIGN _EXT2_LOCK_STRIPE {
+    ERESOURCE   Lock;
+} EXT2_LOCK_STRIPE, *PEXT2_LOCK_STRIPE;
+
+/* the locks of the block groups that fall on one stripe (core\stripes.c):
+   the block bitmap and the inode bitmap are changed apart - a delete frees
+   both at once - and the descriptor they share is checksummed as one step */
+typedef struct DECLSPEC_CACHEALIGN _EXT2_GROUP_STRIPE {
+    ERESOURCE   BlockLock;
+    ERESOURCE   InodeLock;
+    EX_PUSH_LOCK DescLock;      /* not a spin lock: the descriptor is in a pageable cache view */
+} EXT2_GROUP_STRIPE, *PEXT2_GROUP_STRIPE;
 
 /* buckets of the per-volume inode node hash (EXT2_VCB.IcbTable): as many
    as the name hash has, since every cached name holds an Icb. With 256 the
@@ -72,13 +82,10 @@ typedef struct _EXT2_ICB  EXT2_ICB, *PEXT2_ICB;
 
 typedef PVOID   PBCB;
 
-//
 
-//
-// EXT2_GLOBAL_DATA
-//
-// Data that is not specific to a mounted volume
-//
+/* EXT2_GLOBAL_DATA
+
+   Data that is not specific to a mounted volume */
 
 typedef VOID (*EXT2_REAPER_RELEASE)(PVOID);
 
@@ -158,6 +165,7 @@ typedef struct _EXT2_GLOBAL {
     KEVENT                      VolumeReleased; /* a volume may have become idle */
     KEVENT                      UnloadStarted;  /* set for good once sc stop is seen */
     volatile LONG               MountsInFlight; /* Ext2MountVolume calls not yet done */
+    volatile LONG               VcbTeardownsInFlight; /* unlinked VCBs still being destroyed */
 
     /* drive letters for ext volumes (letter.c) */
     PVOID                       VolumeNotifyEntry;    /* PnP volume-interface watch */
@@ -200,9 +208,7 @@ typedef struct _EXT2_GLOBAL {
 
 } EXT2_GLOBAL, *PEXT2_GLOBAL;
 
-//
-// Flags for EXT2_GLOBAL_DATA
-//
+/* Flags for EXT2_GLOBAL_DATA */
 
 #define EXT2_UNLOAD_PENDING     0x00000001
 #define EXT2_SUPPORT_WRITING    0x00000002
@@ -211,15 +217,11 @@ typedef struct _EXT2_GLOBAL {
 #define EXT2_AUTO_MOUNT         0x00000010
 #define EXT2_DEVICES_DELETED    0x00000020  /* control devices already gone (devctl.c) */
 
-//
-// Glboal Ext2Fsd Memory Block
-//
+/* Glboal Ext2Fsd Memory Block */
 
 extern PEXT2_GLOBAL Ext2Global;
 
-//
-// memory allocation statistics
-//
+/* memory allocation statistics */
 
 
 #define INC_MEM_COUNT(_i, _p, _s) do { ASSERT(_p); Ext2TraceMemory(TRUE, (int) (_i), (PVOID)(_p), (LONG)(_s)); } while(0)
@@ -227,9 +229,7 @@ extern PEXT2_GLOBAL Ext2Global;
 #define INC_IRP_COUNT(IrpContext) Ext2TraceIrpContext(TRUE, (IrpContext))
 #define DEC_IRP_COUNT(IrpContext) Ext2TraceIrpContext(FALSE, (IrpContext))
 
-//
-// Driver Extension define
-//
+/* Driver Extension define */
 
 #define IsExt2FsDevice(DO) ((DO == Ext2Global->DiskdevObject) || \
                             (DO == Ext2Global->CdromdevObject) )
@@ -237,16 +237,16 @@ extern PEXT2_GLOBAL Ext2Global;
 
 typedef struct _EXT2_FCBVCB {
 
-    // Command header for Vcb and Fcb
+    /* Command header for Vcb and Fcb */
     FSRTL_ADVANCED_FCB_HEADER   Header;
 
     FAST_MUTEX                  Mutex;
 
-    // Ext2Fsd identifier
+    /* Ext2Fsd identifier */
     EXT2_IDENTIFIER             Identifier;
 
 
-    // Locking resources
+    /* Locking resources */
     ERESOURCE                   MainResource;
     ERESOURCE                   PagingIoResource;
 

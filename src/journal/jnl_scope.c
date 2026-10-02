@@ -20,13 +20,6 @@ static __inline ULONG JnlScopeHash(PKTHREAD Thread)
     return (ULONG)(((ULONG_PTR)Thread >> 4) & (JNL_SCOPE_BUCKETS - 1));
 }
 
-VOID JnlSleep(LONGLONG Interval100ns)
-{
-    LARGE_INTEGER t;
-    t.QuadPart = -Interval100ns;
-    KeDelayExecutionThread(KernelMode, FALSE, &t);
-}
-
 /* SCOPES (per-thread handles) *******************************************/
 
 static PEXT2_JSCOPE JnlFindScope(PKTHREAD Thread)
@@ -164,7 +157,8 @@ static VOID JnlDetach(PEXT2_JOURNAL J, PEXT2_JTXN t)
     JnlLock(J, irql);
     ASSERT(t->Updates > 0);
     t->Updates--;
-    if (t->Updates == 0 && t->State == JTXN_LOCKED)
+    /* the commit waits for a locked transaction to drain, a stop for any */
+    if (t->Updates == 0 && (t->State == JTXN_LOCKED || (J->Flags & JF_STOPPING)))
         KeSetEvent(&J->UpdatesEvent, 0, FALSE);
     JnlUnlock(J, irql);
 }
@@ -244,6 +238,41 @@ Ext2JournalLeaveScope(IN PEXT2_VCB Vcb)
             JnlDetach(s->Journal[i], s->Txn[i]);
     }
     ExFreeToNPagedLookasideList(&JnlScopeLookaside, s);
+}
+
+/*
+ * Join the running transaction before taking a lock that holders of a
+ * handle may wait for. A commit waits for every joined handle, so whoever
+ * holds such a lock must never wait to join: a handle queued behind the
+ * lock would keep the commit from ever finishing. Joined first, the
+ * request's later modifications find the handle active and file their
+ * buffers without waiting - Linux starts its handle before i_rwsem and the
+ * allocator locks for the same reason.
+ */
+VOID
+Ext2JournalJoin(IN PEXT2_VCB Vcb)
+{
+    PEXT2_JOURNAL J = Vcb->Journal;
+
+    if (J != NULL && (J->Flags & JF_ACTIVE) && !(J->Flags & JF_ABORTED)) {
+        JnlActivate(J);
+    }
+}
+
+/*
+ * __brelse() hook: a buffer the journal holds records for lost a holder.
+ * A checkpoint waiting for such buffers to be let go (JnlCheckpointOldest)
+ * looks at them again. Reading the event first keeps the common case - no
+ * checkpoint waiting, or already woken - free of the dispatcher lock.
+ */
+VOID
+Ext2JournalBufferReleased(IN PEXT2_VCB Vcb)
+{
+    PEXT2_JOURNAL J = Vcb->Journal;
+
+    if (J != NULL && J->HeldWaiters != 0 && !KeReadStateEvent(&J->HeldEvent)) {
+        KeSetEvent(&J->HeldEvent, IO_NO_INCREMENT, FALSE);
+    }
 }
 
 /*

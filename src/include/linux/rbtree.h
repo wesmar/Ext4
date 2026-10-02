@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
   Red Black Trees
   (C) 1999  Andrea Arcangeli <andrea@suse.de>

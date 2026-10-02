@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # fsbench.ps1 - the same workloads on several volumes, side by side (guest).
 #
 # Small-file metadata (create, open, stat, enumerate, read, rename, delete,
@@ -6,7 +7,7 @@
 # guest to see where the driver stands and what to work on next.
 #
 #   powershell -File fsbench.ps1 [-Targets C,E] [-Files 2000] [-BigMB 512]
-param([string]$Targets = 'C,E', [int]$Files = 2000, [int]$BigMB = 512)
+param([string]$Targets = 'C,E', [ValidateRange(1,1000000)][int]$Files = 2000, [ValidateRange(1,65536)][int]$BigMB = 512)
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @"
 using System;
@@ -17,11 +18,42 @@ using Microsoft.Win32.SafeHandles;
 public static class FB {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern SafeFileHandle CreateFile(string p, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr VirtualAlloc(IntPtr address, UIntPtr size, uint type, uint protect);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool VirtualFree(IntPtr address, UIntPtr size, uint type);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool ReadFile(SafeFileHandle handle, IntPtr buffer, uint count, out uint read, IntPtr overlapped);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetFilePointerEx(SafeFileHandle handle, long offset, out long position, uint origin);
     const uint NO_BUFFERING = 0x20000000, WRITE_THROUGH = 0x80000000;
     public static string Errors = "";
     static long T(Action a) { var sw = Stopwatch.StartNew(); try { a(); } catch (Exception e) { Errors += e.Message.Trim() + " | "; return -1; } return sw.ElapsedMilliseconds; }
+    // VirtualAlloc gives sector-aligned storage; a managed byte[] does not.
+    static void ReadUncached(string path, long size, Random rng) {
+        uint chunk = rng == null ? 1U << 20 : 4096U;
+        IntPtr buffer = VirtualAlloc(IntPtr.Zero, new UIntPtr(chunk), 0x3000, 4);
+        if (buffer == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            using (var h = CreateFile(path, 0x80000000, 1, IntPtr.Zero, 3, NO_BUFFERING, IntPtr.Zero)) {
+                if (h.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                long count = rng == null ? size / chunk : 20000;
+                for (long i = 0; i < count; i++) {
+                    if (rng != null) {
+                        long position;
+                        if (!SetFilePointerEx(h, (long)rng.Next(0, (int)(size / chunk)) * chunk, out position, 0))
+                            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                    }
+                    uint read;
+                    if (!ReadFile(h, buffer, chunk, out read, IntPtr.Zero))
+                        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                    if (read != chunk) throw new IOException("Short unbuffered read");
+                }
+            }
+        } finally { VirtualFree(buffer, UIntPtr.Zero, 0x8000); }
+    }
     public static string Run(string root, int n, int bigMB) {
-        if (Directory.Exists(root)) Directory.Delete(root, true);
+        if (Directory.Exists(root)) throw new IOException("Benchmark directory already exists: " + root);
         Directory.CreateDirectory(root);
         string d = Path.Combine(root, "small");
         Directory.CreateDirectory(d);
@@ -44,12 +76,12 @@ public static class FB {
         using (var f = new FileStream(rnd, FileMode.Create)) { f.SetLength(rsize); var mb = new byte[1 << 20]; for (long o = 0; o < rsize; o += mb.Length) f.Write(mb, 0, mb.Length); }
         var rng = new Random(7);
         r.Add("random-4k-write " + T(() => { using (var f = new FileStream(rnd, FileMode.Open, FileAccess.ReadWrite, FileShare.None, 1)) { for (int i = 0; i < 20000; i++) { f.Position = (long)rng.Next(0, (int)(rsize / 4096)) * 4096; f.Write(four, 0, 4096); } f.Flush(true); } }));
-        r.Add("random-4k-read-nocache " + T(() => { using (var h = CreateFile(rnd, 0x80000000, 1, IntPtr.Zero, 3, NO_BUFFERING, IntPtr.Zero)) using (var f = new FileStream(h, FileAccess.Read, 1)) { var b = new byte[4096]; for (int i = 0; i < 20000; i++) { f.Position = (long)rng.Next(0, (int)(rsize / 4096)) * 4096; f.Read(b, 0, 4096); } } }));
+        r.Add("random-4k-read-nocache " + T(() => ReadUncached(rnd, rsize, rng)));
         string big = Path.Combine(root, "big.bin");
         long bsize = (long)bigMB << 20;
         var buf = new byte[1 << 20]; new Random(3).NextBytes(buf);
         r.Add("seq-write+flush " + T(() => { using (var f = new FileStream(big, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20)) { for (long o = 0; o < bsize; o += buf.Length) f.Write(buf, 0, buf.Length); f.Flush(true); } }));
-        r.Add("seq-read-nocache " + T(() => { using (var h = CreateFile(big, 0x80000000, 1, IntPtr.Zero, 3, NO_BUFFERING, IntPtr.Zero)) using (var f = new FileStream(h, FileAccess.Read, 1)) { var b = new byte[1 << 20]; while (f.Read(b, 0, b.Length) > 0) { } } }));
+        r.Add("seq-read-nocache " + T(() => ReadUncached(big, bsize, null)));
         r.Add("overwrite-inplace " + T(() => { using (var f = new FileStream(big, FileMode.Open, FileAccess.Write, FileShare.None, 1 << 20)) { for (long o = 0; o < bsize; o += buf.Length) f.Write(buf, 0, buf.Length); f.Flush(true); } }));
         Directory.Delete(root, true);
         return string.Join(";", r);
@@ -57,11 +89,13 @@ public static class FB {
 }
 "@
 $results = [ordered]@{}
+$fail = 0
+$runId = [guid]::NewGuid().ToString('N')
 foreach ($t in @($Targets -split '[,\s]+' | Where-Object { $_ })) {
-    $root = if ($t -eq 'C') { 'C:\Users\Administrator\fsbench' } else { "$($t):\fsbench" }
+    $root = if ($t -eq 'C') { Join-Path $env:USERPROFILE "fsbench-$runId" } else { "$($t):\fsbench-$runId" }
     [FB]::Errors = ''
     $out = [FB]::Run($root, $Files, $BigMB)
-    if ([FB]::Errors) { "$t errors: $([FB]::Errors)" }
+    if ([FB]::Errors) { "$t errors: $([FB]::Errors)"; $fail++ }
     foreach ($kv in ($out -split ';')) {
         $k, $v = $kv -split ' '
         if (-not $results.Contains($k)) { $results[$k] = [ordered]@{} }
@@ -75,3 +109,5 @@ foreach ($k in $results.Keys) {
     $ratio = if ($names.Count -ge 2 -and $row[$names[0]] -gt 0) { '{0,8:N2}x' -f ($row[$names[1]] / $row[$names[0]]) } else { '' }
     "{0,-24}" -f $k + (($names | ForEach-Object { "{0,10}" -f $row[$_] }) -join '') + $ratio
 }
+"FSBENCH: $fail failed"
+exit $fail

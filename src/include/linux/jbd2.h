@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * linux/include/linux/jbd2.h
  *
@@ -19,12 +20,8 @@
 /* Allow this file to be included directly into e2fsprogs */
 
 #include <linux/types.h>
-//#include <linux/buffer_head.h>
 #include <linux/journal-head.h>
 #include <linux/stddef.h>
-//#include <linux/mutex.h>
-//#include <linux/timer.h>
-//#include <linux/slab.h>
 #include <linux/bit_spinlock.h>
 #include <linux/module.h>
 
@@ -74,7 +71,7 @@ struct lock_class_key {
  */
 #define JBD2_DEFAULT_MAX_COMMIT_AGE 5
 
-#define jbd_debug//(n, fmt, a)    /**/
+#define jbd_debug /* (n, fmt, a)    /** / */
 
 extern void *jbd2_alloc(size_t size, gfp_t flags);
 extern void jbd2_free(void *ptr, size_t size);
@@ -313,7 +310,6 @@ typedef struct journal_superblock_s
 
 
 #include <linux/fs.h>
-//#include <linux/sched.h>
 
 enum jbd_state_bits {
 	BH_JBD			/* Has an attached ext3 journal_head */
@@ -326,7 +322,7 @@ enum jbd_state_bits {
 	BH_State,		/* Pins most journal_head state */
 	BH_JournalHead,		/* Pins bh->b_private and jh->b_bh */
 	BH_Shadow,		/* IO on shadow buffer is running */
-	//BH_Verified,		/* Metadata block has been verified ok */
+	/* BH_Verified,		/* Metadata block has been verified ok * / */
 	BH_JBDPrivateStart,	/* First bit available for private use by FS */
 };
 
@@ -340,7 +336,6 @@ BUFFER_FNS(RevokeValid, revokevalid)
 TAS_BUFFER_FNS(RevokeValid, revokevalid)
 BUFFER_FNS(Freed, freed)
 BUFFER_FNS(Shadow, shadow)
-//BUFFER_FNS(Verified, verified)
 
 static inline struct buffer_head *jh2bh(struct journal_head *jh)
 {
@@ -675,7 +670,6 @@ struct transaction_s
 	/*
 	 * When this transaction started, in nanoseconds [no locking]
 	 */
-	//ktime_t			t_start_time;
 
 	/*
 	 * How many handles used this transaction? [none]
@@ -766,7 +760,6 @@ struct journal_s
 	/**
 	 * @j_state_lock: Protect the various scalars in the journal.
 	 */
-	//rwlock_t		j_state_lock;
 
 	/**
 	 * @j_barrier_count:
@@ -1592,11 +1585,9 @@ static inline tid_t  jbd2_get_latest_transaction(journal_t *journal)
 {
 	tid_t tid;
 
-	//read_lock(&journal->j_state_lock);
 	tid = journal->j_commit_request;
 	if (journal->j_running_transaction)
 		tid = journal->j_running_transaction->t_tid;
-	//read_unlock(&journal->j_state_lock);
 	return tid;
 }
 

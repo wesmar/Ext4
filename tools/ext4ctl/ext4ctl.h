@@ -50,6 +50,7 @@ void Blake2b(void *Out, size_t OutLen, const void *In, size_t InLen);
 
 #define ARGON2_I        1
 #define ARGON2_ID       2
+#define ARGON2_MAX_LANES 64     /* the most a header may ask for */
 
 typedef struct _ARGON2_INPUT {
     const void *Password;   size_t PasswordLength;
@@ -143,24 +144,45 @@ BOOL LuksUnlockKey(LUKS_DEVICE *Dev, const LUKS_VOLUME *Volume,
                    const void *Passphrase, ULONG PassphraseLength,
                    UINT8 Key[LUKS_MAX_KEY], int *Keyslot);
 
-/* ---------------------------------------------------------------- LVM (lvm.c) */
+/* ---------------------------------------------------------------- common */
 
 #define EXT4CTL_LETTER_WAIT_MS  15000               /* for the mount and the letter */
 #define EXT4CTL_LETTER_POLL_MS  100
+#define EXT4CTL_GIB             1073741824.0        /* sizes are shown in GiB */
+#define EXT4CTL_NO_DRIVER       ((DWORD)-1)         /* DriverControl: not even opened */
 #define EXT2_SUPER_MAGIC_OFFSET 1080                /* s_magic of the superblock at 1024 */
 #define EXT2_SUPER_MAGIC        0xEF53
 
-int  CmdLvList(ULONG Crypt);
+/* ---------------------------------------------------------------- commands */
+
+void Usage(void);                                               /* main.c */
+int  CmdList(void);                                             /* cmd_crypt.c */
+int  CmdUnlock(int argc, WCHAR **argv);
+int  CmdLock(int argc, WCHAR **argv);
+int  CmdStatus(void);
+int  CmdLvList(ULONG Crypt);                                    /* lvm_cmd.c */
 int  CmdLvOpen(ULONG Crypt, const WCHAR *Volume, WCHAR Letter);
 int  CmdLvClose(const WCHAR *Which, BOOL Force);
 void LvStatus(void);
+int  CmdSelfTest(void);                                         /* selftest.c */
 
-/* ---------------------------------------------------------------- output */
+/* the passphrase into Out (Room bytes): from KeyFile, a line of stdin, or
+   typed at the console (stdin when there is none); passphrase.c */
+BOOL ReadPassphrase(const WCHAR *KeyFile, BOOL Stdin, char *Out, ULONG Room, ULONG *Length);
 
-void Fail(const char *Format, ...);
-void Say(const char *Format, ...);
+/* ---------------------------------------------------------------- driver.c */
+
+void   Fail(const char *Format, ...);
+void   Say(const char *Format, ...);
 
 /* \\.\ext4, or NULL after a message */
 HANDLE OpenDriver(void);
+DWORD  DriverControl(DWORD Code, void *In, DWORD InBytes, void *Out, DWORD OutBytes);
+BOOL   CryptQuery(EXT4_CRYPT_QUERY *Q);
+DWORD  LvQuery(EXT4_LV_QUERY *Q);
+
+WCHAR  DeviceLetter(const WCHAR *Device);
+BOOL   LetterNames(const WCHAR *Arg, const WCHAR *Device);
+WCHAR  WaitForMount(const WCHAR *Device, WCHAR *Fs, DWORD FsChars);
 
 #endif /* _EXT4CTL_H_ */

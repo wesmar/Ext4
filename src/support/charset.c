@@ -42,7 +42,6 @@ Ext2MbsToUnicode(
     if (Unicode) {
         if (Unicode->MaximumLength < Length) {
 
-            DbgBreak();
             return 0;
         }
 
@@ -97,7 +96,6 @@ Ext2UnicodeToMbs (
 
         if (Mbs->MaximumLength < Length) {
 
-            DbgBreak();
             return 0;
         }
 
@@ -169,7 +167,6 @@ Ext2OEMToUnicode(
                  Unicode, Oem, FALSE );
 
     if (!NT_SUCCESS(Status)) {
-        DbgBreak();
         goto errorout;
     }
 
@@ -193,7 +190,6 @@ Ext2UnicodeToOEMSize(
             return Length;
         }
 
-        DbgBreak();
     }
 
     return RtlxUnicodeStringToOemSize(Unicode);
@@ -215,7 +211,6 @@ Ext2UnicodeToOEM (
             Status = STATUS_SUCCESS;
         } else {
             Status = STATUS_UNSUCCESSFUL;
-            DbgBreak();
         }
 
         goto errorout;
@@ -226,7 +221,6 @@ Ext2UnicodeToOEM (
 
     if (!NT_SUCCESS(Status))
     {
-        DbgBreak();
         goto errorout;
     }
 

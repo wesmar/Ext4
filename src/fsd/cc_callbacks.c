@@ -83,8 +83,6 @@ Ext2ReleaseFileForModWrite (
     if (ResourceToRelease != NULL) {
         ASSERT(ResourceToRelease == Fcb->Header.Resource);
         ExReleaseResourceLite(ResourceToRelease);
-    } else {
-        DbgBreak();
     }
 
     return STATUS_SUCCESS;

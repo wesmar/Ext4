@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # copybench.ps1 - write, copy and read MB megabytes on each target drive (guest)
 #   powershell -File copybench.ps1 [-MB 256] [-Targets C,E]
-param([int]$MB=256, [string]$Targets='C,E')
+param([ValidateRange(1,65536)][int]$MB=256, [string]$Targets='C,E')
 $ErrorActionPreference='Stop'
 Add-Type -TypeDefinition @"
 using System; using System.IO; using System.Runtime.InteropServices;
@@ -17,15 +18,22 @@ public static class CB {
 }
 "@
 $size=[long]$MB*1MB
-$src="C:\Users\Administrator\src$MB.bin"
-if(-not (Test-Path $src)){ [CB]::WritePlain($src,$size) | Out-Null }
-foreach($t in @($Targets -split '[,\s]+' | Where-Object { $_ } | ForEach-Object { if ($_ -eq 'C') { 'C:\Users\Administrator\bench-dst.bin' } else { "$($_):\bench-dst.bin" } })){
- if(Test-Path $t){ [IO.File]::Delete($t) }
+$runId=[guid]::NewGuid().ToString('N')
+$src=Join-Path $env:USERPROFILE "copybench-source-$runId.bin"
+[CB]::WritePlain($src,$size) | Out-Null
+$expected=(Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+function VerifyCopy([string]$path) {
+ if((Get-Item -LiteralPath $path).Length -ne $size -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $expected){throw "benchmark data mismatch: $path"}
+}
+try {
+foreach($t in @($Targets -split '[,\s]+' | Where-Object { $_ } | ForEach-Object { if ($_ -eq 'C') { Join-Path $env:USERPROFILE "copybench-dst-$runId.bin" } else { "$($_):\copybench-dst-$runId.bin" } })){
+ if(Test-Path -LiteralPath $t){ throw "benchmark destination already exists: $t" }
  $vol='\\.\'+$t.Substring(0,2)
- $w1=[CB]::WriteExt($t,$size); [CB]::FlushVolume($vol); [IO.File]::Delete($t)
- $w2=[CB]::WritePlain($t,$size); [CB]::FlushVolume($vol); [IO.File]::Delete($t)
+ $w1=[CB]::WriteExt($t,$size); [CB]::FlushVolume($vol); VerifyCopy $t; [IO.File]::Delete($t)
+ $w2=[CB]::WritePlain($t,$size); [CB]::FlushVolume($vol); VerifyCopy $t; [IO.File]::Delete($t)
  $sw=[Diagnostics.Stopwatch]::StartNew(); [IO.File]::Copy($src,$t,$true); [CB]::FlushVolume($vol); $c=$sw.ElapsedMilliseconds
- $r=[CB]::Read($t); [IO.File]::Delete($t)
+ $r=[CB]::Read($t); VerifyCopy $t; [IO.File]::Delete($t)
  "{0}  setlength+write {1} ms   plain write {2} ms   File.Copy {3} ms   read(cached) {4} ms" -f $t.Substring(0,2),$w1,$w2,$c,$r
 }
-[IO.File]::Delete($src)   # nothing left behind on the guest
+} finally { [IO.File]::Delete($src) }
+'COPYBENCH: 0 failed; SHA256 matched for every completed write and copy'

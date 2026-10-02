@@ -13,11 +13,11 @@
  * Icb: the in-memory inode, shared by every name of a hard-linked file
  *
  * Vcb->IcbTable hashes the Icbs of a volume by inode number. The table and
- * the reference counts are protected by Vcb->IcbLock (a spin lock, because
- * the Mcb reaper detaches names without holding Vcb->McbLock). Creation is
- * serialized by Vcb->McbLock, which every caller of Ext2AttachIcb holds
- * exclusively, so a lookup made there sees either no Icb or one whose inode
- * has already been loaded.
+ * the reference counts are protected by Vcb->IcbLock, a spin lock: the
+ * reaper takes names out under it. Two names of one inode - hard links in
+ * different directories, under different name stripes - may attach at the
+ * same moment: one Icb wins, the other is freed, and loading the inode from
+ * disk is done once, under the Icb's EntryResource (Ext2InsertName).
  */
 
 VOID
@@ -67,6 +67,8 @@ Ext2FreeIcb(IN PEXT2_VCB Vcb, IN PEXT2_ICB Icb)
     }
     FsRtlUninitializeLargeMcb(&Icb->MetaExts);
     Ext4DirNamesFree(Icb);
+    ExDeleteResourceLite(&Icb->DirResource);
+    ExDeleteResourceLite(&Icb->EntryResource);
 
     Icb->Identifier.Type = 0;
     Icb->Identifier.Size = 0;
@@ -88,7 +90,6 @@ Ext2AttachIcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN ULONG Ino)
     KIRQL       Irql;
 
     ASSERT(Mcb->Icb == NULL);
-    ASSERT(ExIsResourceAcquiredExclusiveLite(&Vcb->McbLock));
 
     KeAcquireSpinLock(&Vcb->IcbLock, &Irql);
     Icb = Ext2FindIcbLocked(Vcb, Ino);
@@ -112,10 +113,11 @@ Ext2AttachIcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN ULONG Ino)
             FsRtlInitializeLargeMcb(&Fresh->Extents, NonPagedPool);
             FsRtlInitializeLargeMcb(&Fresh->MetaExts, NonPagedPool);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
-            DbgBreak();
             Ext2FreePool(Fresh, EXT2_ICB_MAGIC);
             return FALSE;
         }
+        ExInitializeResourceLite(&Fresh->DirResource);
+        ExInitializeResourceLite(&Fresh->EntryResource);
         INC_MEM_COUNT(PS_ICB, Fresh, sizeof(EXT2_ICB));
 
         KeAcquireSpinLock(&Vcb->IcbLock, &Irql);
@@ -140,7 +142,7 @@ Ext2AttachIcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN ULONG Ino)
     KeReleaseSpinLock(&Vcb->IcbLock, Irql);
 
     if (Fresh) {
-        /* lost the race (cannot happen under McbLock, but stay safe) */
+        /* another name of the inode attached first: its Icb is the one */
         Fresh->Refercount = 0;
         Ext2FreeIcb(Vcb, Fresh);
     }
@@ -214,6 +216,28 @@ Ext2UnhashIcb(IN PEXT2_VCB Vcb, IN PEXT2_ICB Icb)
         Vcb->NumOfIcb--;
     }
     KeReleaseSpinLock(&Vcb->IcbLock, Irql);
+}
+
+/*
+ * A name of Inode is gone (Ext2RemoveEntry): one link less. Hard links of
+ * one inode go in different directories at once, each under its own
+ * directory's locks, so the count changes under IcbLock and exactly one
+ * of them - the one that leaves no name - learns it took the last. A
+ * directory has no other names; its count stays at 2, as on Linux, where
+ * rmdir clears it.
+ */
+BOOLEAN
+Ext2DropLink(IN PEXT2_VCB Vcb, IN struct inode *Inode)
+{
+    KIRQL   Irql;
+    BOOLEAN Last;
+
+    KeAcquireSpinLock(&Vcb->IcbLock, &Irql);
+    ext3_dec_count(Inode);
+    Last = S_ISDIR(Inode->i_mode) ? (Inode->i_nlink <= 2) : (Inode->i_nlink == 0);
+    KeReleaseSpinLock(&Vcb->IcbLock, Irql);
+
+    return Last;
 }
 
 /*

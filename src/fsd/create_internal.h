@@ -1,5 +1,5 @@
 /**
- * create_internal.h - definitions shared by the files split from create.c.
+ * create_internal.h - what the IRP_MJ_CREATE files share (create.c, create_file.c, create_new.c).
  *
  * Copyright (c) 2026 Marek Wesolowski (WESMAR)
  * Derived from Ext2Fsd (Matt Wu), Ext4Fsd (Bo Branten) and Linux ext4/jbd2.
@@ -27,6 +27,29 @@ Ext4InheritSecurityLabel(
     IN PEXT2_VCB            Vcb,
     IN PEXT2_MCB            Parent,
     IN PEXT2_MCB            Mcb
+);
+
+/* a new name (create_new.c) */
+NTSTATUS
+Ext2CreateNewName(
+    IN PEXT2_IRP_CONTEXT    IrpContext,
+    IN PEXT2_VCB            Vcb,
+    IN PEXT2_FCB            ParentFcb,
+    IN PUNICODE_STRING      RealName,
+    IN BOOLEAN              DirectoryFile,
+    IN ULONG                FileAttributes,
+    OUT PEXT2_MCB          *Mcb,
+    OUT PBOOLEAN            Created
+);
+
+NTSTATUS
+Ext2InitializeCreatedFile(
+    IN PEXT2_IRP_CONTEXT    IrpContext,
+    IN PEXT2_VCB            Vcb,
+    IN PEXT2_FCB            Fcb,
+    IN PEXT2_MCB            Mcb,
+    IN PEXT2_MCB            ParentMcb,
+    IN BOOLEAN              DirectoryFile
 );
 
 #endif /* _EXT4_FSD_CREATE_INTERNAL_H_ */

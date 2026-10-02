@@ -73,6 +73,16 @@ Ext2JournalLeaveScope(
     IN PEXT2_VCB        Vcb
 );
 
+VOID
+Ext2JournalJoin(
+    IN PEXT2_VCB        Vcb
+);
+
+VOID
+Ext2JournalBufferReleased(
+    IN PEXT2_VCB        Vcb
+);
+
 BOOLEAN
 Ext2JournalDirtyBuffer(
     IN PEXT2_VCB        Vcb,

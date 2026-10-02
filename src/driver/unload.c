@@ -218,6 +218,20 @@ Ext2PrepareToUnload (IN PEXT2_IRP_CONTEXT IrpContext)
 
             Ext2PurgeVolume(Vcb, TRUE);
             Ext2CheckDismount(IrpContext, Vcb, TRUE);
+
+            /* Allocation failure can leave the same volume mounted.
+               Do not spin on it or dereference a possibly destroyed VCB. */
+            ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
+            GlobalDataResourceAcquired = TRUE;
+            for (ListEntry = Ext2Global->VcbList.Flink;
+                 ListEntry != &Ext2Global->VcbList; ListEntry = ListEntry->Flink) {
+                PEXT2_VCB Current = CONTAINING_RECORD(ListEntry, EXT2_VCB, Next);
+                if (Current == Vcb && IsMounted(Current) &&
+                    !IsFlagOn(Current->Flags, VCB_DISMOUNT_PENDING)) {
+                    Status = STATUS_INSUFFICIENT_RESOURCES;
+                    __leave;
+                }
+            }
         }
 
         /* Wait for any asynchronous lazy writer activity to settle before checking VCBs */
@@ -271,12 +285,21 @@ Ext2PrepareToUnload (IN PEXT2_IRP_CONTEXT IrpContext)
         }
 
         /* a mount on its way has a device of its own (mount.c) */
-        if (Ext2Global->MountsInFlight != 0) {
+        if (Ext2Global->MountsInFlight != 0 ||
+            Ext2Global->VcbTeardownsInFlight != 0) {
 
-            DEBUG(DL_ERR, ( "Ext2PrepareUnload: a mount is in progress.\n"));
+            DEBUG(DL_ERR, ( "Ext2PrepareUnload: mount or teardown is in progress.\n"));
 
             Status = STATUS_ACCESS_DENIED;
 
+            __leave;
+        }
+
+        /* Reclaim our published VPBs before surrendering unload control.
+           An I/O-manager reference can outlive IRP_MJ_CLOSE; retaining
+           ownership and retrying is safer than leaking Swap or freeing Old. */
+        if (!Ext2ReclaimVpbs()) {
+            Status = STATUS_DEVICE_BUSY;
             __leave;
         }
 
@@ -490,7 +513,9 @@ Ext2IoManagerHoldsVolume(VOID)
     }
     ExReleaseResourceLite(&Ext2Global->Resource);
 
-    return Pending;
+    /* A raw-volume reference can outlive the VCB entirely. The I/O
+       manager releases it without a callback, just like a final close. */
+    return Pending || Ext2VpbsPending();
 }
 
 /*
@@ -590,6 +615,33 @@ Ext2ReportVolumeHolders(IN OUT PLONGLONG LastPicture)
     ExReleaseResourceLite(&Ext2Global->Resource);
 }
 
+/*
+ * Where an unload has got to, as a DWORD in the service key (UnloadStep,
+ * and UnloadWaitStatus while volumes keep it waiting). A stop that hangs is
+ * located with reg query from outside: no debugger, no dump - a stuck
+ * kernel cannot be asked otherwise without risk to the machine reading it.
+ * PASSIVE_LEVEL; a failure to write is of no consequence.
+ */
+VOID
+Ext2UnloadStep(IN PCWSTR Name, IN ULONG Value)
+{
+    WCHAR           Key[EXT2_UNLOAD_KEY_CHARS];
+    UNICODE_STRING  Path;
+    USHORT          Suffix = (USHORT)(sizeof(VOLUMES_KEY) - sizeof(WCHAR));
+
+    if (Ext2Global == NULL || Ext2Global->RegistryPath.Buffer == NULL ||
+        Ext2Global->RegistryPath.Length <= Suffix) {
+        return;
+    }
+    /* <service>\Volumes without the \Volumes: the service key */
+    RtlInitEmptyUnicodeString(&Path, Key, sizeof(Key) - sizeof(WCHAR));
+    Path.Length = min((USHORT)(Ext2Global->RegistryPath.Length - Suffix), Path.MaximumLength);
+    RtlCopyMemory(Key, Ext2Global->RegistryPath.Buffer, Path.Length);
+    Key[Path.Length / sizeof(WCHAR)] = UNICODE_NULL;
+
+    RtlWriteRegistryValue(RTL_REGISTRY_ABSOLUTE, Key, Name, REG_DWORD, &Value, sizeof(Value));
+}
+
 /* the drain thread: from "marked" to "last reference handed over" */
 static VOID
 Ext2UnloadDrainThread(IN PVOID Context)
@@ -599,6 +651,8 @@ Ext2UnloadDrainThread(IN PVOID Context)
     LONGLONG        Reported = 0;
 
     UNREFERENCED_PARAMETER(Context);
+
+    Ext2UnloadStep(L"UnloadStep", EXT2_STEP_DRAIN);
 
     /* step 1: flush, dismount idle volumes, unregister the file systems.
        A busy volume keeps the driver loaded until its handles go away;
@@ -612,6 +666,8 @@ Ext2UnloadDrainThread(IN PVOID Context)
 
         DbgPrint("ext4: unload requested, a volume is still in use "
                  "(%xh), waiting for it to be released\n", Status);
+        Ext2UnloadStep(L"UnloadStep", EXT2_STEP_VOLUMES_BUSY);
+        Ext2UnloadStep(L"UnloadWaitStatus", (ULONG)Status);
         Ext2ReportVolumeHolders(&Reported);
 
         /* The reaper frees the FCBs nobody references; the last one of a
@@ -627,7 +683,8 @@ Ext2UnloadDrainThread(IN PVOID Context)
 
             Recheck.QuadPart = -EXT2_UNLOAD_CLOSE_RECHECK;
             KeWaitForSingleObject(&Ext2Global->VolumeReleased, Executive, KernelMode, FALSE,
-                                  Ext2IoManagerHoldsVolume() ? &Recheck : NULL);
+                                  (Status == STATUS_INSUFFICIENT_RESOURCES ||
+                                   Ext2IoManagerHoldsVolume()) ? &Recheck : NULL);
         }
     }
 
@@ -635,6 +692,7 @@ Ext2UnloadDrainThread(IN PVOID Context)
              "removing the control devices\n");
 
     /* step 2: no device object may be left on the driver object */
+    Ext2UnloadStep(L"UnloadStep", EXT2_STEP_CONTROL_DEVICES);
     Ext2DeleteControlDevices();
 
     /* step 3: closing the handle only drops the handle count, the extra
@@ -650,6 +708,7 @@ Ext2UnloadDrainThread(IN PVOID Context)
     if (NT_SUCCESS(Status)) {
         DbgPrint("ext4: unload requested, handing the last reference "
                  "to a system worker thread\n");
+        Ext2UnloadStep(L"UnloadStep", EXT2_STEP_HANDED_OVER);
         ObDereferenceObjectDeferDelete(FileObject);
     } else {
         DbgPrint("ext4: unload requested, cannot reference own file "

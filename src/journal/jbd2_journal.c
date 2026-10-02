@@ -16,10 +16,7 @@
 #include <linux/bitops.h>
 #include "jbd2_internal.h"
 
-//#include <trace/events/jbd2.h>
 
-//#include <linux/uaccess.h>
-//#include <asm/page.h>
 static void __journal_abort_soft (journal_t *journal, int err);
 
 module_init(journal_init);
@@ -113,9 +110,7 @@ int jbd2_log_start_commit(journal_t *journal, tid_t tid)
 {
 	int ret;
 
-	//write_lock(&journal->j_state_lock);
 	ret = __jbd2_log_start_commit(journal, tid);
-	//write_unlock(&journal->j_state_lock);
 	return ret;
 }
 
@@ -191,7 +186,6 @@ static journal_t *journal_init_common(struct block_device *bdev,
 	mutex_init(&journal->j_checkpoint_mutex);
 	spin_lock_init(&journal->j_revoke_lock);
 	spin_lock_init(&journal->j_list_lock);
-	//rwlock_init(&journal->j_state_lock);
 
 	journal->j_commit_interval = (HZ * JBD2_DEFAULT_MAX_COMMIT_AGE);
 	journal->j_min_batch_time = 0;
@@ -256,7 +250,6 @@ journal_t *jbd2_journal_init_inode(struct inode *inode)
 	journal_t *journal;
 	unsigned long long blocknr;
 
-    //DbgPrint("jbd2_journal_init_inode: begin\n");
 	blocknr = bmap(inode, 0);
 	if (!blocknr) {
 		/*pr_err("%s: Cannot locate journal superblock\n",
@@ -279,7 +272,6 @@ journal_t *jbd2_journal_init_inode(struct inode *inode)
 	p = strreplace(journal->j_devname, '/', '!');
 	sprintf(p, "-%lu", journal->j_inode->i_ino);*/
 	jbd2_stats_proc_init(journal);
-    //DbgPrint("jbd2_journal_init_inode: end\n");
 
 	return journal;
 }
@@ -367,7 +359,6 @@ static int jbd2_write_superblock(journal_t *journal, int write_flags)
 	journal_superblock_t *sb = journal->j_superblock;
 	int ret;
 
-	//trace_jbd2_write_superblock(journal, write_flags);
 	/*if (!(journal->j_flags & JBD2_BARRIER))
 		write_flags &= ~(REQ_FUA | REQ_PREFLUSH);*/
 	lock_buffer(bh);
@@ -427,7 +418,6 @@ int jbd2_journal_update_sb_log_tail(journal_t *journal, tid_t tail_tid,
 	if (is_journal_aborted(journal))
 		return -EIO;
 
-	//BUG_ON(!mutex_is_locked(&journal->j_checkpoint_mutex));
 	jbd_debug(1, "JBD2: updating superblock (start %lu, seq %u)\n",
 		  tail_block, tail_tid);
 
@@ -439,10 +429,7 @@ int jbd2_journal_update_sb_log_tail(journal_t *journal, tid_t tail_tid,
 		goto out;
 
 	/* Log is no longer empty */
-	//write_lock(&journal->j_state_lock);
-	//WARN_ON(!sb->s_sequence);
 	journal->j_flags &= ~JBD2_FLUSHED;
-	//write_unlock(&journal->j_state_lock);
 
 out:
 	return ret;
@@ -460,13 +447,9 @@ static void jbd2_mark_journal_empty(journal_t *journal, int write_op)
 {
 	journal_superblock_t *sb = journal->j_superblock;
 
-    //DbgPrint("jbd2_mark_journal_empty: begin\n");
 
-	//BUG_ON(!mutex_is_locked(&journal->j_checkpoint_mutex));
-	//read_lock(&journal->j_state_lock);
 	/* Is it already empty? */
 	if (sb->s_start == 0) {
-		//read_unlock(&journal->j_state_lock);
 		return;
 	}
 	jbd_debug(1, "JBD2: Marking journal as empty (seq %d)\n",
@@ -474,15 +457,11 @@ static void jbd2_mark_journal_empty(journal_t *journal, int write_op)
 
 	sb->s_sequence = cpu_to_be32(journal->j_tail_sequence);
 	sb->s_start    = cpu_to_be32(0);
-	//read_unlock(&journal->j_state_lock);
 
 	jbd2_write_superblock(journal, write_op);
 
 	/* Log is no longer empty */
-	//write_lock(&journal->j_state_lock);
 	journal->j_flags |= JBD2_FLUSHED;
-	//write_unlock(&journal->j_state_lock);
-    //DbgPrint("jbd2_mark_journal_empty: end\n");
 }
 
 /**
@@ -497,9 +476,7 @@ void jbd2_journal_update_sb_errno(journal_t *journal)
 	journal_superblock_t *sb = journal->j_superblock;
 	int errcode;
 
-	//read_lock(&journal->j_state_lock);
 	errcode = journal->j_errno;
-	//read_unlock(&journal->j_state_lock);
 	if (errcode == -ESHUTDOWN)
 		errcode = 0;
 	jbd_debug(1, "JBD2: updating superblock error (errno %d)\n", errcode);
@@ -522,7 +499,6 @@ static int journal_get_superblock(journal_t *journal)
 
 	J_ASSERT(bh != NULL);
 	if (!buffer_uptodate(bh)) {
-		//ll_rw_block(REQ_OP_READ, 0, 1, &bh);
         ll_rw_block(READ, 1, &bh);
 		wait_on_buffer(bh);
 		if (!buffer_uptodate(bh)) {
@@ -658,7 +634,6 @@ int jbd2_journal_load(journal_t *journal)
 	int err;
 	journal_superblock_t *sb;
 
-    //DbgPrint("jbd2_journal_load: begin\n");
 	err = load_superblock(journal);
 	if (err)
 		return err;
@@ -705,7 +680,6 @@ int jbd2_journal_load(journal_t *journal)
 
 	journal->j_flags &= ~JBD2_ABORT;
 	journal->j_flags |= JBD2_LOADED;
-    //DbgPrint("jbd2_journal_load: end\n");
 	return 0;
 
 recovery_error:
@@ -724,19 +698,14 @@ recovery_error:
 int jbd2_journal_destroy(journal_t *journal)
 {
 	int err = 0;
-    //DbgPrint("jbd2_journal_destroy: begin\n");
 	if (journal->j_sb_buffer) {
 		if (!is_journal_aborted(journal)) {
-			//mutex_lock_io(&journal->j_checkpoint_mutex);
 
-			//write_lock(&journal->j_state_lock);
 			journal->j_tail_sequence =
 				++journal->j_transaction_sequence;
-			//write_unlock(&journal->j_state_lock);
 
 			jbd2_mark_journal_empty(journal,
 					0/*REQ_SYNC | REQ_PREFLUSH | REQ_FUA*/);
-			//mutex_unlock(&journal->j_checkpoint_mutex);
 		} else
 			err = -EIO;
 		brelse(journal->j_sb_buffer);
@@ -752,7 +721,6 @@ int jbd2_journal_destroy(journal_t *journal)
 		crypto_free_shash(journal->j_chksum_driver);*/
 	kfree(journal->j_wbuf);
 	kfree(journal);
-    //DbgPrint("jbd2_journal_destroy: end\n");
 
 	return err;
 }
@@ -774,7 +742,6 @@ int jbd2_journal_wipe(journal_t *journal, int write)
 {
 	int err = 0;
 
-    //DbgPrint("jbd2_journal_wipe: begin\n");
 
 	J_ASSERT (!(journal->j_flags & JBD2_LOADED));
 
@@ -783,7 +750,6 @@ int jbd2_journal_wipe(journal_t *journal, int write)
 		return err;
 
 	if (!journal->j_tail) {
-        //DbgPrint("jbd2_journal_wipe: journal is clean\n");
 		goto no_recovery;
     }
 
@@ -799,7 +765,6 @@ int jbd2_journal_wipe(journal_t *journal, int write)
 	}
 
  no_recovery:
-    //DbgPrint("jbd2_journal_wipe end:\n");
 	return err;
 }
 
@@ -826,12 +791,10 @@ void __jbd2_journal_abort_hard(journal_t *journal)
 	printk(KERN_ERR "Aborting journal on device %s.\n",
 	       journal->j_devname);
 
-	//write_lock(&journal->j_state_lock);
 	journal->j_flags |= JBD2_ABORT;
 	transaction = journal->j_running_transaction;
 	if (transaction)
 		__jbd2_log_start_commit(journal, transaction->t_tid);
-	//write_unlock(&journal->j_state_lock);
 }
 
 /* Soft abort: record the abort error status in the journal superblock,
@@ -840,27 +803,22 @@ static void __journal_abort_soft (journal_t *journal, int err)
 {
 	int old_errno;
 
-	//write_lock(&journal->j_state_lock);
 	old_errno = journal->j_errno;
 	if (!journal->j_errno || err == -ESHUTDOWN)
 		journal->j_errno = err;
 
 	if (journal->j_flags & JBD2_ABORT) {
-		//write_unlock(&journal->j_state_lock);
 		if (!old_errno && old_errno != -ESHUTDOWN &&
 		    err == -ESHUTDOWN)
 			jbd2_journal_update_sb_errno(journal);
 		return;
 	}
-	//write_unlock(&journal->j_state_lock);
 
 	__jbd2_journal_abort_hard(journal);
 
 	if (err) {
 		jbd2_journal_update_sb_errno(journal);
-		//write_lock(&journal->j_state_lock);
 		journal->j_flags |= JBD2_REC_ERR;
-		//write_unlock(&journal->j_state_lock);
 	}
 }
 

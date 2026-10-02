@@ -304,7 +304,7 @@ struct dx_frame *
                 p = m + 1;
         }
 
-        if (0) // linear search cross check
+        if (0) /* linear search cross check */
         {
             unsigned n = count - 1;
             at = entries;

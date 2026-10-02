@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef _EXT4_JBD2_H
 #define _EXT4_JBD2_H
 

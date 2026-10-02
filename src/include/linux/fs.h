@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef _LINUX_FS_INCLUDE_
 #define _LINUX_FS_INCLUDE_
 
@@ -5,9 +6,7 @@
 #include <linux/atomic.h>
 #include <linux/rbtree.h>
 
-//
-// kdev
-//
+/* kdev */
 
 #define NODEV           0
 
@@ -34,9 +33,7 @@ static inline kdev_t to_kdev_t(int dev)
     return 0;
 }
 
-//
-// file system specific structures
-//
+/* file system specific structures */
 
 /*
  * Kernel pointers have redundant information, so we can use a
@@ -91,9 +88,7 @@ struct inode {
     __u64               i_file_acl;
 };
 
-//
-//  Inode state bits
-//
+/* Inode state bits */
 
 #define I_DIRTY_SYNC        1 /* Not dirty enough for O_DATASYNC */
 #define I_DIRTY_DATASYNC    2 /* Data-related inode changes pending */

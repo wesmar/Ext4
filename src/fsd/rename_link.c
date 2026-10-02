@@ -106,7 +106,6 @@ Ext2SetRenameInfo(
 
         if (!TargetDcb || TargetDcb->Vcb != Vcb) {
 
-            DbgBreak();
 
             Status = STATUS_INVALID_PARAMETER;
             goto errorout;
@@ -216,11 +215,10 @@ Ext2SetRenameInfo(
 
     /* remove directory entry of old name */
     nlink = Mcb->Inode->i_nlink;
-    Status = Ext2RemoveEntry(IrpContext, Vcb, ParentDcb, Mcb);
+    Status = Ext2RemoveEntry(IrpContext, Vcb, ParentDcb, Mcb, NULL);
     if (!NT_SUCCESS(Status)) {
         DEBUG(DL_REN, ("Ext2SetRenameInfo: Failed to remove entry %wZ with status %xh.\n",
                        &Mcb->FullName, Status));
-        DbgBreak();
         goto errorout;
     }
 
@@ -250,7 +248,6 @@ Ext2SetRenameInfo(
         if (!NT_SUCCESS(Status)) {
             DEBUG(DL_REN, ("Ext2SetRenameInfo: Failed to set parent refer of %wZ with %xh.\n",
                            &Mcb->FullName, Status));
-            DbgBreak();
             goto errorout;
         }
     }
@@ -451,7 +448,6 @@ Ext2SetLinkInfo(
 
         TargetDcb = (PEXT2_FCB)(TargetObject->FsContext);
         if (!TargetDcb || TargetDcb->Vcb != Vcb) {
-            DbgBreak();
             Status = STATUS_INVALID_PARAMETER;
             goto errorout;
         }

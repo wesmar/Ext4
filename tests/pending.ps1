@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # pending.ps1 - delete-pending scenarios, one thread, deterministic.
 #
 # Each scenario ends with every name removable and nothing left open; a name

@@ -70,7 +70,6 @@ Ext2TruncateBlock(
                     ASSERT(Mcb->Inode->i_blocks >= (Number << (BLOCK_BITS - 9)));
                     if (Mcb->Inode->i_blocks < (Number << (BLOCK_BITS - 9))) {
                         Mcb->Inode->i_blocks = 0;
-                        DbgBreak();
                     } else {
                         Mcb->Inode->i_blocks -= (Number << (BLOCK_BITS - 9));
                     }
@@ -86,7 +85,6 @@ Ext2TruncateBlock(
 
                 /* remove block mapping frm Mcb Extents */
                 if (!Ext2RemoveBlockExtent(Vcb, Mcb, Base + SizeArray - 1 - i, Number)) {
-                    DbgBreak();
                     ClearLongFlag(Mcb->Icb->Flags, ICB_ZONE_INITED);
                     Ext2ClearAllExtents(&Mcb->Icb->Extents);
                 }
@@ -97,7 +95,6 @@ Ext2TruncateBlock(
             ASSERT(Layer <= 3);
 
             if (BlockArray[SizeArray - i - 1] >= TOTAL_BLOCKS) {
-                DbgBreak();
                 BlockArray[SizeArray - i - 1] = 0;
             }
 
@@ -125,7 +122,6 @@ Ext2TruncateBlock(
                     DEBUG(DL_ERR, ( "Ext2TruncateBlock: failed to load block %xh ...\n",
                                     BlockArray[SizeArray - i - 1]));
                     Status = STATUS_CANT_WAIT;
-                    DbgBreak();
                     goto errorout;
                 }
                 pData = (__u32 *)bh->b_data;
@@ -188,7 +184,6 @@ Ext2TruncateBlock(
                 }
 
                 if (!Ext2RemoveBlockExtent(Vcb, Mcb, Base + Skip, (Start + 1))) {
-                    DbgBreak();
                     ClearLongFlag(Mcb->Icb->Flags, ICB_ZONE_INITED);
                     Ext2ClearAllExtents(&Mcb->Icb->Extents);
                 }
@@ -226,7 +221,6 @@ Ext2TruncateIndirectFast(
     if (!IsZoneInited(Mcb)) {
         Status = Ext2InitializeZone(IrpContext, Vcb, Mcb);
         if (!NT_SUCCESS(Status)) {
-            DbgBreak();
             ClearLongFlag(Mcb->Icb->Flags, ICB_ZONE_INITED);
             goto errorout;
         }

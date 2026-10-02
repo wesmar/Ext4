@@ -36,7 +36,6 @@
 #include "ext4crypt.h"
 
 #define LV_TAG                  'VL4E'
-#define LV_SECTOR               512
 #define LV_UNIQUE_PREFIX        "EXT4-LV-"
 
 typedef struct _EXT4_LV_DEVICE {
@@ -254,7 +253,7 @@ Ext4LvDispatch(IN PDEVICE_OBJECT DeviceObject, IN PIRP Irp)
             return Ext4DiskComplete(Irp, STATUS_SUCCESS, 0);
         }
         if (IrpSp->Parameters.Read.ByteOffset.QuadPart < 0 ||
-            ((Byte | Length) & (LV_SECTOR - 1)) != 0 || Irp->MdlAddress == NULL) {
+            ((Byte | Length) & (EXT4_SECTOR - 1)) != 0 || Irp->MdlAddress == NULL) {
             return Ext4DiskComplete(Irp, STATUS_INVALID_PARAMETER, 0);
         }
         if (Byte >= Lv->Size || Length > Lv->Size - Byte) {
@@ -343,12 +342,12 @@ Ext4LvCheckRuns(IN const EXT4_LV_OPEN *In, IN ULONGLONG LowerSize)
         const EXT4_LV_RUN *Run = &In->Run[i];
 
         if (Run->Start != Next || Run->Length == 0 ||
-            ((Run->Start | Run->Length) & (LV_SECTOR - 1)) != 0 ||
+            ((Run->Start | Run->Length) & (EXT4_SECTOR - 1)) != 0 ||
             Run->Length > In->Size - Run->Start) {
             return STATUS_INVALID_PARAMETER;
         }
         if (Run->Target != EXT4_LV_HOLE &&
-            ((Run->Target & (LV_SECTOR - 1)) != 0 || Run->Target >= LowerSize ||
+            ((Run->Target & (EXT4_SECTOR - 1)) != 0 || Run->Target >= LowerSize ||
              Run->Length > LowerSize - Run->Target)) {
             return STATUS_INVALID_PARAMETER;
         }
@@ -357,55 +356,56 @@ Ext4LvCheckRuns(IN const EXT4_LV_OPEN *In, IN ULONGLONG LowerSize)
     return Next == In->Size ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
 }
 
-NTSTATUS
-Ext4LvOpen(IN OUT PEXT4_LV_OPEN In, IN ULONG InLength)
+/* the request, field by field, InLength included */
+static BOOLEAN
+Ext4LvRequestValid(IN PEXT4_LV_OPEN In, IN ULONG InLength)
 {
-    PEXT4_LV_DEVICE Lv;
-    PDEVICE_OBJECT  Device = NULL, Lower;
-    ULONGLONG       LowerSize = 0;
-    UNICODE_STRING  Name;
-    WCHAR           NameBuffer[48];
-    PLIST_ENTRY     List;
-    ULONG           Count = 0, Number;
-    SIZE_T          TableBytes;
-    NTSTATUS        Status = STATUS_SUCCESS;
+    return InLength >= (ULONG)FIELD_OFFSET(EXT4_LV_OPEN, Run) &&
+           In->Version == EXT4_CRYPT_VERSION && In->Runs != 0 && In->Runs <= EXT4_LV_MAX_RUNS &&
+           InLength >= (SIZE_T)FIELD_OFFSET(EXT4_LV_OPEN, Run) + (SIZE_T)In->Runs * sizeof(EXT4_LV_RUN) &&
+           In->Size != 0 && (In->Size & (EXT4_SECTOR - 1)) == 0 &&
+           strnlen(In->Uuid, sizeof(In->Uuid)) < sizeof(In->Uuid) &&
+           strnlen(In->Name, sizeof(In->Name)) < sizeof(In->Name);
+}
 
-    Ext4LvInitialize();
-
-    if (InLength < (ULONG)FIELD_OFFSET(EXT4_LV_OPEN, Run) ||
-        In->Version != EXT4_CRYPT_VERSION || In->Runs == 0 || In->Runs > EXT4_LV_MAX_RUNS ||
-        InLength < (SIZE_T)FIELD_OFFSET(EXT4_LV_OPEN, Run) + (SIZE_T)In->Runs * sizeof(EXT4_LV_RUN) ||
-        In->Size == 0 || (In->Size & (LV_SECTOR - 1)) != 0 ||
-        strnlen(In->Uuid, sizeof(In->Uuid)) >= sizeof(In->Uuid) ||
-        strnlen(In->Name, sizeof(In->Name)) >= sizeof(In->Name)) {
-        return STATUS_INVALID_PARAMETER;
-    }
+/* one device per logical volume, and no more than the table holds */
+static NTSTATUS
+Ext4LvRoomFor(IN PCSTR Uuid)
+{
+    PLIST_ENTRY List;
+    ULONG       Count = 0;
+    NTSTATUS    Status = STATUS_SUCCESS;
 
     ExAcquireFastMutex(&Ext4LvListLock);
     for (List = Ext4LvList.Flink; List != &Ext4LvList; List = List->Flink) {
         PEXT4_LV_DEVICE Other = CONTAINING_RECORD(List, EXT4_LV_DEVICE, Link);
-        if (strcmp(Other->Uuid, In->Uuid) == 0) {
+        if (strcmp(Other->Uuid, Uuid) == 0) {
             Status = STATUS_OBJECT_NAME_COLLISION;
         }
         Count++;
     }
     ExReleaseFastMutex(&Ext4LvListLock);
-    if (!NT_SUCCESS(Status)) {
-        return Status;
+    if (NT_SUCCESS(Status) && Count >= EXT4_LV_MAX_VOLUMES) {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
     }
-    if (Count >= EXT4_LV_MAX_VOLUMES) {
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
+    return Status;
+}
 
-    Lower = Ext4CryptReference(In->Crypt, &LowerSize);
-    if (Lower == NULL) {
-        return STATUS_NOT_FOUND;
-    }
-    Status = Ext4LvCheckRuns(In, LowerSize);
-    if (!NT_SUCCESS(Status)) {
-        ObDereferenceObject(Lower);
-        return Status;
-    }
+/*
+ * The read-only disk device of the volume, its run table copied from the
+ * request; for SYSTEM and administrators only. On success the device owns
+ * the reference on Lower.
+ */
+static NTSTATUS
+Ext4LvCreateDevice(IN PEXT4_LV_OPEN In, IN PDEVICE_OBJECT Lower, OUT PEXT4_LV_DEVICE *Out)
+{
+    PEXT4_LV_DEVICE Lv;
+    PDEVICE_OBJECT  Device;
+    UNICODE_STRING  Name;
+    WCHAR           NameBuffer[RTL_FIELD_SIZE(EXT4_LV_DEVICE, NameBuffer) / sizeof(WCHAR)];
+    ULONG           Number;
+    SIZE_T          TableBytes = (SIZE_T)In->Runs * sizeof(EXT4_LV_RUN);
+    NTSTATUS        Status;
 
     Number = (ULONG)InterlockedIncrement((PLONG)&Ext4LvNext) - 1;
     RtlStringCbPrintfW(NameBuffer, sizeof(NameBuffer), EXT4_LV_DEVICE_PREFIX L"%u", Number);
@@ -415,17 +415,14 @@ Ext4LvOpen(IN OUT PEXT4_LV_OPEN In, IN ULONG InLength)
                                   FILE_READ_ONLY_DEVICE, FALSE,
                                   &SDDL_DEVOBJ_SYS_ALL_ADM_ALL, NULL, &Device);
     if (!NT_SUCCESS(Status)) {
-        ObDereferenceObject(Lower);
         return Status;
     }
 
     Lv = (PEXT4_LV_DEVICE)Device->DeviceExtension;
     RtlZeroMemory(Lv, sizeof(EXT4_LV_DEVICE));
-    TableBytes = (SIZE_T)In->Runs * sizeof(EXT4_LV_RUN);
     Lv->Run = Ext2AllocatePool(NonPagedPoolNx, TableBytes, LV_TAG);
     if (Lv->Run == NULL) {
         IoDeleteDevice(Device);
-        ObDereferenceObject(Lower);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     RtlCopyMemory(Lv->Run, In->Run, TableBytes);
@@ -445,8 +442,18 @@ Ext4LvOpen(IN OUT PEXT4_LV_OPEN In, IN ULONG InLength)
 
     SetFlag(Device->Flags, DO_DIRECT_IO);
     Device->AlignmentRequirement = Lower->AlignmentRequirement;
-    Device->SectorSize = LV_SECTOR;
+    Device->SectorSize = EXT4_SECTOR;
     ClearFlag(Device->Flags, DO_DEVICE_INITIALIZING);
+    *Out = Lv;
+    return STATUS_SUCCESS;
+}
+
+/* listed, then links from the mount manager, the letter asked for, and a
+   first open on a worker: that is when the file system mounts */
+static VOID
+Ext4LvPublish(IN PEXT4_LV_DEVICE Lv, IN WCHAR Letter)
+{
+    NTSTATUS Status;
 
     ExAcquireFastMutex(&Ext4LvListLock);
     InsertTailList(&Ext4LvList, &Lv->Link);
@@ -460,12 +467,43 @@ Ext4LvOpen(IN OUT PEXT4_LV_OPEN In, IN ULONG InLength)
     if (!NT_SUCCESS(Status)) {
         DbgPrint("ext4: the mount manager did not take %wZ (%xh)\n", &Lv->Name, Status);
     }
-    if (In->Letter) {
-        Ext4SetDeviceLetter(&Lv->Name, In->Letter);
+    if (Letter) {
+        Ext4SetDeviceLetter(&Lv->Name, Letter);
     }
     Ext2QueueVolumeProbe(&Lv->Name);
+}
 
-    In->Index = Number;
+NTSTATUS
+Ext4LvOpen(IN OUT PEXT4_LV_OPEN In, IN ULONG InLength)
+{
+    PEXT4_LV_DEVICE Lv = NULL;
+    PDEVICE_OBJECT  Lower;
+    ULONGLONG       LowerSize = 0;
+    NTSTATUS        Status;
+
+    Ext4LvInitialize();
+
+    if (!Ext4LvRequestValid(In, InLength)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    Status = Ext4LvRoomFor(In->Uuid);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+    Lower = Ext4CryptReference(In->Crypt, &LowerSize);
+    if (Lower == NULL) {
+        return STATUS_NOT_FOUND;
+    }
+    Status = Ext4LvCheckRuns(In, LowerSize);
+    if (NT_SUCCESS(Status)) {
+        Status = Ext4LvCreateDevice(In, Lower, &Lv);
+    }
+    if (!NT_SUCCESS(Status)) {
+        ObDereferenceObject(Lower);
+        return Status;
+    }
+    Ext4LvPublish(Lv, In->Letter);
+    In->Index = Lv->Number;
     return STATUS_SUCCESS;
 }
 

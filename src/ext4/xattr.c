@@ -67,9 +67,7 @@ static int ext4_xattr_item_cmp(struct rb_node *_a,
 	return memcmp(a->name, b->name, a->name_len);
 }
 
-//
-// Red-black tree insert routine.
-//
+/* Red-black tree insert routine. */
 
 static struct ext4_xattr_item *
 ext4_xattr_item_search(struct ext4_xattr_ref *xattr_ref,

@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # interop.sh - Linux side of the metadata interoperability test.
 #
 #   prepare: on every ext partition of the test disk, build /interop-linux with

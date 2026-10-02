@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * COPYRIGHT:        See COPYRIGHT.TXT
  * PROJECT:          Ext2 File System Driver for WinNT/2K/XP
@@ -34,9 +35,7 @@ struct buffer_head;
                 ((type *)((char *)ptr - (char *)offsetof(type, member)))
 #endif
 
-//
-// Byte order swapping routines
-//
+/* Byte order swapping routines */
 
 /* use the runtime routine or compiler's implementation */
 #if (defined(_M_IX86) && (_MSC_FULL_VER > 13009037)) || \
@@ -201,9 +200,7 @@ static inline void le64_add_cpu(__le64 *var, u64 val)
 	*var = cpu_to_le64(le64_to_cpu(*var) + val);
 }
 
-//
-// Network to host byte swap functions
-//
+/* Network to host byte swap functions */
 
 #define ntohl(x)           ( ( ( ( x ) & 0x000000ff ) << 24 ) | \
                              ( ( ( x ) & 0x0000ff00 ) << 8 ) | \
@@ -218,9 +215,7 @@ static inline void le64_add_cpu(__le64 *var, u64 val)
 #define htons(x)           ntohs(x)
 
 
-//
-// kernel printk flags
-//
+/* kernel printk flags */
 
 #define KERN_EMERG      "<0>"   /* system is unusable                   */
 #define KERN_ALERT      "<1>"   /* action must be taken immediately     */
@@ -259,9 +254,7 @@ static inline long IS_ERR(const void *ptr)
 
 #define WARN_ON(c) BUG_ON(c)
 
-//
-// Linux module definitions
-//
+/* Linux module definitions */
 
 #define likely
 #define unlikely
@@ -295,9 +288,7 @@ static inline long IS_ERR(const void *ptr)
 #define LOAD_NLS    LOAD_MODULE
 #define UNLOAD_NLS  UNLOAD_MODULE
 
-//
-// spinlocks .....
-//
+/* spinlocks ..... */
 
 typedef struct _spinlock_t {
 
@@ -328,9 +319,7 @@ static inline int spin_needbreak(spinlock_t *lock)
 #endif
 }
 
-//
-// bit operations
-//
+/* bit operations */
 
 /*
  * Atomic bit operations on arrays of unsigned long (32 bits on Windows).
@@ -363,9 +352,7 @@ static inline int test_bit(int nr, volatile const unsigned long *addr)
 #define test_and_set_bit(nr, addr)      set_bit(nr, addr)
 #define test_and_clear_bit(nr, addr)    clear_bit(nr, addr)
 
-//
-// list definition ...
-//
+/* list definition ... */
 
 #include <linux/list.h>
 
@@ -374,9 +361,7 @@ static inline int test_bit(int nr, volatile const unsigned long *addr)
  *  linux scheduler related structures      *
 *********************************************/
 
-//
-// task structure
-//
+/* task structure */
 
 #define TASK_INTERRUPTIBLE      1
 #define TASK_UNINTERRUPTIBLE    2
@@ -390,9 +375,7 @@ struct task_struct {
 
 extern struct task_struct *current;
 
-//
-// scheduler routines
-//
+/* scheduler routines */
 
 
 static inline int cond_resched() {
@@ -405,9 +388,7 @@ static inline int need_resched() {
 #define yield()        do {} while(0)
 #define might_sleep()  do {} while(0)
 
-//
-// mutex
-//
+/* mutex */
 
 typedef struct mutex {
     FAST_MUTEX  lock;
@@ -421,9 +402,7 @@ typedef struct mutex {
 #define mutex_unlock(x) do { ExReleaseFastMutexUnsafe(&((x)->lock)); KeLeaveCriticalRegion(); } while (0)
 
 
-//
-// wait_queue
-//
+/* wait_queue */
 
 
 typedef PVOID wait_queue_t;
@@ -481,9 +460,7 @@ int autoremove_wake_function(wait_queue_t *wait, unsigned mode, int sync, void *
 int wake_bit_function(wait_queue_t *wait, unsigned mode, int sync, void *key);
 
 
-//
-// timer structure
-//
+/* timer structure */
 
 struct timer_list {
     struct list_head entry;
@@ -519,18 +496,18 @@ struct block_device {
     ERESOURCE               bd_bh_lock; /* lock for bh tree and reaper list */
     struct rb_root          bd_bh_root; /* buffer_head red-black tree root */
     LIST_ENTRY              bd_bh_free; /* reaper list */
+    KSPIN_LOCK              bd_bh_free_lock; /* the reaper list, for a release
+                                                holding bd_bh_lock shared */
     KEVENT                  bd_bh_notify; /* set when the reaper has none of ours */
     LONG                    bd_bh_reaping; /* bhs the reaper took and has not freed yet */
 };
 
-//
-// page information
-//
+/* page information */
 
-// vom trata paginile in felul urmator:
-// alocam la sfarsitul structurii inca PAGE_SIZE octeti cand alocam o structura
-// de tip pagina - acolo vor veni toate buffer-headurile
-// deci -> page_address(page) = page + sizeof(page)
+/* vom trata paginile in felul urmator:
+   alocam la sfarsitul structurii inca PAGE_SIZE octeti cand alocam o structura
+   de tip pagina - acolo vor veni toate buffer-headurile
+   deci -> page_address(page) = page + sizeof(page) */
 #define page_address(_page) ((char*)_page + sizeof(struct page))
 
 typedef struct page {
@@ -630,9 +607,7 @@ extern void truncate_inode_pages(struct address_space *, loff_t);
 
 #define KM_USER0 0
 
-//
-// buffer head definitions
-//
+/* buffer head definitions */
 
 enum bh_state_bits {
     BH_Uptodate,	        /* Contains valid data */
@@ -685,7 +660,7 @@ struct buffer_head {
     PMDL         b_mdl;                     /* MDL of the locked buffer */
     void	    *b_bcb;                     /* BCB of the buffer */
 
-    // kdev_t b_dev;                        /* device (B_FREE = free) */
+    /* kdev_t b_dev;                        /* device (B_FREE = free) * / */
     struct block_device *b_bdev;            /* block device object */
 
     blkcnt_t b_blocknr;		        /* start block number */
@@ -693,8 +668,8 @@ struct buffer_head {
     char *        b_data;			        /* pointer to data within the page */
     bh_end_io_t *b_end_io;		        /* I/O completion */
     void *b_private;		                /* reserved for b_end_io */
-    // struct list_head b_assoc_buffers;    /* associated with another mapping */
-    // struct address_space *b_assoc_map;   /* mapping this buffer is associated with */
+    /* struct list_head b_assoc_buffers;    /* associated with another mapping * /
+       struct address_space *b_assoc_map;   /* mapping this buffer is associated with * / */
     atomic_t b_count;		                /* users using this buffer_head */
     struct rb_node b_rb_node;               /* Red-black tree node entry */
 
@@ -955,9 +930,7 @@ static inline void lock_buffer(struct buffer_head *bh)
 
 extern int __set_page_dirty_buffers(struct page *page);
 
-//
-// unicode character
-//
+/* unicode character */
 
 struct nls_table {
     char *charset;
@@ -986,9 +959,7 @@ extern int utf8_mbstowcs(wchar_t *, const __u8 *, int);
 extern int utf8_wctomb(__u8 *, wchar_t, int);
 extern int utf8_wcstombs(__u8 *, const wchar_t *, int);
 
-//
-//  kernel jiffies
-//
+/* kernel jiffies */
 
 #define HZ  (100)
 
@@ -1005,9 +976,7 @@ static inline __u32 JIFFIES()
 
 #define jiffies JIFFIES()
 
-//
-// memory routines
-//
+/* memory routines */
 
 
 PVOID Ext2AllocatePool(
@@ -1060,15 +1029,11 @@ void  kmem_cache_free(kmem_cache_t *kc, void *p);
 int   kmem_cache_destroy(kmem_cache_t *kc);
 
 
-//
-// block device
-//
+/* block device */
 
 #define BDEVNAME_SIZE      32      /* Largest string for a blockdev identifier */
 
-//
-// ll_rw_block ....
-//
+/* ll_rw_block .... */
 
 
 #define RW_MASK         1
@@ -1082,9 +1047,7 @@ int   kmem_cache_destroy(kmem_cache_t *kc);
 #define WRITE_SYNC      (WRITE | (1 << BIO_RW_SYNC))
 #define WRITE_BARRIER   ((1 << BIO_RW) | (1 << BIO_RW_BARRIER))
 
-//
-// timer routines
-//
+/* timer routines */
 
 /*
  *      These inlines deal with timer wrapping correctly. You are
@@ -1130,4 +1093,4 @@ static inline __u32 do_div64 (__u64 * n, __u64 b)
 }
 #define do_div(n, b) do_div64(&(n), (__u64)b)
 
-#endif // _EXT2_MODULE_HEADER_
+#endif /* _EXT2_MODULE_HEADER_ */

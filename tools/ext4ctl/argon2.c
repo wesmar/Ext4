@@ -20,7 +20,6 @@
 #define ARGON2_VERSION          0x13
 #define ARGON2_PREHASH          64
 #define ARGON2_PREHASH_SEED     (ARGON2_PREHASH + 8)
-#define ARGON2_MAX_LANES        64
 
 typedef struct _ARGON2_BLOCK { UINT64 v[ARGON2_QWORDS]; } ARGON2_BLOCK;
 

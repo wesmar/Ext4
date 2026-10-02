@@ -1,5 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0-only
 param([string]$Drive='E:',[int]$Runs=10,[int]$Files=200,[switch]$Keep)
 $ErrorActionPreference='Stop'
+if ($Drive -notmatch '^[A-Za-z]:?$') { throw 'Drive must be a drive letter, with an optional colon.' }
+$Drive = $Drive.TrimEnd(':') + ':'
+if (-not [IO.Directory]::Exists("$Drive\")) { throw "Drive is not mounted: $Drive" }
 Add-Type -TypeDefinition @"
 using System;
 using System.IO;
@@ -44,9 +48,10 @@ public static class Repro {
 }
 "@
 $fail=0
+$runId=[guid]::NewGuid().ToString('N')
 for($r=1;$r -le $Runs;$r++){
- $root="$Drive\rep$r"
- if(Test-Path -LiteralPath $root){ [IO.Directory]::Delete($root,$true) }
+ $root="$Drive\repro-$runId-$r"
+ if(Test-Path -LiteralPath $root){ throw "Test directory already exists: $root" }
  [IO.Directory]::CreateDirectory($root) | Out-Null
  $sw=[Diagnostics.Stopwatch]::StartNew()
  try { [Repro]::Write($root,$Files); "run $r OK $($sw.ElapsedMilliseconds) ms" }
@@ -54,3 +59,4 @@ for($r=1;$r -le $Runs;$r++){
  if(-not $Keep){ [IO.Directory]::Delete($root,$true) }
 }
 "done: $Runs runs, $fail failed"
+exit ([int]($fail -ne 0))

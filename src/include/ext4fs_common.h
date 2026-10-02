@@ -9,27 +9,23 @@
 #ifndef _EXT4_EXT4FS_COMMON_H_
 #define _EXT4_EXT4FS_COMMON_H_
 
-// Include this so we don't need the latest WDK to build the driver.
+/* Include this so we don't need the latest WDK to build the driver. */
 #ifndef FSCTL_GET_RETRIEVAL_POINTER_BASE
-#define FSCTL_GET_RETRIEVAL_POINTER_BASE    CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 141, METHOD_BUFFERED, FILE_ANY_ACCESS) // RETRIEVAL_POINTER_BASE
+#define FSCTL_GET_RETRIEVAL_POINTER_BASE    CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 141, METHOD_BUFFERED, FILE_ANY_ACCESS) /* RETRIEVAL_POINTER_BASE */
 #endif
 
 #ifndef FILE_SUPPORTS_EXTENDED_ATTRIBUTES
 #define FILE_SUPPORTS_EXTENDED_ATTRIBUTES   0x00800000
 #endif
 
-//
-//  The following macro is used to determine if an FSD thread can block
-//  for I/O or wait for a resource.  It returns TRUE if the thread can
-//  block and FALSE otherwise.  This attribute can then be used to call
-//  the FSD & FSP common work routine with the proper wait value.
-//
+/* The following macro is used to determine if an FSD thread can block
+   for I/O or wait for a resource.  It returns TRUE if the thread can
+   block and FALSE otherwise.  This attribute can then be used to call
+   the FSD & FSP common work routine with the proper wait value. */
 
 #define CanExt2Wait(IRP) IoIsOperationSynchronous(Irp)
 
-//
-// memory allocation statistics
-//
+/* memory allocation statistics */
 
 /* the statistics block keeps the ULONG layout reported to user mode; its
    counters change atomically, and the Interlocked primitives take LONG */

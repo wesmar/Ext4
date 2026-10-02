@@ -52,7 +52,6 @@ Ext2FastIoLock (
                    (Fcb->Identifier.Size == sizeof(EXT2_FCB)));
 
             if (IsDirectory(Fcb)) {
-                DbgBreak();
                 IoStatus->Status = STATUS_INVALID_PARAMETER;
                 __leave;
             }
@@ -150,7 +149,6 @@ Ext2FastIoUnlockSingle (
 
             Fcb = (PEXT2_FCB) FileObject->FsContext;
             if (Fcb == NULL || Fcb->Identifier.Type == EXT2VCB) {
-                DbgBreak();
                 IoStatus->Status = STATUS_INVALID_PARAMETER;
                 __leave;
             }
@@ -159,7 +157,6 @@ Ext2FastIoUnlockSingle (
                    (Fcb->Identifier.Size == sizeof(EXT2_FCB)));
 
             if (IsDirectory(Fcb)) {
-                DbgBreak();
                 IoStatus->Status = STATUS_INVALID_PARAMETER;
                 __leave;
             }
@@ -249,7 +246,6 @@ Ext2FastIoUnlockAll (
 
             Fcb = (PEXT2_FCB) FileObject->FsContext;
             if (Fcb == NULL || Fcb->Identifier.Type == EXT2VCB) {
-                DbgBreak();
                 IoStatus->Status = STATUS_INVALID_PARAMETER;
                 __leave;
             }
@@ -258,7 +254,6 @@ Ext2FastIoUnlockAll (
                    (Fcb->Identifier.Size == sizeof(EXT2_FCB)));
 
             if (IsDirectory(Fcb)) {
-                DbgBreak();
                 IoStatus->Status = STATUS_INVALID_PARAMETER;
                 __leave;
             }
@@ -342,7 +337,6 @@ Ext2FastIoUnlockAllByKey (
 
             Fcb = (PEXT2_FCB) FileObject->FsContext;
             if (Fcb == NULL || Fcb->Identifier.Type == EXT2VCB) {
-                DbgBreak();
                 IoStatus->Status = STATUS_INVALID_PARAMETER;
                 __leave;
             }
@@ -351,7 +345,6 @@ Ext2FastIoUnlockAllByKey (
                    (Fcb->Identifier.Size == sizeof(EXT2_FCB)));
 
             if (IsDirectory(Fcb)) {
-                DbgBreak();
                 IoStatus->Status = STATUS_INVALID_PARAMETER;
                 __leave;
             }

@@ -34,14 +34,14 @@ Ext2NewBlock(
     ULONG                   Length = 0;
 
     NTSTATUS                Status = STATUS_DISK_FULL;
+    PERESOURCE              Held = NULL;    /* the lock of Group (Ext2LockGroup) */
 
     *Block = 0;
 
-    ExAcquireResourceExclusiveLite(&Vcb->MetaBlock, TRUE);
+    Ext2JournalJoin(Vcb);       /* before the lock: see Ext2JournalJoin */
 
     /* validate the hint group and hint block */
     if (GroupHint >= Vcb->sbi.s_groups_count) {
-        DbgBreak();
         GroupHint = Vcb->sbi.s_groups_count - 1;
     }
 
@@ -66,9 +66,14 @@ Again:
     if (gb)
         fini_bh(&gb);
 
+    /* one group at a time, under its own lock */
+    if (Held) {
+        Ext2UnlockGroup(Held);
+    }
+    Held = Ext2LockGroupBlocks(Vcb, Group);
+
     gd = ext4_get_group_desc(sb, Group, &gb);
     if (!gd) {
-        DbgBreak();
         Status = STATUS_INSUFFICIENT_RESOURCES;
         goto errorout;
     }
@@ -78,7 +83,6 @@ Again:
     if (gd->bg_flags & cpu_to_le16(EXT4_BG_BLOCK_UNINIT)) {
         bh = sb_getblk_zero(sb, bitmap_blk);
         if (!bh) {
-            DbgBreak();
             Status = STATUS_INSUFFICIENT_RESOURCES;
             goto errorout;
         }
@@ -88,14 +92,13 @@ Again:
            below ends up in this group. */
         ext4_init_block_bitmap(sb, bh, Group, gd);
         set_buffer_uptodate(bh);
-        gd->bg_flags &= cpu_to_le16(~EXT4_BG_BLOCK_UNINIT);
+        Ext2ClearGroupFlag(gd, EXT4_BG_BLOCK_UNINIT);
         ext4_block_bitmap_csum_set(sb, Group, gd, bh);
         mark_buffer_dirty(bh);
         Ext2SaveGroup(IrpContext, Vcb, Group);
     } else {
         bh = sb_getblk(sb, bitmap_blk);
         if (!bh) {
-            DbgBreak();
             Status = STATUS_INSUFFICIENT_RESOURCES;
             goto errorout;
         }
@@ -198,7 +201,6 @@ Again:
         /* validate the new allocated block number */
         *Block = Index + EXT2_FIRST_DATA_BLOCK + Group * BLOCKS_PER_GROUP;
         if (*Block >= TOTAL_BLOCKS || *Block + *Number > TOTAL_BLOCKS) {
-            DbgBreak();
             dwHint = 0;
             goto Again;
         }
@@ -206,17 +208,14 @@ Again:
         if (ext4_block_bitmap(sb, gd) == *Block ||
             ext4_inode_bitmap(sb, gd) == *Block ||
             ext4_inode_table(sb,  gd)  == *Block ) {
-            DbgBreak();
             dwHint = 0;
             goto Again;
         }
 
         /* Always remove dirty MCB to prevent Volume's lazy writing.
            Metadata blocks will be re-added during modifications.*/
-        if (Ext2RemoveBlockExtent(Vcb, NULL, *Block, *Number)) {
-        } else {
-            DbgBreak();
-            Ext2RemoveBlockExtent(Vcb, NULL, *Block, *Number);
+        if (!Ext2RemoveBlockExtent(Vcb, NULL, *Block, *Number)) {
+            Ext2RemoveBlockExtent(Vcb, NULL, *Block, *Number);  /* once more: out of pool */
         }
 
         DEBUG(DL_INF, ("Ext2NewBlock:  Block %xh - %x allocated.\n",
@@ -226,7 +225,9 @@ Again:
 
 errorout:
 
-    ExReleaseResourceLite(&Vcb->MetaBlock);
+    if (Held) {
+        Ext2UnlockGroup(Held);
+    }
 
     if (bh)
         fini_bh(&bh);
@@ -260,8 +261,9 @@ Ext2FreeBlock(
     LONGLONG        FreedDelta = 0;
 
     NTSTATUS        Status = STATUS_UNSUCCESSFUL;
+    PERESOURCE      Held = NULL;    /* the lock of Group (Ext2LockGroup) */
 
-    ExAcquireResourceExclusiveLite(&Vcb->MetaBlock, TRUE);
+    Ext2JournalJoin(Vcb);       /* before the lock: see Ext2JournalJoin */
 
     DEBUG(DL_INF, ("Ext2FreeBlock: Block %xh - %x to be freed.\n",
                    Block, Block + Number));
@@ -290,14 +292,18 @@ Again:
          Block >= TOTAL_BLOCKS ||
          Group >= Vcb->sbi.s_groups_count) {
 
-        DbgBreak();
         Status = STATUS_SUCCESS;
 
     } else  {
 
+        /* one group at a time, under its own lock */
+        if (Held) {
+            Ext2UnlockGroup(Held);
+        }
+        Held = Ext2LockGroupBlocks(Vcb, Group);
+
         gd = ext4_get_group_desc(sb, Group, &gb);
         if (!gd) {
-            DbgBreak();
             Status = STATUS_INSUFFICIENT_RESOURCES;
             goto errorout;
         }
@@ -305,7 +311,6 @@ Again:
 
         /* check the block is valid or not */
         if (bitmap_blk >= TOTAL_BLOCKS) {
-            DbgBreak();
             Status = STATUS_DISK_CORRUPT_ERROR;
             goto errorout;
         }
@@ -325,7 +330,6 @@ Again:
             DEBUG(DL_ERR, ("Ext2FreeBlock: failed to load bitmap block %xh.\n",
                            bitmap_blk));
             Status = STATUS_INSUFFICIENT_RESOURCES;
-            DbgBreak();
             goto errorout;
         }
         if (!buffer_uptodate(bh)) {
@@ -361,10 +365,8 @@ Again:
         Ext2SaveGroup(IrpContext, Vcb, Group);
 
         /* remove dirty MCB to prevent Volume's lazy writing. */
-        if (Ext2RemoveBlockExtent(Vcb, NULL, Block, Count)) {
-        } else {
-            DbgBreak();
-            Ext2RemoveBlockExtent(Vcb, NULL, Block, Count);
+        if (!Ext2RemoveBlockExtent(Vcb, NULL, Block, Count)) {
+            Ext2RemoveBlockExtent(Vcb, NULL, Block, Count);     /* once more: out of pool */
         }
 
         /* the superblock total follows this group's change */
@@ -394,7 +396,9 @@ errorout:
     if (bh)
         fini_bh(&bh);
 
-    ExReleaseResourceLite(&Vcb->MetaBlock);
+    if (Held) {
+        Ext2UnlockGroup(Held);
+    }
 
     return Status;
 }

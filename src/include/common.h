@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef _EXT2_COMMON_INCLUDE_
 #define _EXT2_COMMON_INCLUDE_
 
@@ -174,10 +175,10 @@ typedef struct _EXT2_VOLUME_PROPERTY {
 
 #ifdef __cplusplus
 typedef struct _EXT2_VOLUME_PROPERTY2:EXT2_VOLUME_PROPERTY {
-#else   // __cplusplus
+#else /* __cplusplus */
 typedef struct _EXT2_VOLUME_PROPERTY2 {
     EXT2_VOLUME_PROPERTY ;
-#endif  // __cplusplus
+#endif /* __cplusplus */
 
     /* new volume properties added after version 0.35 */
 
@@ -203,10 +204,10 @@ typedef struct _EXT2_VOLUME_PROPERTY2 {
 
 #ifdef __cplusplus
 typedef struct _EXT2_VOLUME_PROPERTY3:EXT2_VOLUME_PROPERTY2 {
-#else   // __cplusplus
+#else /* __cplusplus */
 typedef struct _EXT2_VOLUME_PROPERTY3 {
     EXT2_VOLUME_PROPERTY2 ;
-#endif  // __cplusplus
+#endif /* __cplusplus */
     unsigned __int64       Flags2;
     ULONG                  AutoMount:1;
     ULONG                  EIDS:1;

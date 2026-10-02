@@ -10,6 +10,38 @@
 #include "linux\ext4.h"
 #include "../core/core_internal.h"
 
+/*
+ * Every change of a directory's entries runs under, in this order:
+ *
+ *   Icb->DirResource    the namespace of the directory: create and delete
+ *                       hold it across their own check of the name, the
+ *                       change itself takes it again (recursively)
+ *   Dcb->MainResource   keeps a directory listing (Ext2QueryDirectory
+ *                       reads the blocks under it, shared) off the blocks
+ *   Icb->EntryResource  keeps a lookup off them (Ext2ScanDir, which may
+ *                       hold a name stripe: so nothing here may wait for one)
+ *
+ * The journal is joined first, so none of these is ever held while
+ * waiting for a commit (see Ext2JournalJoin).
+ */
+static VOID
+Ext2LockDirEntries(IN PEXT2_VCB Vcb, IN PEXT2_FCB Dcb)
+{
+    Ext2JournalJoin(Vcb);
+    ExAcquireResourceExclusiveLite(&Dcb->Mcb->Icb->DirResource, TRUE);
+    ExAcquireResourceExclusiveLite(&Dcb->MainResource, TRUE);
+    ExAcquireResourceExclusiveLite(&Dcb->Mcb->Icb->EntryResource, TRUE);
+}
+
+static VOID
+Ext2UnlockDirEntries(IN PEXT2_VCB Vcb, IN PEXT2_FCB Dcb)
+{
+    UNREFERENCED_PARAMETER(Vcb);
+    ExReleaseResourceLite(&Dcb->Mcb->Icb->EntryResource);
+    ExReleaseResourceLite(&Dcb->MainResource);
+    ExReleaseResourceLite(&Dcb->Mcb->Icb->DirResource);
+}
+
 struct dentry * Ext2AllocateEntry()
 {
     struct dentry *de;
@@ -57,7 +89,7 @@ struct dentry *Ext2BuildEntry(PEXT2_VCB Vcb, PEXT2_MCB Dcb, PUNICODE_STRING File
         Oem.MaximumLength = (USHORT)Ext2UnicodeToOEMSize(Vcb, FileName) + 1;
         Oem.Buffer = Ext2AllocatePool(PagedPool, Oem.MaximumLength, 'EB2E');
         if (!Oem.Buffer) {
-            DEBUG(DL_ERR, ( "Ex2BuildEntry: failed to allocate OEM name.\n"));
+            DEBUG(DL_ERR, ( "Ext2BuildEntry: failed to allocate OEM name.\n"));
             __leave;
         }
         de->d_name.name = Oem.Buffer;
@@ -95,10 +127,9 @@ Ext2AddEntry (
     NTSTATUS                status = STATUS_UNSUCCESSFUL;
     int                     rc;
 
-    BOOLEAN                 MainResourceAcquired = FALSE;
+    BOOLEAN                 Locked = FALSE;
 
     if (!IsDirectory(Dcb)) {
-        DbgBreak();
         return STATUS_NOT_A_DIRECTORY;
     }
 
@@ -107,12 +138,21 @@ Ext2AddEntry (
         return STATUS_ACCESS_DENIED;
     }
 
-    ExAcquireResourceExclusiveLite(&Dcb->MainResource, TRUE);
-    MainResourceAcquired = TRUE;
+    Ext2LockDirEntries(Vcb, Dcb);
+    Locked = TRUE;
 
     __try {
 
         Ext2ReferXcb(&Dcb->ReferenceCount);
+
+        /* A new directory is in its parent before it has "." and ".."
+           (Ext2CreateFile writes them under the new Fcb's resource, which
+           is held here too). Until then it takes no entries: one would get
+           the first block, where those two belong. */
+        if (Dcb->Inode->i_size == 0) {
+            status = STATUS_OBJECT_PATH_NOT_FOUND;
+            __leave;
+        }
 
         /* an inline directory becomes a block one before it changes */
         status = Ext4UninlineDir(IrpContext, Vcb, Dcb->Mcb);
@@ -151,11 +191,13 @@ Ext2AddEntry (
 
     } __finally {
 
-        Ext2DerefXcb(&Dcb->ReferenceCount);
-
-        if (MainResourceAcquired)    {
-            ExReleaseResourceLite(&Dcb->MainResource);
+        /* the resource before the reference: with the last one gone the
+           reaper may free the Dcb, resource and all */
+        if (Locked) {
+            Ext2UnlockDirEntries(Vcb, Dcb);
         }
+
+        Ext2DerefXcb(&Dcb->ReferenceCount);
 
         if (de)
             Ext2FreeEntry(de);
@@ -173,13 +215,12 @@ Ext2SetFileType (
     IN umode_t              mode
     )
 {
-    UNREFERENCED_PARAMETER(Vcb);
     struct inode *dir = Dcb->Inode;
     struct buffer_head *bh = NULL;
     struct ext3_dir_entry_2 *de;
     struct inode *inode;
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    BOOLEAN  MainResourceAcquired = FALSE;
+    BOOLEAN  Locked = FALSE;
 
     if (!EXT4_HAS_INCOMPAT_FEATURE(dir->i_sb, EXT3_FEATURE_INCOMPAT_FILETYPE)) {
         return STATUS_SUCCESS;
@@ -189,8 +230,8 @@ Ext2SetFileType (
         return STATUS_NOT_A_DIRECTORY;
     }
 
-    ExAcquireResourceExclusiveLite(&Dcb->MainResource, TRUE);
-    MainResourceAcquired = TRUE;
+    Ext2LockDirEntries(Vcb, Dcb);
+    Locked = TRUE;
 
     __try {
 
@@ -216,10 +257,11 @@ Ext2SetFileType (
         ext4_dirent_csum_set(dir, (struct ext4_dir_entry *)bh->b_data);
         mark_buffer_dirty(bh);
 
-        if (S_ISDIR(inode->i_mode) == S_ISDIR(mode)) {
-        } else if (S_ISDIR(inode->i_mode)) {
+        /* a directory's ".." links its parent: the parent's count follows
+           the change of type */
+        if (S_ISDIR(inode->i_mode) && !S_ISDIR(mode)) {
             ext3_dec_count(dir);
-        } else if (S_ISDIR(mode)) {
+        } else if (!S_ISDIR(inode->i_mode) && S_ISDIR(mode)) {
             ext3_inc_count(dir);
         }
         dir->i_ctime = dir->i_mtime = ext3_current_time(dir);
@@ -232,10 +274,12 @@ Ext2SetFileType (
 
     } __finally {
 
-        Ext2DerefXcb(&Dcb->ReferenceCount);
+        /* the resource before the reference (see Ext2AddEntry) */
+        if (Locked) {
+            Ext2UnlockDirEntries(Vcb, Dcb);
+        }
 
-        if (MainResourceAcquired)
-            ExReleaseResourceLite(&Dcb->MainResource);
+        Ext2DerefXcb(&Dcb->ReferenceCount);
 
         if (bh)
             brelse(bh);
@@ -249,17 +293,21 @@ Ext2RemoveEntry (
     IN PEXT2_IRP_CONTEXT    IrpContext,
     IN PEXT2_VCB            Vcb,
     IN PEXT2_FCB            Dcb,
-    IN PEXT2_MCB            Mcb
+    IN PEXT2_MCB            Mcb,
+    OUT PBOOLEAN            LastName OPTIONAL
 )
 {
-    UNREFERENCED_PARAMETER(Vcb);
     struct inode *dir = Dcb->Inode;
     struct buffer_head *bh = NULL;
     struct ext3_dir_entry_2 *de;
     struct inode *inode;
     int rc = -ENOENT;
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    BOOLEAN  MainResourceAcquired = FALSE;
+    BOOLEAN  Locked = FALSE;
+
+    if (LastName) {
+        *LastName = FALSE;
+    }
 
     if (!IsDirectory(Dcb)) {
         return STATUS_NOT_A_DIRECTORY;
@@ -271,8 +319,8 @@ Ext2RemoveEntry (
         return STATUS_ACCESS_DENIED;
     }
 
-    ExAcquireResourceExclusiveLite(&Dcb->MainResource, TRUE);
-    MainResourceAcquired = TRUE;
+    Ext2LockDirEntries(Vcb, Dcb);
+    Locked = TRUE;
 
     __try {
 
@@ -311,7 +359,11 @@ Ext2RemoveEntry (
         */
         dir->i_ctime = dir->i_mtime = ext3_current_time(dir);
         inode->i_ctime = inode->i_mtime = ext3_current_time(inode);
-        ext3_dec_count(inode);
+        /* other names of the inode may go at this moment, in other
+           directories: only Ext2DropLink tells which of them was last */
+        if (Ext2DropLink(Vcb, inode) && LastName) {
+            *LastName = TRUE;
+        }
         ext3_mark_inode_dirty(IrpContext, inode);
 
         /* decrease dir inode's nlink for .. */
@@ -325,10 +377,12 @@ Ext2RemoveEntry (
 
     } __finally {
 
-        Ext2DerefXcb(&Dcb->ReferenceCount);
+        /* the resource before the reference (see Ext2AddEntry) */
+        if (Locked) {
+            Ext2UnlockDirEntries(Vcb, Dcb);
+        }
 
-        if (MainResourceAcquired)
-            ExReleaseResourceLite(&Dcb->MainResource);
+        Ext2DerefXcb(&Dcb->ReferenceCount);
 
         if (bh)
             brelse(bh);
@@ -345,12 +399,11 @@ Ext2SetParentEntry (
     IN ULONG               OldParent,
     IN ULONG               NewParent )
 {
-    UNREFERENCED_PARAMETER(Vcb);
     NTSTATUS                Status = STATUS_UNSUCCESSFUL;
     struct inode           *dir;
     struct buffer_head     *bh = NULL;
     struct ext3_dir_entry_2 *pSelf, *pParent;
-    BOOLEAN                 MainResourceAcquired = FALSE;
+    BOOLEAN                 Locked = FALSE;
     int                     err = 0;
 
     if (!IsDirectory(Dcb)) {
@@ -361,8 +414,8 @@ Ext2SetParentEntry (
         return STATUS_SUCCESS;
     }
 
-    MainResourceAcquired =
-        ExAcquireResourceExclusiveLite(&Dcb->MainResource, TRUE);
+    Ext2LockDirEntries(Vcb, Dcb);
+    Locked = TRUE;
 
     __try {
 
@@ -392,16 +445,13 @@ Ext2SetParentEntry (
                 pParent->name_len == 2 && pParent->name[0] == '.' &&
                 pParent->name[1] == '.') {
 
-            if (le32_to_cpu(pParent->inode) != OldParent) {
-                DbgBreak();
-            }
+            ASSERT(le32_to_cpu(pParent->inode) == OldParent);
             pParent->inode = cpu_to_le32(NewParent);
             ext4_dirent_csum_set(dir, (struct ext4_dir_entry *)bh->b_data);
             mark_buffer_dirty(bh);
             Status = STATUS_SUCCESS;
 
         } else {
-            DbgBreak();
             Status = STATUS_FILE_CORRUPT_ERROR;
         }
 
@@ -411,13 +461,12 @@ Ext2SetParentEntry (
             brelse(bh);
         }
 
-        if (Ext2DerefXcb(&Dcb->ReferenceCount) == 0) {
-            DEBUG(DL_ERR, ( "Ext2SetParentEntry: Dcb reference goes to ZERO.\n"));
+        /* the resource before the reference (see Ext2AddEntry) */
+        if (Locked) {
+            Ext2UnlockDirEntries(Vcb, Dcb);
         }
 
-        if (MainResourceAcquired)    {
-            ExReleaseResourceLite(&Dcb->MainResource);
-        }
+        Ext2DerefXcb(&Dcb->ReferenceCount);
     }
 
     return Status;

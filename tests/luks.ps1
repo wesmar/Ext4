@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # luks.ps1 - LUKS volumes through ext4ctl and ext4.sys (guest).
 #
 # Unlocks the ext4-in-LUKS partitions of the test disk (luks-image.sh) by
@@ -86,10 +87,18 @@ foreach ($d in 'G', 'H') {
 }
 
 "-- functional suite on G: (LUKS2)"
-$r = & powershell -NoProfile -ExecutionPolicy Bypass -File "$t\ext4test.ps1" -Root 'G:\ext4test'
+$r = & powershell -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -File "$t\ext4test.ps1" -Root 'G:\ext4test' 2>&1
+$functionalRc = $LASTEXITCODE
 $res = ($r | Select-String 'RESULT').Line
-Check 'functional suite' ($res -match ', 0 failed') "($res)"
+$r | Where-Object { $_ -match 'FAIL|unexpected error|Exception' } | ForEach-Object { "  functional detail: $_" }
+Check 'functional suite' ($functionalRc -eq 0 -and $res -match ', 0 failed') "(exit $functionalRc; $res)"
 if (Test-Path 'G:\ext4test') { [IO.Directory]::Delete('G:\ext4test', $true) }
+
+"-- resize regression on G: (LUKS2)"
+$r = & powershell -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -File "$t\resize.ps1" -Root G:\ -Repeat 2 2>&1
+$resizeRc = $LASTEXITCODE
+$r | ForEach-Object { "  $_" }
+Check 'cached/uncached shrink and regrow' ($resizeRc -eq 0 -and ($r -match '^RESIZE: \d+ cases, 0 failed$')) "(exit $resizeRc)"
 
 "-- lock"
 $r = & $ctl lock G: 2>&1; Check 'G: locked' ($LASTEXITCODE -eq 0) "($r)"

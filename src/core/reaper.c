@@ -1,6 +1,10 @@
 /**
  * reaper.c - background reapers for unused MCBs, buffer heads and FCBs.
  *
+ * Copyright (c) 2026 Marek Wesolowski (WESMAR)
+ * Derived from Ext2Fsd (Matt Wu), Ext4Fsd (Bo Branten) and Linux ext4/jbd2.
+ * SPDX-License-Identifier: GPL-2.0-only
+ *
  * Every reaper sleeps without a time-out while it knows of nothing to do.
  * When it holds idle objects that will expire, it sleeps until exactly the
  * earliest expiry - no periodic polling. It is woken early by:
@@ -85,8 +89,8 @@ Ext2ReaperKick(IN PEXT2_REAPER Reaper, IN BOOLEAN Now)
  * left worth keeping, but it still holds its name, and a name held that way
  * cannot be reaped: under churn (create, delete, re-create) thousands of
  * them waited for the next FCB deadline, the name cache stayed above its
- * high water mark and the name reaper ran empty passes under the exclusive
- * McbLock on every allocation - opens/s fell by 85% within a minute.
+ * high water mark and the name reaper ran empty passes under the name
+ * cache lock on every allocation - opens/s fell by 85% within a minute.
  * Batched: one scan per EXT4_FCB_GONE_KICK such Fcbs.
  */
 VOID
@@ -100,8 +104,8 @@ Ext2FcbGone(IN PEXT2_VCB Vcb)
 /*
  * A new name above the high water mark. The name reaper runs only if its
  * last sweep made room, or if the cache grew a batch past where that sweep
- * gave up: a sweep that finds nothing to free costs the same exclusive
- * McbLock hold as one that does, and repeating it per allocation starved
+ * gave up: a sweep that finds nothing to free costs the same lock holds
+ * as one that does, and repeating it per allocation starved
  * the opens it is meant to serve.
  */
 VOID
@@ -154,64 +158,6 @@ Ext2ReaperSleep(IN PEXT2_REAPER Reaper, IN LONGLONG Deadline, IN BOOLEAN Holding
 }
 
 /* ---------------------------------------------------------------- names */
-
-/*
- * Take up to Number unused names off Vcb->McbList, oldest first, onto
- * Reaped (linked through Mcb->Link; the caller frees them). Bounded work:
- * at most a few times Number entries are looked at, whatever the size of
- * the cache, so the lock is never held for long. A name that was looked
- * up since the last pass (MCB_ACCESSED) gets a second chance and moves to
- * the young end; so does a name that is in use.
- */
-ULONG
-Ext2FirstUnusedMcb(PEXT2_VCB Vcb, BOOLEAN Wait, ULONG Number, PLIST_ENTRY Reaped)
-{
-    PEXT2_MCB   Mcb;
-    PLIST_ENTRY List;
-    ULONG       Budget, Count = 0;
-
-    if (Number == 0) {
-        return 0;
-    }
-    if (!ExAcquireResourceExclusiveLite(&Vcb->McbLock, Wait)) {
-        return 0;
-    }
-
-    Budget = Number * 4 + 64;
-    if (Budget > (ULONG)Vcb->NumOfMcb) {
-        Budget = Vcb->NumOfMcb;
-    }
-
-    while (Budget-- && Count < Number && !IsListEmpty(&Vcb->McbList)) {
-
-        List = RemoveHeadList(&Vcb->McbList);
-        Mcb = CONTAINING_RECORD(List, EXT2_MCB, Link);
-        ASSERT(IsFlagOn(Mcb->Flags, MCB_VCB_LINK));
-
-        /* an Fcb references the name it was reached through, so a count
-           of zero also means no Fcb hangs off this name (the inode may
-           still be open through another hard link); a directory with
-           cached children is referenced by each of them */
-        if (!IsMcbRoot(Mcb) && Mcb->Refercount == 0 &&
-            !IsFlagOn(Mcb->Flags, MCB_ACCESSED)) {
-
-            Ext2RemoveMcb(Vcb, Mcb);
-            ClearLongFlag(Mcb->Flags, MCB_VCB_LINK);
-            Ext2DerefXcb(&Vcb->NumOfMcb);
-            InsertTailList(Reaped, &Mcb->Link);
-            Count++;
-
-        } else {
-
-            ClearLongFlag(Mcb->Flags, MCB_ACCESSED);
-            InsertTailList(&Vcb->McbList, &Mcb->Link);
-        }
-    }
-
-    ExReleaseResourceLite(&Vcb->McbLock);
-
-    return Count;
-}
 
 /*
  * The name cache grows until Ext2McbHighWater(), where Ext2AllocateMcb

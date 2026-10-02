@@ -2,6 +2,8 @@
 
 <img src="assets/ext4-hero.svg" width="860" alt="Ext4 for Windows — native ext2, ext3 and ext4 file-system driver">
 
+[![Ext4 for Windows — driver demonstration](images/ext4.gif)](https://youtu.be/TO6ssLvekVA)
+
 [![Latest Release](https://img.shields.io/github/v/release/wesmar/Ext4?label=Latest%20Release&style=for-the-badge)](https://github.com/wesmar/Ext4/releases/latest)
 
 **[⬇ Download ext4.7z](https://github.com/wesmar/Ext4/releases/download/latest/ext4.7z)**
@@ -18,9 +20,9 @@
 [![Build](https://img.shields.io/badge/Build-MSVC%20%2B%20WDK-lightgrey.svg)]()
 
 </div>
-> **Development status — final engineering pass**
+> **Engineering status**
 >
-> `ext4.sys` is still receiving its last validation and packaging refinements. The current build is test-signed and is intended for controlled testing on backed-up media. The compatibility, failure-injection and Linux interoperability results below describe the present source tree; they are not a substitute for a backup.
+> `ext4.sys` provides native ext2/ext3/ext4 read/write access on bare-metal Windows systems and in virtual machines. The current build passed the documented Windows/Linux validation, including Driver Verifier and repeated unload testing. Engineering refinements continue. Microsoft production signing is pending; loading uses KVC or DrvLoader on systems you administer. Keep a backup of important data.
 
 > **Repository policy:** the release archive is not password-protected. Git tracks the active source, project files, tests and documentation. Build outputs, symbols, local tooling, virtual disks and test logs stay outside the repository. Test passphrase defaults in two PowerShell scripts are represented by `<TEST_LUKS_PASSPHRASE>`.
 
@@ -30,11 +32,11 @@
 
 <div align="center">
 
-**A drive letter for your Linux partition • journaled writes • `sc stop` in milliseconds**
+**A drive letter for your Linux partition • journaled writes • controlled unload**
 
 *jbd2 journal, extents with unwritten preallocation, htree directories, metadata checksums, 64-bit group descriptors*
 
-*Every write verified by Linux: `e2fsck` clean, SHA-256 byte-exact*
+*Windows writes checked from Linux: metadata consistency and byte-exact contents*
 
 </div>
 
@@ -43,7 +45,7 @@
 ![Test run summary](images/tests.png)
 -->
 
-> **`ext4.sys`** is a native Windows kernel-mode file system driver for ext2, ext3 and ext4 volumes. It registers with the I/O manager, cache manager and mount manager. An ext4 partition receives a drive letter, appears in Explorer and Disk Management, and supports normal Windows file operations: create, write, rename, map and delete. Metadata updates pass through a **jbd2 journal** that Linux can replay. Writes use **unwritten extents** with the same on-disk rules as Linux. Every test run ends with an **`e2fsck`-clean volume and byte-exact SHA-256 verification from Linux**.
+> **`ext4.sys`** is a native Windows kernel-mode file system driver for ext2, ext3 and ext4 volumes. It registers with the I/O manager, cache manager and mount manager. An ext4 partition receives a drive letter, appears in Explorer and Disk Management, and supports normal Windows file operations: create, write, rename, map and delete. Metadata updates pass through a **jbd2 journal** that Linux can replay. Writes use **unwritten extents** with Linux-compatible on-disk semantics. The validation pipeline checks Windows-written files from Linux using **`e2fsck` and SHA-256**.
 >
 > The codebase retains parts of **Ext2Fsd** by Matt Wu, **Ext4Fsd** by Bo Branten and Linux ext4/jbd2. Their code, algorithms and licensing scope are identified in [Code Lineage and Redesign](#code-lineage-and-redesign). The active Windows paths were then reorganized, rewritten and tested from Windows through to Linux media verification.
 
@@ -87,8 +89,8 @@ The ways of reaching an ext4 partition from Windows, and what each one costs:
 
 Design rules the code follows:
 
-- **Linux is the referee.** Every test run ends with the volume detached from Windows, checked by `e2fsck -fn` and mounted by the Linux kernel, which compares every file the driver wrote against its SHA-256. A Windows-side check alone would only prove the driver agrees with itself.
-- **No sleeping.** Not one fixed delay in the driver. Background work runs on deadlines and events; the service stops the moment the last handle goes, not after a poll interval.
+- **Independent media verification.** The full matrix detaches the test volume from Windows, checks it with `e2fsck` and uses the Linux kernel to verify the files listed in the test manifests with SHA-256.
+- **Event-driven background work.** Reapers use deadlines and notifications; volume teardown is woken when references are released. Protocol timing, such as multi-mount protection, follows the on-disk protocol.
 - **Never write what Linux would not.** A journal that cannot be opened mounts the volume read-only instead of writing unjournaled; a feature the driver does not implement refuses the mount or forces read-only.
 - **Warning-free is the minimum.** `/W4 /WX /std:clatest` in both configurations: a warning is a build error.
 
@@ -111,7 +113,7 @@ What changed on the way to `ext4.sys`, in short:
 
 - **Structure.** The monolithic source tree is divided by responsibility into `driver`, `fsd`, `volume`, `core`, `ext4`, `journal`, `linux`, `nls` and `support`. Each area has its own header; the former umbrella header had 3 400 lines. Before behavior changed, preprocessing proved the split token-identical across 1 615 functions.
 - **Journal commits and recovery.** A Windows-native jbd2 commit engine logs every metadata change and commits it before the home write. Linux `e2fsck` or the driver replays an interrupted transaction at the next mount.
-- **Stopping and unloading.** `sc stop` works on a live driver with mounted volumes, in milliseconds, with no reboot.
+- **Stopping and unloading.** `sc stop` drains mounted volumes and outstanding references before releasing the driver.
 - **Drive letters** for partitions the mount manager treats as hidden (MBR type `0x83`, GPT "Linux filesystem").
 - **Dozens of fixes** found by the test suite: data exposure past a write into preallocated space, extents created one block at a time, a block allocator that started every file in group 0, registry buffer overruns, uninitialised return values, unload hangs, reapers polling on timers, extended attribute blocks written without their checksum, a Windows EA write that erased the Linux ACLs of the file, xattr blocks leaked on delete, lazily initialised block bitmaps that never reached the disk, and reference leaks - a refused open, a close cut short on a demoted symlink, a delete taken over by the wrong handle - that kept `sc stop` pending for ever.
 
@@ -206,6 +208,8 @@ The conversion is where the old code went wrong, twice:
 | A write into the middle of an unwritten extent splits it in three. The first split let its two unwritten halves merge straight back into one, and the second split then marked everything right of the write as initialized | Blocks never written became readable: **stale disk contents visible from Linux** past the end of a large write | The first split passes `EXT4_GET_BLOCKS_PRE_IO`, as Linux `ext4_split_extent` does; the left extent is looked up again before the second split; a split outside its extent now fails with `-EIO` instead of wrapping `ee_len` |
 | A block-cache miss left the run length at one block | Every write converted one block at a time and every block became its own extent: **a 1 MB file had 258 extents, an 8 MB file 1 955 and a two-level tree** | The block mapper is asked for the whole rest of the I/O at once and stops at the extent boundary by itself; a converted run is merged with its initialized neighbours |
 | `SetEndOfFile` wrote zeros over the whole extension of every file | A 256 MB `SetLength` wrote 256 MB of zeros before the real data | Unwritten extents already read as zeros; only the tail of the old last block is cleared, as Linux `ext4_block_truncate_page` does. ext2/ext3 files, which have no unwritten state, still get the full range zeroed |
+| Shrink skipped block truncation after an earlier allocating write | Regrowth exposed initialized data beyond the new end of file | Size changes truncate under the exclusive file resources; cached and uncached regrowth preserve the prefix and zero the newly exposed tail |
+| Extent insertion rollback used the encoded unwritten length | ENOSPC could free blocks outside the allocation | Rollback uses the allocator's exact block count; regressions check free space, file contents and Linux metadata consistency |
 
 Checked from Linux with `debugfs`: a 20 MB file written at an unaligned offset into a preallocated range is now **one initialized extent** followed by the untouched unwritten tail, and every byte outside the written range reads as zero.
 
@@ -213,63 +217,31 @@ Checked from Linux with `debugfs`: a 20 MB file written at an unaligned offset i
 
 ## Performance Engineering
 
-Every change below was made against a measurement on the same Hyper-V guest.
+The design reduces work per I/O and contention between independent files.
 
-| Mechanism | Problem it removed |
+| Mechanism | Engineering effect |
 |---|---|
-| Unwritten extents converted per I/O run and merged, no zero-fill on `SetEndOfFile` | One extent per 4 KB block and 256 MB of zeros written before 256 MB of data — see [Unwritten Extents](#unwritten-extents) |
-| Allocation goal = first block of the inode's own block group | Every file started its search in group 0; test runs took twice as long. Non-contiguous files **4.1% → 2.0%**, and 1.5% with the extent fixes |
-| Deadline-driven reapers for buffer heads, FCBs and name-cache entries, woken by events and by the system low-memory signal | Reapers slept on fixed 10 / 20 s doubling timeouts; stress run median **13.3 s → 9.0 s** |
-| Superblock free totals moved by the exact change of one group descriptor | Every block and inode allocation re-summed the counters of **all** groups — 8 192 descriptors, twice, per allocation on a 1 TiB volume; metadata stress median **21.9 s → 13.8 s** in the same session |
-| Buffer heads released lock-free unless it is the last reference | Every metadata release took the volume-wide `bd_bh_lock` exclusively, although only the 1 → 0 step touches a list; long-lived group descriptor references made all threads of a volume queue on it — stress median **13.8 s → 5.4 s** |
-| Plain opens under the shared volume resource, name lookup under a shared lock; only namespace changes take them exclusively | `IRP_MJ_CREATE` held the volume exclusively for every open, and the path walk held the name-cache lock exclusively across directory reads: every open on a volume queued behind every other. 8 threads opening existing files **~290 ms → ~200 ms**, create + delete **~650 ms → ~420 ms** |
-| Idle FCBs of deleted files released in batches of 64; the name reaper retried only after it can make progress; inode hash widened to 4 096 buckets | Deleted files kept their FCB, and so their name, for up to two minutes; the name cache stayed above its limit and its reaper ran ~3 500 empty passes a second under the exclusive lock. Opens racing namespace changes fell **131 000 → 13 000** per 6 s run within a minute; now they hold at **~140 000–150 000** |
-| Names freed at dismount regardless of their "recently used" mark, symlink targets released with their links | Every file deleted since the mount leaked ~750 bytes of pool at dismount (160 MB after a day of tests) |
-| `MmForceSectionClosed` on file purge and on volume teardown | Data sections kept file objects referenced after the last handle closed; the driver could not stop for minutes after a fresh boot |
-| Volume-stream extent registered **before** `CcCopyWrite`, failure reported | A write to the volume stream could leave its dirty range unrecorded when the extent list could not grow |
-| Buffer heads mapped cached, as the pinned cache views they are | They were an uncached MDL alias of cached pages: every htree scan and every crc32c ran on uncached memory |
-| Sleep-and-retry loops removed from extent lists, block maps and buffer heads | A failed allocation was retried after fixed sleeps; now a failed cache update drops the per-file map, which is rebuilt from disk on the next lookup, and a real failure is reported |
-| crc32c by the CRC32 instruction of SSE 4.2, eight bytes a step (chosen by CPUID and a check value at first use, the table otherwise) | Every metadata block - bitmaps, inode tables, directories, extent blocks, the journal - was checksummed a byte at a time from a table, some 5 µs per 4 KiB block |
-| A set of the caseless names of each large directory, in memory | Names match without regard to case, the index hashes the exact spelling, so a miss in the index was followed by a scan of the whole directory - and every create is such a miss: n files in one directory cost O(n²). 45 000 files with long names: **425 s → 9 s** |
-| The Fcb reaper stops at the first idle Fcb still young (they are kept in the order they became idle), and past its high water mark evicts the oldest | Past 16 384 cached files every close made the reaper scan all of them under the exclusive `FcbLock`, freeing nothing: each batch of 5 000 creates took 2, 4, 7, 10 s and more |
-| Inode allocation no longer re-verifies a group descriptor it has just changed | The first inode in a fresh block group made `ext4_init_block_bitmap` check the checksum of the descriptor the allocator had already updated; it failed, and the whole group was marked used - space lost and `e2fsck` errors on every freshly formatted volume |
-| `fsync` with one device cache flush, as jbd2 does it: the flush before the commit block, which is written through (FUA). A flush counter tells `FlushFileBuffers` whether one issued after the file's data was written has already completed | Every `fsync` flushed the device cache three times - before the commit block, after it and once more on the way out. 5 000 appends with `FlushFileBuffers` after each: **15.3 s → 9.0 s** |
+| Extent conversion per I/O run, followed by merging | Keeps sequential data contiguous and bounds extent-tree growth |
+| Unwritten preallocation | Growing an extent-mapped file reserves blocks; only the initialized tail needs explicit zeroing |
+| Allocation goals based on the inode's block group | Preserves locality and spreads allocations across the volume |
+| CPU-scaled lock stripes for names, blocks and inodes | Independent groups and directories can progress concurrently |
+| Shared resources for ordinary opens and lookups | Exclusive ownership is reserved for namespace changes |
+| Interlocked free-space totals, folded into the superblock at commit and flush | Removes a shared superblock update from each allocation |
+| Reference-counted buffer heads with serialized last-reference handling | Frequent releases avoid a global exclusive lock while preserving lifetime |
+| Bounded cache reaping, deadlines and release notifications | Reclamation follows pressure and actual teardown progress |
+| Directory name sets alongside htree lookup | Avoids a full directory scan for each case-insensitive create |
+| Hardware CRC32C selected by CPUID and a check vector | Accelerates metadata checksums with a table-based fallback |
+| Journal-aware flush ordering | Preserves durability while avoiding redundant completed device flushes |
 
-Copy throughput, 256 MB per test, flushed to disk (`tests\copybench.ps1`), same guest, same host disk:
+Lock stripes use four stripes per logical processor across all processor groups, rounded up to a power of two and capped by the volume's group count. Stripes occupy separate cache lines. Workloads concentrated on one directory or block group remain a separate contention case.
 
-| Operation | NTFS `C:` | ext4 `E:` before | **ext4 `E:` now** |
-|---|---|---|---|
-| `SetLength` + write + flush | 218 ms | 1 302 ms | **158 ms** |
-| Plain streaming write + flush | 224 ms | 1 053 ms | **145 ms** |
-| `File.Copy` | 172 ms | 1 090 ms | **144 ms** |
-| Read (cached) | 39 ms | 35 ms | **35 ms** |
+For *T* concurrent holders choosing independently and uniformly among *S* stripes, the collision union bound is min(1, (*T* − 1) / *S*). This states the assumptions explicitly; benchmark workloads determine the actual contention. LUKS workers are bounded by CPU count and a fixed buffer-memory budget.
 
-`C:` is the guest's NTFS system volume, measured in the same run for scale. ext4 now writes faster than NTFS on the same machine.
+`tests/copybench.ps1` measures preallocated writes, streaming writes, copies and cached reads. Completed writes and copies are checked with SHA-256 outside the timed interval. `tests/fsbench.ps1` covers small-file operations, append-and-flush, random I/O and sequential I/O; uncached reads use aligned native buffers.
 
-The everyday workloads side by side (`tests\fsbench.ps1`: 2 000 files, 256 MB large file; median of two runs, Microsoft Defender told to skip both test directories so that the file systems are compared, not the scanner):
+Comparisons use the same guest and storage backend, alternate the volume order and run with Driver Verifier disabled. Exact timings depend on the storage, cache state, CPU allocation and antivirus policy. Performance results are recorded alongside the tested build.
 
-| Workload | NTFS `C:` | ext4 `E:` |
-|---|---|---|
-| Create 2 000 empty files | 224 ms | **101 ms** |
-| Create 2 000 files of 4 KB | 438 ms | **332 ms** |
-| Open and close existing files, 3 × 2 000 | 77 ms | **56 ms** |
-| Stat 3 × 2 000 files | 63 ms | **37 ms** |
-| Rename 2 000 | 265 ms | **212 ms** |
-| Delete 4 000 | 265 ms | **171 ms** |
-| `mkdir` + `rmdir` 500 trees | 238 ms | **165 ms** |
-| Enumerate 4 000 entries with sizes and times, 10 × | **29 ms** | 38 ms |
-| 5 000 appends, `FlushFileBuffers` after each | **6 970 ms** | 8 830 ms |
-| 20 000 random 4 KB writes / uncached reads | 181 / 2 052 ms | 191 / 2 032 ms |
-| 256 MB sequential write + flush / uncached read | 156 / 102 ms | 162 / 115 ms |
-
-Creating files in one directory, 5 000 per batch, empty files (same guest, Defender on): NTFS takes about 1 s per batch whatever the size of the directory, ext4 about 0.5 s - also at 40 000 entries.
-
-| 40 000 files | NTFS `C:` | ext4 `E:` |
-|---|---|---|
-| Create in one directory | 9 613 ms | **4 204 ms** |
-| Delete the directory | 5 258 ms | **3 090 ms** |
-
-With Defender scanning enabled, closing a written file costs about 0.7 ms more on ext4 than on NTFS. Defender rescans closed files on file systems whose change journals it does not use; NTFS and ReFS cache the verdict. Microsoft's exFAT shows the same cost on the same guest: 2 000 closes take 1 429 ms on exFAT, 1 392 ms on ext4 and 174 ms on NTFS. With a Defender exclusion for the volume, the ext4 run takes 5 ms.
+The latest same-guest repetitions show strong bulk-copy and file-creation performance, with ext4 ahead of NTFS in copying, creation, rename and deletion. NTFS leads in enumeration and append-and-flush workloads. Random and sequential I/O remain close in this setup.
 
 ---
 
@@ -278,22 +250,15 @@ With Defender scanning enabled, closing a written file costs about 0.7 ms more o
 A file system driver on Windows is not meant to be unloaded: `IoRegisterFileSystem` marks the driver object as a base file system driver, and the I/O manager refuses `DriverUnload` for such a driver as long as it owns any device object — reference counts of zero are not enough. `ext4.sys` stops anyway, on a bare `sc stop ext4` or `net stop ext4`, with volumes mounted and handles open:
 
 1. A no-wake kernel timer probes the unload-pending flag of the control device; nothing else in NT signals that a stop was requested.
-2. A **drain thread** takes over: it asks the driver itself to prepare for unload, which succeeds only when no volume is left mounted or dismounting, and it waits for the `VolumeReleased` event raised by cleanup, close and VCB destruction — never on a fixed sleep. The one short recheck left covers the window in which the I/O manager still holds a volume reference after `IRP_MJ_CLOSE` has returned.
+2. A **drain thread** takes over: it asks the driver to prepare for unload, which requires empty volume lists, completed VCB teardown and reclaimed replacement VPBs. It waits for release notifications. A bounded short recheck covers references still held by the I/O manager after close.
 3. Mounted volumes are dismounted as their handles go: the journal is committed and stopped, caches purged, data sections force-closed, drive letters withdrawn at once so nothing shows the volume as RAW.
-4. The control devices are deleted and the last reference is dropped on a system worker thread, which runs `DriverUnload`.
+4. Replacement VPBs are reclaimed only after their reference and device state permit it. Original VPBs are restored with their original persistent state. The control devices are then deleted and the last reference is dropped on a system worker thread, which runs `DriverUnload`.
 
-Measured by the test suite:
+Lifecycle tests cover idle stops, open files and directory watchers, repeated `sc stop` / `net stop`, and drive-letter restoration after restart. A busy handle delays unload until its reference is released.
 
-| Scenario | Time to `STOPPED` |
-|---|---|
-| Idle, volumes mounted (hot-swap by `deploy-vm.ps1`) | **4 – 290 ms** |
-| No open handles | 80 – 98 ms |
-| A file handle open during `sc stop` / `net stop`, closed by the test 300 ms later | 305 – 358 ms from the stop request |
-| Letters back after `sc start` | 6 – 115 ms |
+While a volume is still busy the drain thread says why, in the kernel debug output: the counts that gate the teardown, and every file and file object that has not been closed yet - which is how the last reference leaks were found. Without a debugger, each step of the stop leaves its number in the service's registry key (`UnloadStep`, and `UnloadWaitStatus` for the last wait); the test runner prints both when a stop does not finish.
 
-While a volume is still busy the drain thread says why, in the kernel debug output: the counts that gate the teardown, and every file and file object that has not been closed yet - which is how the last reference leaks were found.
-
-The driver can therefore be replaced without a reboot: `sc stop ext4`, copy the new `ext4.sys`, `sc start ext4`.
+To replace the driver, run `sc stop ext4`, wait for `STOPPED`, copy the new `ext4.sys`, then load it through KVC or DrvLoader. `sc start` also works when the image is accepted by the machine's Code Integrity policy.
 
 ---
 
@@ -336,13 +301,7 @@ ext4ctl lock G:                                 :: dismount, drop the key (--for
 
 `ext4ctl` is a single executable with no runtime dependencies; it works the same over ssh and on Windows Server Core. A partition is named by its number, its NT device name or the UUID of its LUKS header, which unlike the volume number does not change when disks come and go.
 
-Measured on the test disk (LUKS1 PBKDF2, LUKS2 Argon2id 1 GiB / 6 passes / 4 lanes with 4 KiB sectors — the Qubes OS parameters — made by cryptsetup): the functional suite, delete-pending, stress and race tests pass on the encrypted volume as on a plain one; files written from Windows are read back by Linux byte-exact after `cryptsetup open`, and `e2fsck -f` finds nothing — also after `sc stop` with the volumes mounted.
-
-| 128 MB, same guest, same file layout | ext4 | ext4 in LUKS2, AES-256-XTS |
-|---|---|---|
-| Streaming write + flush | ~85 ms | ~118 ms |
-| Uncached read (`FILE_FLAG_NO_BUFFERING`) | 2.1 – 2.5 GB/s | 1.35 – 1.4 GB/s |
-| Unlock (Argon2id, 1 GiB, 6 passes, 4 lanes) | — | ~2.3 s |
+The LUKS tests use cryptsetup-created containers, including Argon2id parameters used by Qubes OS and 4 KiB encryption sectors. Windows writes are checked by Linux after locking the containers: file hashes must match and `e2fsck` must report clean metadata.
 
 ### LVM inside LUKS — read-only
 
@@ -413,59 +372,57 @@ Ext4/
 └── ext4.slnx
 ```
 
-About 48 000 lines of driver C and headers plus 52 000 lines of character set tables, in 181 source files; no file of driver logic is longer than about 1 100 lines.
+The driver and control tool are split by responsibility. LUKS header formats, keyslots, metadata parsing, LVM mappings, passphrase handling and driver control have separate modules; on-disk layouts have compile-time offset checks.
 
 ---
 
 ## Testing and Validation
 
+The current Release x64 build is warning-free under `/W4 /WX`. With Driver Verifier enabled for `ext4.sys`, it passed **80 consecutive stop/start cycles** and **2,400 shrink/regrow cases** across plain and LUKS2 volumes. File and directory handles were open during selected stops; drive letters returned and written data survived each restart. The guest stayed on the same boot throughout the series.
+
+The final full Windows/Linux matrix also passed: functional operations, security boundaries, parallel I/O, namespace races, hot-plug, LUKS1/LUKS2, read-only LVM and Linux feature interoperability. Linux reported clean metadata and matching test manifests after Windows writes.
+
+### Regression invariants
+
+- **Allocation rollback:** extent insertion forced to fail after data allocation must return exactly the allocated block range, including an early-group reuse case. Free space, file length, contents and `e2fsck` are checked.
+- **Object lifetime:** buffer-head release reads reference-protected state before dropping ownership. A model compiles the production VPB reclaimer and exercises busy references, nested swaps, persistent flags and allocation failure.
+- **Resize correctness:** cached and uncached handles shrink and regrow files across sector and block boundaries. Every retained byte must match; every newly exposed byte must be zero.
+- **Unload:** teardown includes outstanding VCB destruction and replacement VPBs. A busy object remains owned until it can be reclaimed.
+- **Tester correctness:** child exit codes and completion summaries are both required. An unhandled exception counts as failure; an empty or interrupted run is rejected.
+
 ```mermaid
 flowchart LR
-    BUILD["build.ps1<br/>/W4 /WX"]
-    DEPLOY["deploy-vm.ps1<br/>test-sign, hot-swap in the guest"]
-    FUNC["ext4test.ps1 + pending.ps1<br/>129 functional checks,<br/>delete-pending scenarios"]
-    SEC["security.ps1<br/>IOCTL gates, bad buffers,<br/>standard-user token"]
-    INT["interop.sh / interop.ps1<br/>Linux makes, Windows changes,<br/>Linux checks"]
-    STRESS["stress.ps1 + repro.ps1 + race.ps1<br/>concurrent churn, parallel I/O,<br/>opens racing namespace changes"]
-    SYS["ext4sys.ps1<br/>sc stop / net stop with handles,<br/>hot unplug and replug"]
-    LNX["WSL: e2fsck -fn<br/>mount + sha256sum -c"]
-    OUT["ALL PASSED"]
-
-    BUILD --> DEPLOY --> INT --> FUNC --> SEC --> STRESS --> SYS --> LNX --> OUT
+    BUILD["Build<br/>/W4 /WX"] --> WIN["Windows guest<br/>functional, resize, security,<br/>LUKS/LVM, races, lifecycle"]
+    WIN --> LINUX["Detach test media<br/>e2fsck + Linux read-back"]
+    LINUX --> HASH["Manifest hashes<br/>contents, flags, links and xattrs"]
 ```
 
 ```powershell
-# the whole suite on a Hyper-V guest, about two and a half minutes
+# Full matrix on the configured Hyper-V guest, including Linux media checks
 pwsh tests\run-ext4test.ps1 -Interop -Stress -System -Luks -Features
 
-# corrupted file systems (the e2fsprogs test images; wsl -- bash tests/robust-corpus.sh once)
-pwsh tests\robust.ps1
+# Functional checks and Linux media verification
+pwsh tests\run-ext4test.ps1 -Quick
 
-# one piece at a time
-pwsh tests\run-ext4test.ps1 -Quick          # functional checks only
-pwsh tests\bench-vm.ps1 -Runs 3             # median timings, to compare two builds
+# Malformed images from the e2fsprogs corpus
+pwsh tests\robust.ps1
 ```
 
-The host runner copies the guest scripts over ssh, runs them against every ext volume in the guest, then stops the driver, detaches the VHDX, attaches it to WSL and lets Linux judge the result. Every stage has a hard time limit and fails fast with a handle dump instead of waiting on a hang.
+Configure the disposable guest and test-image paths in `tests/testenv.local.psd1`; that file stays local. The host runner transfers guest scripts over SSH and checks native process results. Formatting and write tests use dedicated fixtures.
 
-| Stage | Workload | Verdict |
-|---|---|---|
-| Functional | 129 checks: volume queries; sizes from 0 bytes to 20 MB cached, unbuffered and write-through; append, overwrite, truncate, extend, sparse files; memory-mapped I/O; directories, long and international names; rename, move, replace; attributes, timestamps, file IDs; hard links; symbolic links; share modes, byte-range locks, delete-pending; change notification; free space accounting; extended attributes in the inode and in their own block, replaced and deleted; a full disk | 129 ok, 0 failed, ~15 s |
-| Security | Private IOCTLs from user mode, with no buffer and with short ones; retrieval pointers with a negative VCN, a VCN past the end and an unmapped output buffer; holes reported as LCN −1; EAs queried by name in another case and for a name that does not exist; the control device, volume settings, mount points and symlink creation as a standard user | 0 failed |
-| Interop | Linux (WSL) builds a tree — relative, deep, chained, `..` and dangling symlinks, hard links, modes 0444 / 0644 / 4755, setgid directories, a FIFO, nanosecond times, `user.` and `trusted.` xattrs; Windows reads it, then writes its own tree and changes the Linux one; Linux checks modes, owners, setgid inheritance, links, times and xattrs, then runs `e2fsck` | 0 failed on both sides |
-| LUKS | A second test disk built by cryptsetup (`luks-image.sh`): LUKS2 with the Qubes OS KDF parameters and 4 KiB sectors, LUKS2 holding LVM, LUKS1. `ext4ctl` unlocks by UUID; a wrong passphrase is refused; Linux's files are read back byte-exact; a set of awkward sizes, odd-offset overwrites and unbuffered write-through is written; the functional suite runs on the encrypted volume; everything is locked. The LVM container opens read-only, and its linear and thin volumes are mounted and checked against Linux's manifest, writes refused, locking refused while they are open. Then Linux opens the containers, checks Windows's files with `sha256sum -c` and runs `e2fsck -f`, the logical volumes included | 0 failed on both sides |
-| Linux features | A disk made afresh each run by `mkfs.ext4 -O casefold`, `debugfs` and `e2fsck -D` (`features-image.sh`): a casefolded directory of 300 Polish, German and mixed-case names; files and directories with `chattr +i` and `+a`; SELinux labels. Windows looks names up folded, refuses a name that folds to an existing one, writes 400 files (splitting index blocks), renames, deletes, makes a directory; tries everything Linux refuses on the `+i` / `+a` inodes; creates in a labelled directory and overwrites a labelled file with an EA buffer. Three `-O mmp` partitions: one released, one marked as under `e2fsck`, one left by a node that died - Windows writes to the first, only reads the second, takes the third over after the protocol's wait; Linux finds the first and the third released by `ext4.sys` and the second untouched. An `-O ea_inode` partition where the kernel set values of 9-30 KB (two files sharing one): Windows reads them, writes a 40 KB one, replaces value inodes by small values and by other value inodes, deletes files that own or share one, and changes a file whose xattr block another file shares. An `-O inline_data` partition where the kernel made small files and directories (one with entries past `i_block`): Windows reads and lists them, appends to, truncates and deletes inline files, creates, deletes and renames inside inline directories, removes an empty one and is refused a non-empty one. Linux runs `e2fsck -f` - which checks every index block against the folded hashes - and checks contents, flags and labels. The same test on the previous driver: `e2fsck` reports the casefolded index corrupt | 0 failed on both sides |
-| Stress | 8 threads × create / rename / mkdir / delete, 34 000 operations | 0 errors, 0 left over |
-| Parallel I/O | Parallel write / extend / truncate / rename with read-back, 3 runs | 0 failed |
-| Delete-pending | One thread, every interleaving that once left a name stuck: delete while another handle is open, a target deleted while open through a symlink, a symlink deleted while open through it, rename then delete, recreate refused while pending, a symlink whose target comes back | 0 failed |
-| Race | 4 threads open names while others rename, delete, re-create and point symlinks at them; afterwards every name must be removable and the service must stop | ~150 000 opens, 0 unexpected errors, stop in ~0.3 s |
-| Service | 6 cycles of `sc stop` and `net stop`, with and without a handle open, right after the race; letters withdrawn and restored | 0 failed, 110 – 380 ms per stop |
-| Hot plug | Test disk removed from the running VM with the driver loaded and a handle open, then re-attached | Letters gone in ~0.5 s, back in ~0.5 s |
-| Linux check | `e2fsck -fn` on every partition (4 KB and 1 KB block sizes), then the verification set — files written cached, unbuffered, extended, cut and regrown, written at an offset into preallocated space — mounted by Linux and checked with `sha256sum -c` | `e2fsck` clean, every file byte-exact |
-| Driver Verifier | The whole run above with Driver Verifier's standard checks on ext4.sys (special pool, forced IRQL checking that pages out everything pageable whenever a lock is taken, pool tracking, I/O, DMA and DDI compliance checks) | 0 failed, no verifier stop; the leaks and the pageable access under a spin lock it found are fixed |
-| Robustness | The corrupted images of the e2fsprogs test suite (219: bad superblocks and group descriptors, looping and out-of-range extent trees, directory hard links and loops, broken htrees, journals, xattr blocks, inline data, checksums), attached as partitions of one disk, a batch at a time (`robust.ps1`): every volume the driver takes is listed, every file read, a file written, renamed and deleted, then the driver is stopped - under Driver Verifier | no crash, no hang: a corrupt volume is refused, mounted read-only or fails the operation, as on Linux. Found and fixed on the way: unchecked superblock geometry, extent trees not checked the way Linux does (an index past the volume hung a read), inode extensions read past the inode, directory aliases, the metadata stream closed after its volume, a leaked VPB |
+| Area | Coverage |
+|---|---|
+| File operations | Cached, uncached and write-through I/O; append, overwrite, truncation, regrowth, mappings and ENOSPC |
+| Namespace | Long and international names, directory indexes, rename/replace, hard links, symlinks, share modes, locks and delete-pending |
+| Parallel access | Concurrent create/delete churn, write/resize/read-back and opens racing namespace changes |
+| Security | Short and invalid IOCTL buffers, retrieval pointers, restricted-user access and EA namespace preservation |
+| Linux interoperability | Ownership, modes, nanosecond timestamps, links, xattrs, SELinux labels and inherited inode flags |
+| Encryption and LVM | LUKS1/LUKS2 key derivation and digest checks, sector-boundary I/O, lock/unlock, read-only linear and thin logical volumes |
+| Linux features | Casefolded and large indexed directories, immutable/append-only flags, MMP, shared xattrs, `ea_inode` and `inline_data` |
+| Media integrity | Linux `e2fsck` and manifest-based content verification after Windows writes |
+| Malformed media | Bounded traversal and read-back, attempted writes, dismount and Verifier checks; mount refusal and read-only fallback are recorded separately |
 
-Two verification modes exist because each caught a real bug: **regrown** (data written, file cut at an unaligned size, grown again without a write — old bytes must not come back) and **offset** (a partial write into a range that was only extended — nothing but the data and zeros may be read).
+Driver Verifier runs are correctness checks. Throughput measurements use a separate run with Verifier disabled.
 
 ---
 
@@ -498,8 +455,8 @@ Two verification modes exist because each caught a real bug: **regrown** (data w
 
 ## Known Limitations
 
-1. **Volumes up to 2³² blocks (16 TiB at 4 KB blocks).** The block mapping inside the driver is still 32-bit; a larger volume is refused at mount rather than truncated.
-2. **Test-signed only.** Windows loads the driver with test signing enabled or Secure Boot off; there is no Microsoft signature.
+1. **Fewer than 2³² blocks per volume — approximately 16 TiB with 4 KiB blocks.** The driver accepts the ext4 `64bit` descriptor format, but its Windows block-mapping interfaces still carry 32-bit physical block numbers. Larger volumes are refused at mount. Wider addressing is a separate engineering task.
+2. **Microsoft production signing is pending.** KVC and DrvLoader provide the controlled loading paths; HVCI systems may require a reboot before the first load.
 3. **No external journals.** A volume whose journal lives on another device is mounted read-only.
 4. **POSIX permissions are mapped, not enforced as ACLs.** Ownership can be overridden per volume (`uid`, `gid` in the registry); Windows security descriptors are not stored.
 5. **LUKS and LVM.** Ciphers other than AES-XTS are not supported. Logical volumes inside LUKS open read-only, linear (one stripe) and thin ones; striped, mirrored and RAID volumes, a volume group spanning several containers, and a partition table inside a volume (the root volumes of Qubes OS qubes) are not handled — the private volumes of Qubes OS qubes hold ext4 directly and open.
@@ -509,7 +466,7 @@ Two verification modes exist because each caught a real bug: **regrown** (data w
 
 ## Installation
 
-The current binary is test-signed, not Microsoft production-signed. Until production signing is available, there are four controlled loading paths. All commands below require an elevated Command Prompt or PowerShell session and a machine you administer.
+Microsoft production signing is pending. Until it is available, use one of the three controlled loading paths below: DrvLoader, the KVC runtime driver manager or the KVC SMSS boot loader. All commands require an elevated Command Prompt or PowerShell session and a machine you administer.
 
 > **What the loaders do:** DrvLoader and KVC do not change the signature of `ext4.sys`. They temporarily open the Code Integrity path, start the driver, and restore DSE immediately afterwards. If Memory Integrity (HVCI) is active, the machine must reboot before an unsigned driver can enter the kernel.
 
@@ -582,23 +539,9 @@ kvc uninstall smss
 
 Do not move or replace `ext4.sys` while it is loaded. Stop the service first. Open file handles can delay `sc stop ext4`; the driver completes the stop as soon as the last mounted volume is released.
 
-### Native Windows test-signing path
+### Mounted volumes and settings
 
-Without either loader, Windows must accept the test certificate:
-
-```cmd
-bcdedit /set testsigning on
-```
-
-(Secure Boot has to be off for that setting to take effect.) Reboot after changing `testsigning`, then run:
-
-```cmd
-copy ext4.sys %SystemRoot%\System32\drivers\
-sc create ext4 type= filesys start= demand error= normal binPath= System32\drivers\ext4.sys DisplayName= "ext4 file system driver"
-sc start ext4
-```
-
-The Linux partitions get drive letters within a second. `sc stop ext4` takes them away again and unloads the driver; `start= system` instead of `demand` loads it at every boot. LUKS partitions are opened with `ext4ctl unlock` (see [Encrypted Volumes — LUKS](#encrypted-volumes--luks)); copy `ext4ctl.exe` anywhere on the path.
+The Linux partitions get drive letters within a second. `sc stop ext4` takes them away again and unloads the driver. LUKS partitions are opened with `ext4ctl unlock` (see [Encrypted Volumes — LUKS](#encrypted-volumes--luks)); copy `ext4ctl.exe` anywhere on the path.
 
 Optional settings live under `HKLM\SYSTEM\CurrentControlSet\Services\ext4\Parameters`: `WritingSupport`, `CheckingBitmap`, `Ext3ForceWriting`, `CodePage`, `HidingPrefix` / `HidingSuffix`, `AutoMount`, and per volume under `Volumes` — `Readonly`, `CodePage`, `MountPoint`, `uid`, `gid`.
 

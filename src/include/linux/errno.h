@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef _I386_ERRNO_H
 #define _I386_ERRNO_H
 

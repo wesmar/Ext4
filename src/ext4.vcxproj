@@ -74,6 +74,7 @@
     <ClCompile Include="unicode\utf8data.c" />
     <ClCompile Include="unicode\utf8norm.c" />
     <ClCompile Include="core\fcb.c" />
+    <ClCompile Include="core\stripes.c" />
     <ClCompile Include="core\icb.c" />
     <ClCompile Include="core\irp_context.c" />
     <ClCompile Include="core\mcb.c" />
@@ -116,6 +117,7 @@
     <ClCompile Include="fsd\close.c" />
     <ClCompile Include="fsd\create.c" />
     <ClCompile Include="fsd\create_file.c" />
+    <ClCompile Include="fsd\create_new.c" />
     <ClCompile Include="fsd\delete.c" />
     <ClCompile Include="fsd\devctl.c" />
     <ClCompile Include="fsd\dirctl.c" />
@@ -205,17 +207,23 @@
     <ClCompile Include="support\util.c" />
     <ClCompile Include="crypto\xts.c" />
     <ClCompile Include="volume\crypt.c" />
+    <ClCompile Include="volume\crypt_io.c" />
+    <ClCompile Include="volume\vdisk.c" />
     <ClCompile Include="volume\dismount.c" />
+    <ClCompile Include="volume\vpb.c" />
     <ClCompile Include="volume\lvm.c" />
     <ClCompile Include="volume\mmp.c" />
     <ClCompile Include="volume\letter.c" />
     <ClCompile Include="volume\mount.c" />
     <ClCompile Include="volume\vcb.c" />
+    <ClCompile Include="volume\vcb_init.c" />
     <ClCompile Include="volume\vcb_params.c" />
     <ClCompile Include="volume\volume_lock.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="core\core_internal.h" />
+    <ClInclude Include="volume\crypt_internal.h" />
+    <ClInclude Include="volume\vcb_internal.h" />
     <ClInclude Include="driver\driver_internal.h" />
     <ClInclude Include="ext4\extents_internal.h" />
     <ClInclude Include="ext4\htree_internal.h" />

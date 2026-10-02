@@ -37,6 +37,12 @@ Ext2AllocateFcb (
     IN PEXT2_MCB   Mcb
 );
 
+PEXT2_FCB
+Ext2ReferDcb (
+    IN PEXT2_VCB   Vcb,
+    IN PEXT2_MCB   Mcb
+);
+
 VOID
 Ext2UnlinkFcb(IN PEXT2_FCB Fcb);
 
@@ -94,6 +100,12 @@ VOID
 Ext2NameUnlinked (
     IN PEXT2_VCB        Vcb,
     IN PEXT2_MCB        Mcb
+);
+
+BOOLEAN
+Ext2DropLink (
+    IN PEXT2_VCB        Vcb,
+    IN struct inode    *Inode
 );
 
 PEXT2_MCB
@@ -286,11 +298,76 @@ Ext2SearchMcb(
 ULONG
 Ext2HashMcbName(IN PUNICODE_STRING Name);
 
-PEXT2_MCB
-Ext2SearchMcbWithoutLock(
-    PEXT2_MCB           Parent,
-    PUNICODE_STRING     FileName
+ULONG
+Ext2RoundUpPow2(IN ULONG Value);
+
+ULONG
+Ext2StripeCount(IN ULONG Items);
+
+PEXT2_LOCK_STRIPE
+Ext2AllocateStripes(IN ULONG Count, OUT PVOID *Pool);
+
+VOID
+Ext2FreeStripes(IN PEXT2_LOCK_STRIPE Stripes, IN ULONG Count, IN PVOID Pool);
+
+NTSTATUS
+Ext2InitializeGroupLocks(IN PEXT2_VCB Vcb);
+
+VOID
+Ext2DestroyGroupLocks(IN PEXT2_VCB Vcb);
+
+PERESOURCE
+Ext2LockGroupBlocks(IN PEXT2_VCB Vcb, IN ULONG Group);
+
+PERESOURCE
+Ext2LockGroupInodes(IN PEXT2_VCB Vcb, IN ULONG Group);
+
+VOID
+Ext2SetGroupDescCsum(IN PEXT2_VCB Vcb, IN ULONG Group, IN struct ext4_group_desc *Desc);
+
+/* bg_flags is the one descriptor field both halves change: atomically */
+VOID
+Ext2ClearGroupFlag(IN struct ext4_group_desc *Desc, IN USHORT Flag);
+
+VOID
+Ext2UnlockGroup(IN PERESOURCE Lock);
+
+NTSTATUS
+Ext2InitializeNameCache(IN PEXT2_VCB Vcb);
+
+VOID
+Ext2DestroyNameCache(IN PEXT2_VCB Vcb);
+
+PERESOURCE
+Ext2AcquireNameStripe(
+    IN PEXT2_VCB        Vcb,
+    IN PEXT2_MCB        Parent,
+    IN ULONG            NameHash,
+    IN BOOLEAN          Exclusive
 );
+
+VOID
+Ext2ReleaseNameStripe(IN PERESOURCE Stripe);
+
+PEXT2_MCB
+Ext2FindMcbLocked(
+    IN PEXT2_VCB        Vcb,
+    IN PEXT2_MCB        Parent,
+    IN PUNICODE_STRING  FileName,
+    IN ULONG            Hash
+);
+
+PEXT2_MCB
+Ext2ReferParent(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb);
+
+PEXT2_MCB
+Ext2ReferDirectory(IN PEXT2_VCB Vcb, IN PEXT2_MCB Dir);
+
+PEXT2_MCB
+Ext2ReferLinkTarget(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb);
+
+BOOLEAN
+Ext2IsLinkDangling(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb);
 
 VOID
 Ext2InsertMcb(
@@ -314,10 +391,7 @@ VOID
 Ext2LinkTailMcb(PEXT2_VCB Vcb, PEXT2_MCB Mcb);
 
 VOID
-Ext2LinkHeadMcb(PEXT2_VCB Vcb, PEXT2_MCB Mcb);
-
-VOID
-Ext2UnlinkMcb(PEXT2_VCB Vcb, PEXT2_MCB Mcb);
+Ext2MoveMcbToHead(PEXT2_VCB Vcb, PEXT2_MCB Mcb);
 
 ULONG
 Ext2FirstUnusedMcb(

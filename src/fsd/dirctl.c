@@ -111,8 +111,10 @@ Ext2ProcessEntry(
 
     Mcb = Ext2SearchMcb(Vcb, Dcb->Mcb, pName);
     if (NULL != Mcb) {
-        if (S_ISLNK(Mcb->Inode->i_mode) && NULL == Mcb->Target) {
-            Ext2FollowLink( IrpContext, Vcb, Dcb->Mcb, Mcb, 0);
+        /* a link not followed yet, or demoted: its target may exist now
+           (under LinkLock, like every change of a link) */
+        if (S_ISLNK(Mcb->Inode->i_mode)) {
+            Ext2ResolveLink(IrpContext, Vcb, Mcb, 0, FALSE);
         }
 
     } else {
@@ -124,13 +126,11 @@ Ext2ProcessEntry(
             !Ext2LoadInode(Vcb, &Inode)) {
             DEBUG(DL_ERR, ("Ext2PricessDirEntry: Loading inode %xh (%wZ) error.\n",
                            in, pName ));
-            DbgBreak();
             Status = STATUS_SUCCESS;
             goto errorout;
         }
 
-        if (S_ISDIR(Inode.i_mode) || S_ISREG(Inode.i_mode)) {
-        } else if (S_ISLNK(Inode.i_mode)) {
+        if (S_ISLNK(Inode.i_mode)) {
             DEBUG(DL_RES, ("Ext2ProcessDirEntry: SymLink: %wZ\\%wZ\n",
                            &Dcb->Mcb->FullName, pName));
             Ext2LookupFile(IrpContext, Vcb, pName, Dcb->Mcb, &Mcb,0);
@@ -139,7 +139,8 @@ Ext2ProcessEntry(
                 Ext2DerefMcb(Mcb);
                 Mcb = NULL;
             }
-        } else {
+        } else if (!S_ISDIR(Inode.i_mode) && !S_ISREG(Inode.i_mode)) {
+            /* a device node, a fifo, a socket: no size to show */
             Inode.i_size = 0;
         }
     }
@@ -148,18 +149,21 @@ Ext2ProcessEntry(
 
         FileAttributes = Mcb->FileAttr;
         if (IsMcbSymLink(Mcb)) {
-            Target = Mcb->Target;
-            ASSERT(Target);
-            ASSERT(!IsMcbSymLink(Target));
-            if (IsMcbDirectory(Target)) {
+            /* the target, held while it is looked at (a demotion of the
+               link may drop it meanwhile) */
+            Target = Ext2ReferLinkTarget(Vcb, Mcb);
+            if (Target == NULL || IsFileDeleted(Target)) {
+                ClearFlag(FileAttributes, FILE_ATTRIBUTE_DIRECTORY);
+                FileSize = 0;
+            } else if (IsMcbDirectory(Target)) {
                 FileSize = 0;
                 FileAttributes |= FILE_ATTRIBUTE_DIRECTORY;
             } else {
                 FileSize = Target->Inode->i_size;
             }
-            if (IsFileDeleted(Target)) {
-                ClearFlag(FileAttributes, FILE_ATTRIBUTE_DIRECTORY);
-                FileSize = 0;
+            if (Target) {
+                Ext2DerefMcb(Target);
+                Target = NULL;
             }
         } else {
             if (IsMcbDirectory(Mcb)) {
@@ -462,7 +466,7 @@ int Ext2FillEntry(void *context, const char *name, int namlen,
                          EXT2_INAME_MAGIC
                      );
     if (!Unicode.Buffer) {
-        DEBUG(DL_ERR, ( "Ex2QueryDirectory: failed to "
+        DEBUG(DL_ERR, ( "Ext2QueryDirectory: failed to "
                         "allocate InodeFileName.\n"));
         fc->efc_status = STATUS_INSUFFICIENT_RESOURCES;
         rc = -ENOMEM;
@@ -473,7 +477,7 @@ int Ext2FillEntry(void *context, const char *name, int namlen,
 
     Status = Ext2OEMToUnicode(Vcb, &Unicode, &Oem);
     if (!NT_SUCCESS(Status)) {
-        DEBUG(DL_ERR, ( "Ex2QueryDirectory: Ext2OEMtoUnicode failed with %xh.\n", Status));
+        DEBUG(DL_ERR, ( "Ext2QueryDirectory: Ext2OEMtoUnicode failed with %xh.\n", Status));
         fc->efc_status = STATUS_INSUFFICIENT_RESOURCES;
         rc = -ENOMEM;
         goto errorout;
@@ -492,8 +496,6 @@ int Ext2FillEntry(void *context, const char *name, int namlen,
             if (EntrySize > 0) {
                 fc->efc_prev = CEILING_ALIGNED(ULONG, fc->efc_start, 8);
                 fc->efc_start = fc->efc_prev + EntrySize;
-            } else {
-                DbgBreak();
             }
         } else {
             if (Status == STATUS_BUFFER_OVERFLOW) {
@@ -543,9 +545,7 @@ Ext2NotifyChangeDirectory (
         ASSERT((IrpContext->Identifier.Type == EXT2ICX) &&
                (IrpContext->Identifier.Size == sizeof(EXT2_IRP_CONTEXT)));
 
-        //
-        //  Always set the wait flag in the Irp context for the original request.
-        //
+        /* Always set the wait flag in the Irp context for the original request. */
 
         SetFlag( IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT );
 
@@ -566,7 +566,6 @@ Ext2NotifyChangeDirectory (
         Fcb = (PEXT2_FCB) FileObject->FsContext;
         ASSERT(Fcb);
         if (Fcb->Identifier.Type == EXT2VCB) {
-            DbgBreak();
             Status = STATUS_INVALID_PARAMETER;
             __leave;
         }
@@ -578,14 +577,13 @@ Ext2NotifyChangeDirectory (
         ASSERT((Ccb->Identifier.Type == EXT2CCB) &&
                (Ccb->Identifier.Size == sizeof(EXT2_CCB)));
 
-        /* do nothing if target fie was deleted */
+        /* do nothing if target file was deleted */
         if (FlagOn(Fcb->Flags, FCB_DELETE_PENDING)) {
             Status = STATUS_FILE_DELETED;
             __leave;
         }
 
         if (!IsDirectory(Fcb)) {
-            DbgBreak();
             Status = STATUS_INVALID_PARAMETER;
             __leave;
         }

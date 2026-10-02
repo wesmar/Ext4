@@ -24,8 +24,8 @@ extern CHAR gDate[];
 #pragma alloc_text(PAGE, Ext2ProcessVolumeProperty)
 #pragma alloc_text(PAGE, Ext2ProcessUserProperty)
 #pragma alloc_text(PAGE, Ext2ProcessGlobalProperty)
-#pragma alloc_text(PAGE, Ex2ProcessUserPerfStat)
-#pragma alloc_text(PAGE, Ex2ProcessMountPoint)
+#pragma alloc_text(PAGE, Ext2ProcessUserPerfStat)
+#pragma alloc_text(PAGE, Ext2ProcessMountPoint)
 #endif
 
 NTSTATUS
@@ -88,9 +88,7 @@ Ext2DeviceControlNormal (IN PEXT2_IRP_CONTEXT IrpContext)
 
         TargetDeviceObject = Vcb->TargetDeviceObject;
 
-        //
-        // Pass on the IOCTL to the driver below
-        //
+        /* Pass on the IOCTL to the driver below */
 
         CompleteRequest = FALSE;
 
@@ -521,7 +519,7 @@ Ext2ProcessUserProperty(
 }
 
 NTSTATUS
-Ex2ProcessUserPerfStat(
+Ext2ProcessUserPerfStat(
     IN PEXT2_IRP_CONTEXT    IrpContext,
     IN PEXT2_QUERY_PERFSTAT QueryPerf,
     IN ULONG                Length
@@ -600,7 +598,7 @@ Ex2ProcessUserPerfStat(
 }
 
 NTSTATUS
-Ex2ProcessMountPoint(
+Ext2ProcessMountPoint(
     IN PEXT2_IRP_CONTEXT    IrpContext,
     IN PEXT2_MOUNT_POINT    MountPoint,
     IN ULONG                Length
@@ -756,7 +754,7 @@ Ext2DeviceControl (IN PEXT2_IRP_CONTEXT IrpContext)
         break;
 
     case IOCTL_APP_QUERY_PERFSTAT:
-        Status = Ex2ProcessUserPerfStat(
+        Status = Ext2ProcessUserPerfStat(
                      IrpContext,
                      Irp->AssociatedIrp.SystemBuffer,
                      length
@@ -764,7 +762,7 @@ Ext2DeviceControl (IN PEXT2_IRP_CONTEXT IrpContext)
         break;
 
     case IOCTL_APP_MOUNT_POINT:
-        Status = Ex2ProcessMountPoint(
+        Status = Ext2ProcessMountPoint(
                      IrpContext,
                      Irp->AssociatedIrp.SystemBuffer,
                      length

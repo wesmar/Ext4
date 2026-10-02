@@ -1,11 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef _LINUX_ATOMIC_H
 #define _LINUX_ATOMIC_H
 
 #include <linux/types.h>
 
-//
-// atomic
-//
+/* atomic */
 
 typedef struct {
     volatile LONG  counter;

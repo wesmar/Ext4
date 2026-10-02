@@ -1,4 +1,5 @@
 #Requires -Version 7.0
+# SPDX-License-Identifier: GPL-2.0-only
 # bench-vm.ps1 - repeatable timing of the guest workloads on the deployed driver.
 #
 # Runs stress.ps1 (8 threads create/rename/mkdir/delete) and repro.ps1

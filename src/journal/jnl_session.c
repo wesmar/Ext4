@@ -103,6 +103,7 @@ static PEXT2_JOURNAL JnlCreate(PEXT2_VCB Vcb)
     KeInitializeEvent(&J->WakeEvent, SynchronizationEvent, FALSE);
     KeInitializeEvent(&J->UnlockedEvent, NotificationEvent, TRUE);
     KeInitializeEvent(&J->UpdatesEvent, SynchronizationEvent, FALSE);
+    KeInitializeEvent(&J->HeldEvent, NotificationEvent, FALSE);
     InitializeListHead(&J->Checkpoint);
     ExInitializeNPagedLookasideList(&J->RecLookaside, NULL, NULL, 0, sizeof(EXT2_JREC), JNL_TAG, 0);
     ExInitializeNPagedLookasideList(&J->TxnLookaside, NULL, NULL, 0, sizeof(EXT2_JTXN), JNL_TAG, 0);
@@ -319,6 +320,9 @@ Ext2JournalFlush(IN PEXT2_VCB Vcb)
     if (!J || !(J->Flags & JF_ACTIVE))
         return STATUS_SUCCESS;
 
+    /* the free totals go with what is flushed (they live in the Vcb) */
+    Ext2SyncSuperTotals(NULL, Vcb);
+
     JnlDetachSelf(J);
 
     KeWaitForSingleObject(&J->CommitLock, Executive, KernelMode, FALSE, NULL);
@@ -463,7 +467,7 @@ Ext2JournalStop(IN PEXT2_VCB Vcb, IN BOOLEAN MarkClean)
     KIRQL           irql;
     LIST_ENTRY      records, txns;
     PEXT2_JTXN      running;
-    ULONG           waited = 0;
+    ULONGLONG       deadline;
 
     if (!J || !(J->Flags & JF_ACTIVE))
         return;
@@ -490,14 +494,22 @@ Ext2JournalStop(IN PEXT2_VCB Vcb, IN BOOLEAN MarkClean)
     /* requests still in flight lose their handles; a request that is
        between "scope removed" and "handle detached" finishes on its own */
     JnlDropScopes(J);
+    /* JnlDetach signals UpdatesEvent when the last one goes, now that
+       JF_STOPPING is set (the commit thread, its other waiter, is gone) */
+    deadline = KeQueryInterruptTime() + JNL_STOP_DRAIN;
     for (;;) {
-        LONG updates;
+        LONG            updates;
+        LONGLONG        left;
+        LARGE_INTEGER   wait;
+
         JnlLock(J, irql);
         updates = J->Running ? J->Running->Updates : 0;
         JnlUnlock(J, irql);
-        if (updates <= 0 || waited++ > 100)      /* 5 s */
+        left = (LONGLONG)(deadline - KeQueryInterruptTime());
+        if (updates <= 0 || left <= 0)
             break;
-        JnlSleep(JNL_WAIT_TICK);
+        wait.QuadPart = -left;
+        KeWaitForSingleObject(&J->UpdatesEvent, Executive, KernelMode, FALSE, &wait);
     }
 
     /* whatever is left (aborted journal, or a modification that raced

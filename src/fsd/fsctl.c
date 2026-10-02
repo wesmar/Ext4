@@ -205,9 +205,7 @@ Ext2OplockRequest (
 
         DeviceObject = IrpContext->DeviceObject;
 
-        //
-        // This request is not allowed on the main device object
-        //
+        /* This request is not allowed on the main device object */
         if (IsExt2FsDevice(DeviceObject)) {
             Status = STATUS_INVALID_DEVICE_REQUEST;
             __leave;
@@ -229,9 +227,7 @@ Ext2OplockRequest (
 
         Fcb = (PEXT2_FCB) FileObject->FsContext;
 
-        //
-        // This request is not allowed on volumes
-        //
+        /* This request is not allowed on volumes */
 
         if (Fcb == NULL || Fcb->Identifier.Type == EXT2VCB) {
             Status = STATUS_INVALID_PARAMETER;
@@ -300,17 +296,13 @@ Ext2OplockRequest (
             Ext2BugCheck(EXT2_BUGCHK_FSCTL, FsCtrlCode, 0, 0);
         }
 
-        //
-        //  Call the FsRtl routine to grant/acknowledge oplock.
-        //
+        /* Call the FsRtl routine to grant/acknowledge oplock. */
 
         Status = FsRtlOplockFsctrl( &Fcb->Oplock,
                                     Irp,
                                     OplockCount );
 
-        //
-        //  Set the flag indicating if Fast I/O is possible
-        //
+        /* Set the flag indicating if Fast I/O is possible */
 
         Fcb->Header.IsFastIoPossible = Ext2IsFastIoPossible(Fcb);
         IrpContext->Irp = NULL;
@@ -348,10 +340,8 @@ Ext2IsVolumeDirty (
         Irp = IrpContext->Irp;
         IrpSp = (PEXTENDED_IO_STACK_LOCATION)IoGetCurrentIrpStackLocation(Irp);
 
-        //
-        //  Get a pointer to the output buffer.  Look at the system buffer field in the
-        //  irp first.  Then the Irp Mdl.
-        //
+        /* Get a pointer to the output buffer.  Look at the system buffer field in the
+           irp first.  Then the Irp Mdl. */
 
         if (Irp->AssociatedIrp.SystemBuffer != NULL) {
 

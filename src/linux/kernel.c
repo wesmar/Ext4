@@ -53,9 +53,7 @@ void *kzalloc(size_t size, int flags)
     return buffer;
 }
 
-//
-// slab routines
-//
+/* slab routines */
 
 kmem_cache_t *
 kmem_cache_create(
@@ -128,9 +126,7 @@ void kmem_cache_free(kmem_cache_t *kc, void *p)
     }
 }
 
-//
-// wait queue routines
-//
+/* wait queue routines */
 
 void init_waitqueue_head(wait_queue_head_t *q)
 {
@@ -295,9 +291,7 @@ void iput(struct inode *inode)
     }
 }
 
-//
-// string functions from linux/lib/string.c
-//
+/* string functions from linux/lib/string.c */
 
 #if _MSC_VER > 1900
 
@@ -325,9 +319,9 @@ int _strnicmp(const char* str1, const char* str2, size_t count)
 
 #if !defined(_M_ARM64) && !defined(_M_ARM)
 
-// Newer MSVC toolsets (VS 2022 17.x and later) treat strncmp/strncpy as
-// intrinsics, which makes redefining them a C2169 error. Force a real function
-// so these kernel-side implementations are used as before.
+/* Newer MSVC toolsets (VS 2022 17.x and later) treat strncmp/strncpy as
+   intrinsics, which makes redefining them a C2169 error. Force a real function
+   so these kernel-side implementations are used as before. */
 #pragma function(strncmp, strncpy)
 
 int strncmp(const char* str1, const char* str2, size_t count)
@@ -363,9 +357,7 @@ char* strncpy(char* dest, const char* src, size_t count)
 
 #endif
 
-//
-// initialzer and destructor
-//
+/* initialzer and destructor */
 
 int
 ext2_init_linux()

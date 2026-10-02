@@ -148,7 +148,7 @@ Ext2NiPrintf(
 #define Ext2CompleteRequest(Irp, bPrint, PriorityBoost) \
         IoCompleteRequest(Irp, PriorityBoost)
 
-#endif // EXT2_DEBUG
+#endif /* EXT2_DEBUG */
 
 VOID
 __cdecl

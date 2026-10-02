@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 # mmp-seq.py <device> <seq>: set the sequence number of an ext4 MMP block, as
 # another node would leave it, with the metadata checksum made again.
 # debugfs cannot: it takes the volume through MMP itself and writes CLEAN

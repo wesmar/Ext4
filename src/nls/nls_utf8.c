@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Module for handling utf8 just like any other charset.
  * By Urban Widmark 2000

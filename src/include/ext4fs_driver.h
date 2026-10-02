@@ -18,6 +18,22 @@ Ext2StartUnloadWatch (VOID);
 VOID
 Ext2StopUnloadWatch (VOID);
 
+/* unload breadcrumbs in the service key (UnloadStep), read with reg query */
+#define EXT2_STEP_LOADED            0   /* DriverEntry done */
+#define EXT2_STEP_DRAIN             1   /* sc stop seen, drain thread running */
+#define EXT2_STEP_VOLUMES_BUSY      2   /* waiting for volumes (UnloadWaitStatus) */
+#define EXT2_STEP_CONTROL_DEVICES   3   /* file systems unregistered */
+#define EXT2_STEP_HANDED_OVER       4   /* last reference to a worker thread */
+#define EXT2_STEP_DRIVER_UNLOAD     5   /* DriverUnload entered */
+#define EXT2_STEP_LETTERS_STOPPED   6
+#define EXT2_STEP_WATCH_STOPPED     7
+#define EXT2_STEP_REAPERS_STOPPED   8
+#define EXT2_STEP_UNLOADED          9   /* about to free the globals */
+#define EXT2_UNLOAD_KEY_CHARS       256 /* the service key path */
+
+VOID
+Ext2UnloadStep (IN PCWSTR Name, IN ULONG Value);
+
 VOID
 Ext2DeleteControlDevices (VOID);
 

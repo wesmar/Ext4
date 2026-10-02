@@ -32,9 +32,7 @@ Ext2DismountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 
         DeviceObject = IrpContext->DeviceObject;
 
-        //
-        // This request is not allowed on the main device object
-        //
+        /* This request is not allowed on the main device object */
         if (IsExt2FsDevice(DeviceObject)) {
             Status = STATUS_INVALID_DEVICE_REQUEST;
             __leave;
@@ -102,7 +100,7 @@ Ext2CheckDismount (
 
     NewVpb = Ext2AllocatePool(NonPagedPool, VPB_SIZE, TAG_VPB);
     if (NewVpb == NULL) {
-        DEBUG(DL_ERR, ( "Ex2CheckDismount: failed to allocate NewVpb.\n"));
+        DEBUG(DL_ERR, ( "Ext2CheckDismount: failed to allocate NewVpb.\n"));
         return FALSE;
     }
     DEBUG(DL_DBG, ("Ext2CheckDismount: NewVpb allocated: %p\n", NewVpb));
@@ -175,17 +173,17 @@ Ext2CheckDismount (
         DEBUG(DL_DBG, ( "Ext2CheckDismount: New/Old Vpb %p/%p Realdevice = %p\n",
                         NewVpb, Vcb->Vpb, Vpb->RealDevice));
 
-        /* keep vpb president and later we'll free it */
-        SetFlag(Vpb->Flags, VPB_PERSISTENT);
-
         if (!IsFlagOn(Vcb->Flags, VCB_NEW_VPB)) {
-            Vcb->Vpb2 = Vcb->Vpb;
             NewVpb->Type = IO_TYPE_VPB;
             NewVpb->Size = sizeof(VPB);
             NewVpb->Flags = Vpb->Flags & VPB_REMOVE_PENDING;
             NewVpb->RealDevice = Vpb->RealDevice;
+            if (!Ext2TrackVpbSwap(Vpb, NewVpb)) {
+                /* No published allocation may escape ownership tracking. */
+                goto ReleaseVpb;
+            }
+            SetFlag(Vpb->Flags, VPB_PERSISTENT);
             NewVpb->RealDevice->Vpb = NewVpb;
-            Vcb->SwapVpb = NewVpb;
             NewVpb = NULL;
             SetLongFlag(Vcb->Flags, VCB_NEW_VPB);
         }
@@ -211,6 +209,7 @@ Ext2CheckDismount (
         Ext2ReaperKick(&Ext2Global->FcbReaper, TRUE);
     }
 
+ReleaseVpb:
     IoReleaseVpbSpinLock(Irql);
 
     /* The last file object closing brings several threads here at once:
@@ -390,7 +389,6 @@ Ext2PurgeVolume (IN PEXT2_VCB Vcb,
 
     return STATUS_SUCCESS;
 }
-
 NTSTATUS
 Ext2PurgeFile ( IN PEXT2_FCB Fcb,
                 IN BOOLEAN  FlushBeforePurge )
@@ -442,83 +440,4 @@ Ext2PurgeFile ( IN PEXT2_FCB Fcb,
     }
 
     return STATUS_SUCCESS;
-}
-
-/*
- * A forced dismount gives the device a VPB of ours (Ext2CheckDismount) and
- * keeps its own (Old) for the file objects still open then. Once neither
- * is used, the device gets its own back and ours can be freed: an
- * allocation of this driver must not outlive it.
- */
-BOOLEAN
-Ext2GiveVpbBack(IN PVPB Old, IN PVPB Swap)
-{
-    BOOLEAN Done = FALSE;
-    KIRQL   Irql;
-
-    IoAcquireVpbSpinLock(&Irql);
-    if (Old->RealDevice && Old->RealDevice->Vpb == Swap &&
-        Old->ReferenceCount == 0 && Swap->ReferenceCount == 0 &&
-        Swap->DeviceObject == NULL &&
-        !FlagOn(Swap->Flags, VPB_MOUNTED | VPB_LOCKED)) {
-        Old->Flags = Swap->Flags;
-        Old->DeviceObject = NULL;
-        Old->VolumeLabelLength = 0;
-        Old->RealDevice->Vpb = Old;
-        Done = TRUE;
-    }
-    IoReleaseVpbSpinLock(Irql);
-    return Done;
-}
-
-typedef struct _EXT2_SWAP_VPB {
-    LIST_ENTRY      Link;
-    PVPB            Old;
-    PVPB            Swap;
-    PDEVICE_OBJECT  Device;     /* referenced: Old and Swap stay readable */
-} EXT2_SWAP_VPB, *PEXT2_SWAP_VPB;
-
-/* the exchange could not be made yet (ours is in use): kept for the unload */
-BOOLEAN
-Ext2DeferVpb(IN PVPB Old, IN PVPB Swap)
-{
-    PEXT2_SWAP_VPB  S;
-    KIRQL           Irql;
-
-    if (Old->RealDevice == NULL) {
-        return FALSE;
-    }
-    S = Ext2AllocatePool(NonPagedPool, sizeof(EXT2_SWAP_VPB), TAG_VPB);
-    if (S == NULL) {
-        return FALSE;
-    }
-    S->Old = Old;
-    S->Swap = Swap;
-    S->Device = Old->RealDevice;
-    ObReferenceObject(S->Device);
-    /* newest first: a volume mounted again on our VPB and dismounted by
-       force once more stacks a second exchange on the first, and they
-       come undone in the reverse order (the second gives our first VPB
-       back to the device, the first the device's own) */
-    KeAcquireSpinLock(&Ext2Global->SwapVpbLock, &Irql);
-    InsertHeadList(&Ext2Global->SwapVpbList, &S->Link);
-    KeReleaseSpinLock(&Ext2Global->SwapVpbLock, Irql);
-    return TRUE;
-}
-
-/* DriverUnload: every exchange still owed. A VPB of ours that another
-   file system has mounted meanwhile stays where it is (it is that
-   volume's now); the device's own one is freed instead. */
-VOID
-Ext2ReclaimVpbs(VOID)
-{
-    while (!IsListEmpty(&Ext2Global->SwapVpbList)) {
-        PEXT2_SWAP_VPB S = CONTAINING_RECORD(RemoveHeadList(&Ext2Global->SwapVpbList),
-                                             EXT2_SWAP_VPB, Link);
-        PVPB Free = Ext2GiveVpbBack(S->Old, S->Swap) ? S->Swap : S->Old;
-
-        Ext2FreePool(Free, TAG_VPB);
-        ObDereferenceObject(S->Device);
-        Ext2FreePool(S, TAG_VPB);
-    }
 }

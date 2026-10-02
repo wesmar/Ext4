@@ -27,16 +27,12 @@ Ext2ExceptionFilter (
              ExceptionPointer->ContextRecord);
     DbgPrint("-------------------------------------------------------------\n");
 
-    DbgBreak();
 
-    //
-    // Check IrpContext is valid or not
-    //
+    /* Check IrpContext is valid or not */
 
     if (IrpContext) {
         if ((IrpContext->Identifier.Type != EXT2ICX) ||
             (IrpContext->Identifier.Size != sizeof(EXT2_IRP_CONTEXT))) {
-            DbgBreak();
             IrpContext = NULL;
         } else if (IrpContext->DeviceObject) {
             PEXT2_VCB Vcb = NULL;
@@ -65,9 +61,7 @@ Ext2ExceptionFilter (
 
     if ( Status == EXCEPTION_EXECUTE_HANDLER ||
          FsRtlIsNtstatusExpected(ExceptionCode)) {
-        //
-        // If the exception is expected execute our handler
-        //
+        /* If the exception is expected execute our handler */
 
         DEBUG(DL_ERR, ( "Ext2ExceptionFilter: Catching exception %xh\n",
                          ExceptionCode));
@@ -81,9 +75,7 @@ Ext2ExceptionFilter (
 
     } else  {
 
-        //
-        // Continue search for an higher level exception handler
-        //
+        /* Continue search for an higher level exception handler */
 
         DEBUG(DL_ERR, ( "Ext2ExceptionFilter: Passing on exception %#x\n",
                         ExceptionCode));
@@ -107,7 +99,6 @@ Ext2ExceptionHandler (IN PEXT2_IRP_CONTEXT IrpContext)
 
         if ( (IrpContext->Identifier.Type != EXT2ICX) ||
                 (IrpContext->Identifier.Size != sizeof(EXT2_IRP_CONTEXT))) {
-            DbgBreak();
             return STATUS_UNSUCCESSFUL;
         }
 
@@ -115,9 +106,7 @@ Ext2ExceptionHandler (IN PEXT2_IRP_CONTEXT IrpContext)
 
         if (IrpContext->Irp) {
 
-            //
-            // Check if this error is a result of user actions
-            //
+            /* Check if this error is a result of user actions */
 
             PEXT2_VCB  Vcb = NULL;
             PIRP Irp = IrpContext->Irp;
@@ -156,9 +145,7 @@ Ext2ExceptionHandler (IN PEXT2_IRP_CONTEXT IrpContext)
 
             if (IoIsErrorUserInduced(Status)) {
 
-                //
-                //  Now we will generate a pop-up to user
-                //
+                /* Now we will generate a pop-up to user */
 
                 PDEVICE_OBJECT RealDevice;
                 PVPB           Vpb = NULL;
@@ -168,17 +155,13 @@ Ext2ExceptionHandler (IN PEXT2_IRP_CONTEXT IrpContext)
                     Vpb = IrpSp->FileObject->Vpb;
                 }
 
-                //
-                // Get the initial thread
-                //
+                /* Get the initial thread */
 
                 Thread = Irp->Tail.Overlay.Thread;
                 RealDevice = IoGetDeviceToVerify( Thread );
 
                 if (RealDevice == NULL) {
-                    //
-                    // Get current thread
-                    //
+                    /* Get current thread */
 
                     Thread = PsGetCurrentThread();
                     RealDevice = IoGetDeviceToVerify( Thread );

@@ -238,9 +238,7 @@ Ext2Cleanup (IN PEXT2_IRP_CONTEXT IrpContext)
                 }
             }
 
-            //
-            // Drop any byte range locks this process may have on the file.
-            //
+            /* Drop any byte range locks this process may have on the file. */
 
             FsRtlFastUnlockAll(
                 &Fcb->FileLockAnchor,
@@ -248,11 +246,9 @@ Ext2Cleanup (IN PEXT2_IRP_CONTEXT IrpContext)
                 IoGetRequestorProcess(Irp),
                 NULL  );
 
-            //
-            // If there are no byte range locks owned by other processes on the
-            // file the fast I/O read/write functions doesn't have to check for
-            // locks so we set IsFastIoPossible to FastIoIsPossible again.
-            //
+            /* If there are no byte range locks owned by other processes on the
+               file the fast I/O read/write functions doesn't have to check for
+               locks so we set IsFastIoPossible to FastIoIsPossible again. */
             if (!FsRtlGetNextFileLock(&Fcb->FileLockAnchor, TRUE)) {
                 if (Fcb->Header.IsFastIoPossible != FastIoIsPossible) {
 #if EXT2_DEBUG
@@ -279,7 +275,8 @@ Ext2Cleanup (IN PEXT2_IRP_CONTEXT IrpContext)
                                            &Fcb->Header.AllocationSize,
                                            TRUE);
                             } __except (EXCEPTION_EXECUTE_HANDLER) {
-                                DbgBreak();
+                                /* the tail stays as it was: an I/O error
+                                   here is the cache manager's to report */
                             }
                         }
                     }
@@ -366,18 +363,14 @@ Ext2Cleanup (IN PEXT2_IRP_CONTEXT IrpContext)
 
         if (SymLinkDelete || FileDelete) {
 
-            //
-            // Ext2DeleteFile will acquire these lock inside
-            //
+            /* Ext2DeleteFile will acquire these lock inside */
 
             if (FcbResourceAcquired) {
                 ExReleaseResourceLite(&Fcb->MainResource);
                 FcbResourceAcquired = FALSE;
             }
 
-            //
-            //  this file is to be deleted ...
-            //
+            /* this file is to be deleted ... */
             if (SymLinkDelete) {
 
                 if (Ccb->SymLink) {
@@ -443,9 +436,7 @@ Ext2Cleanup (IN PEXT2_IRP_CONTEXT IrpContext)
                 }
             }
 
-            //
-            // re-acquire the main resource lock
-            //
+            /* re-acquire the main resource lock */
 
             FcbResourceAcquired =
                 ExAcquireResourceExclusiveLite(
@@ -461,7 +452,7 @@ Ext2Cleanup (IN PEXT2_IRP_CONTEXT IrpContext)
             }
         }
 
-        DEBUG(DL_INF, ( "Ext2Cleanup: OpenCount=%u ReferCount=%u NonCahcedCount=%xh %wZ\n",
+        DEBUG(DL_INF, ( "Ext2Cleanup: OpenCount=%u ReferCount=%u NonCachedCount=%xh %wZ\n",
                         Fcb->OpenHandleCount, Fcb->ReferenceCount, Fcb->NonCachedOpenCount, &Fcb->Mcb->FullName));
 
         Status = STATUS_SUCCESS;

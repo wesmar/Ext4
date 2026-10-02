@@ -195,12 +195,9 @@ NTSTATUS JnlPublishTail(PEXT2_JOURNAL J)
     return STATUS_SUCCESS;
 }
 
-/*
- * Write the fs superblock (Vcb->SuperBlock) straight to disk, then flush.
- * Handles 4Kn media by a read-modify-write of the containing sector.
- */
-BOOLEAN
-Ext2SaveSuperDirect(IN PEXT2_VCB Vcb)
+/* Ext2SaveSuperDirect, under SuperLock */
+static BOOLEAN
+JnlWriteSuper(IN PEXT2_VCB Vcb)
 {
     NTSTATUS    Status;
     PUCHAR      buf;
@@ -235,6 +232,26 @@ Ext2SaveSuperDirect(IN PEXT2_VCB Vcb)
 }
 
 /*
+ * Write the fs superblock (Vcb->SuperBlock) straight to disk, then flush.
+ * Handles 4Kn media by a read-modify-write of the containing sector. Under
+ * the superblock's own lock (Ext2LockSuper), without joining a transaction:
+ * this is the journal writing it.
+ */
+BOOLEAN
+Ext2SaveSuperDirect(IN PEXT2_VCB Vcb)
+{
+    BOOLEAN Done;
+
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&Vcb->SuperLock, TRUE);
+    Done = JnlWriteSuper(Vcb);
+    ExReleaseResourceLite(&Vcb->SuperLock);
+    KeLeaveCriticalRegion();
+
+    return Done;
+}
+
+/*
  * Mark the fs as "mounted, needs recovery" or as cleanly unmounted, the
  * way Linux ext4_setup_super / ext4_put_super do for a journaled fs: the
  * needs_recovery feature flag is the marker, s_state is left alone (only
@@ -247,24 +264,31 @@ BOOLEAN JnlMarkSuper(PEXT2_JOURNAL J, BOOLEAN Dirty)
     PEXT2_SUPER_BLOCK   sb  = Vcb->SuperBlock;
     LARGE_INTEGER       SysTime;
     LONGLONG            Now;
+    BOOLEAN             Written;
 
     KeQuerySystemTime(&SysTime);
     Now = Ext2UnixTime(&SysTime);
 
+    if (Dirty ? (J->Flags & JF_SB_MARKED) != 0 : (J->Flags & JF_SB_MARKED) == 0) {
+        return TRUE;
+    }
+
+    /* the fields change and are written under the superblock's lock */
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&Vcb->SuperLock, TRUE);
     if (Dirty) {
-        if (J->Flags & JF_SB_MARKED)
-            return TRUE;
         SetFlag(sb->s_feature_incompat, EXT4_FEATURE_INCOMPAT_RECOVER);
         sb->s_mnt_count++;
         Ext2SetSuperTime(sb, s_mtime, Now);
     } else {
-        if (!(J->Flags & JF_SB_MARKED))
-            return TRUE;
         ClearFlag(sb->s_feature_incompat, EXT4_FEATURE_INCOMPAT_RECOVER);
         Ext2SetSuperTime(sb, s_wtime, Now);
     }
+    Written = JnlWriteSuper(Vcb);
+    ExReleaseResourceLite(&Vcb->SuperLock);
+    KeLeaveCriticalRegion();
 
-    if (!Ext2SaveSuperDirect(Vcb)) {
+    if (!Written) {
         DEBUG(DL_ERR, ("Ext2Jnl: failed to write superblock marker (dirty=%d)\n", Dirty));
         return FALSE;
     }

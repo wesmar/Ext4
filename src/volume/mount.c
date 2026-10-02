@@ -106,15 +106,11 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 
         MainDeviceObject = IrpContext->DeviceObject;
 
-        //
-        //  Make sure we can wait.
-        //
+        /* Make sure we can wait. */
 
         SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
 
-        //
-        // This request is only allowed on the main device object
-        //
+        /* This request is only allowed on the main device object */
         if (!IsExt2FsDevice(MainDeviceObject)) {
             Status = STATUS_INVALID_DEVICE_REQUEST;
             __leave;
@@ -441,9 +437,7 @@ Ext2VerifyVolume (IN PEXT2_IRP_CONTEXT IrpContext)
                (IrpContext->Identifier.Size == sizeof(EXT2_IRP_CONTEXT)));
 
         DeviceObject = IrpContext->DeviceObject;
-        //
-        // This request is not allowed on the main device object
-        //
+        /* This request is not allowed on the main device object */
         if (IsExt2FsDevice(DeviceObject)) {
             Status = STATUS_INVALID_DEVICE_REQUEST;
             __leave;

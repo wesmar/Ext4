@@ -1,4 +1,5 @@
 #Requires -Version 7.0
+# SPDX-License-Identifier: GPL-2.0-only
 # run-ext4test.ps1 - host side of the ext4 driver test run (Hyper-V host with WSL).
 #
 #   1. copies the guest scripts to the VM and runs the functional test on an
@@ -39,7 +40,7 @@ if (-not $Ip) { $Ip = Get-TestVmIp }
 $Vm = $TestEnv.Vm
 $Vhd = $TestEnv.Vhd
 $Svc = $TestEnv.Service
-$sshOpt = Get-SshOptions
+$sshOpt = @(Get-SshOptions) + @('-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=3')
 $target = "$($TestEnv.User)@$Ip"
 $sp = $PSScriptRoot
 $summary = [ordered]@{}
@@ -53,7 +54,27 @@ function Guest-PS([string]$file, [string]$Arguments) {
     # -File keeps the guest script's exit code; -NonInteractive turns a prompt into an error instead of a hang
     $out = [Collections.Generic.List[string]]::new()
     & ssh @sshOpt $target "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\Windows\Temp\$file $Arguments" | ForEach-Object { $out.Add($_); Write-Host "   $_" }
-    return @{ Out = $out; Rc = $LASTEXITCODE }
+    $rc = $LASTEXITCODE
+    if ($rc -ne 0) { throw "$file failed (guest/ssh exit $rc)" }
+    $completion = switch ($file) {
+        'ext4test.ps1' { '^== RESULT: \d+ ok, \d+ failed,' }
+        'resize.ps1' { '^RESIZE: \d+ cases, \d+ failed$' }
+        'ext4sys.ps1'  { '^== SYS RESULT: \d+ failed' }
+        'pending.ps1' { '^pending: \d+ failed' }
+        'security.ps1' { '^security: \d+ failed' }
+        'interop.ps1' { '^INTEROP-WIN: \d+ failed' }
+        'luks.ps1' { '^LUKS-WIN: \d+ failed' }
+        'features.ps1' { '^FEATURES-WIN: \d+ failed' }
+        'stress.ps1' { '^ops=\d+ errors=\d+ leftover=\d+' }
+        'repro.ps1' { '^done: \d+ runs, \d+ failed' }
+        'race.ps1' { '^opens=\d+ changes=\d+ unexpected=\d+' }
+        'nsrace.ps1' { '^nsrace: \d+ unexpected' }
+        default { throw "no completion contract for $file" }
+    }
+    if (-not @($out | Where-Object { $_ -match $completion }).Count) {
+        throw "$file did not report completion; an empty or interrupted run is not a pass"
+    }
+    return @{ Out = $out; Rc = $rc }
 }
 function Guest-Drives { (& ssh @sshOpt $target 'powershell -NoProfile -Command "(Get-PSDrive -PSProvider FileSystem).Name -join \" \""') }
 function Wait-GuestDrives([bool]$present, [int]$sec) {
@@ -68,7 +89,11 @@ function Wait-GuestDrives([bool]$present, [int]$sec) {
 }
 function Stop-GuestDriver {
     $r = & ssh @sshOpt $target "powershell -NoProfile -Command `"`$s=Get-Service $Svc; if(`$s.Status -ne \`"Stopped\`"){ sc.exe stop $Svc | Out-Null; `$s.WaitForStatus(\`"Stopped\`",[TimeSpan]::FromSeconds(120)) }; `$s.Refresh(); `$s.Status`""
-    if ($r -ne 'Stopped') { throw "driver did not stop: $r" }
+    if ($r -ne 'Stopped') {
+        # where the unload got to (driver\unload.c, EXT2_STEP_*), read without a debugger
+        $step = & ssh @sshOpt $target "reg query HKLM\SYSTEM\CurrentControlSet\Services\$Svc /v UnloadStep & reg query HKLM\SYSTEM\CurrentControlSet\Services\$Svc /v UnloadWaitStatus" 2>&1 | Select-String 'Unload' | ForEach-Object { $_.Line.Trim() }
+        throw "driver did not stop: $r ($($step -join '; '))"
+    }
 }
 function Start-GuestDriver { [void](Remote "sc start $Svc >nul"); $t = Wait-GuestDrives $true 30; if ($t -lt 0) { throw "letters did not come back after sc start (have: $(Guest-Drives))" }; return $t }
 function Detach-Disk { Remove-VMHardDiskDrive -VMName $Vm -ControllerType SCSI -ControllerNumber 0 -ControllerLocation $TestEnv.ScsiSlot }
@@ -88,7 +113,7 @@ if (-not $Letters) { $Letters = @($vols.Letter) }
 "   ext volumes: $(($vols | ForEach-Object { "$($_.Letter): $($_.Label) $($_.Fs) $([math]::Round($_.Size/1MB)) MB" }) -join ', ')  -> testing on $Drive`:"
 if (($d -split ' ') -notcontains $Drive) { throw "drive $Drive not mounted in the guest (have: $d)" }
 
-foreach ($f in 'ext4test.ps1', 'ext4sys.ps1', 'ext4hold.ps1', 'stress.ps1', 'repro.ps1', 'pending.ps1', 'race.ps1', 'interop.ps1', 'security.ps1', 'luks.ps1', 'features.ps1') {
+foreach ($f in 'ext4test.ps1', 'resize.ps1', 'ext4sys.ps1', 'ext4hold.ps1', 'stress.ps1', 'repro.ps1', 'pending.ps1', 'race.ps1', 'nsrace.ps1', 'interop.ps1', 'security.ps1', 'luks.ps1', 'features.ps1') {
     & scp -q @sshOpt "$sp\$f" "${target}:C:/Windows/Temp/$f"
     if ($LASTEXITCODE) { throw "scp $f failed" }
 }
@@ -117,6 +142,7 @@ if ($Interop) {
     Detach-Disk
     wsl --mount --vhd $Vhd --bare | Out-Null
     $r = Invoke-WslScript 'interop.sh' "prepare $($TestEnv.VhdSize)"
+    if ($r.Rc -ne 0) { throw "Linux interop preparation failed (exit $($r.Rc))" }
     wsl --unmount "\\?\$Vhd" | Out-Null
     $r.Out | ForEach-Object { "   $_" }
     Attach-Disk
@@ -133,6 +159,12 @@ if ($Interop) {
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $r = Guest-PS 'ext4test.ps1' "-Root $Drive`:\ext4test $(if ($Quick) { '-Quick' })"
 $summary['functional'] = "$($r.Rc) failed ($([math]::Round($sw.Elapsed.TotalSeconds)) s)"
+foreach ($letter in $Letters) {
+    "-- resize: cached/uncached shrink and regrow on $letter`:"
+    $r = Guest-PS 'resize.ps1' "-Root $letter`:\ -Repeat 2"
+    if (-not ($r.Out -match '^RESIZE: \d+ cases, 0 failed$')) { throw 'resize regression failed' }
+    $summary["resize-$letter"] = '0 failed'
+}
 "-- delete-pending scenarios (handles, symlinks, renames)"
 $sw.Restart()
 $r = Guest-PS 'pending.ps1' "-Root $Drive`:\pending"
@@ -160,6 +192,11 @@ if ($Stress) {
     $r = Guest-PS 'race.ps1' "-Root $Drive`:\race -Seconds 6"
     $bad = ($r.Out | Where-Object { $_ -match 'unexpected=(\d+)' -and [int]$Matches[1] -gt 0 }).Count
     $summary['race'] = "$bad failed ($([math]::Round($sw.Elapsed.TotalSeconds)) s)"
+    "-- stress: creates and deletes of one directory's names racing each other"
+    $sw.Restart()
+    $r = Guest-PS 'nsrace.ps1' "-Root $Drive`:\nsrace -Threads 8 -Rounds 300"
+    $bad = ($r.Out | Where-Object { $_ -match 'nsrace: (\d+) unexpected' -and [int]$Matches[1] -gt 0 }).Count
+    $summary['nsrace'] = "$bad failed ($([math]::Round($sw.Elapsed.TotalSeconds)) s)"
 }
 
 # ---- 3. system tests
@@ -216,6 +253,7 @@ if ($Luks) {
         New-VHD -Path $lv -SizeBytes $ls -Dynamic | Out-Null
         wsl --mount --vhd $lv --bare | Out-Null
         $r = Invoke-WslScript 'luks-image.sh' "$ls '$($TestEnv.LuksPass)'"
+        if ($r.Rc -ne 0) { throw "LUKS fixture preparation failed (exit $($r.Rc))" }
         wsl --unmount "\\?\$lv" | Out-Null
         $r.Out | Select-Object -Last 2 | ForEach-Object { "   $_" }
     }
@@ -233,7 +271,7 @@ if ($Luks) {
     $r = Invoke-WslScript 'luks.sh' "$ls '$($TestEnv.LuksPass)'"
     wsl --unmount "\\?\$lv" | Out-Null
     $r.Out | ForEach-Object { "   $_" }
-    $summary['luks-linux'] = if ($r.Out -match 'LUKS-LINUX: 0') { '0 failed' } else { '1 failed' }
+    $summary['luks-linux'] = if ($r.Rc -eq 0 -and $r.Out -match '^LUKS-LINUX: 0') { '0 failed' } else { '1 failed' }
 }
 # ---- 6. Linux features: a casefolded directory and chattr +i/+a, then what Linux sees
 if ($Features) {
@@ -244,6 +282,7 @@ if ($Features) {
     if (-not (Test-Path $fv)) { New-VHD -Path $fv -SizeBytes $fs -Dynamic | Out-Null }
     wsl --mount --vhd $fv --bare | Out-Null
     $r = Invoke-WslScript 'features-image.sh' "$fs"
+    if ($r.Rc -ne 0) { throw "Features fixture preparation failed (exit $($r.Rc))" }
     wsl --unmount "\\?\$fv" | Out-Null
     $r.Out | ForEach-Object { "   $_" }
     Add-VMHardDiskDrive -VMName $Vm -ControllerType SCSI -ControllerNumber 0 -ControllerLocation $fslot -Path $fv
@@ -259,7 +298,7 @@ if ($Features) {
     $r = Invoke-WslScript 'features.sh' "$fs"
     wsl --unmount "\\?\$fv" | Out-Null
     $r.Out | ForEach-Object { "   $_" }
-    $summary['features-linux'] = if ($r.Out -match 'FEATURES-LINUX: 0') { '0 failed' } else { '1 failed' }
+    $summary['features-linux'] = if ($r.Rc -eq 0 -and $r.Out -match '^FEATURES-LINUX: 0') { '0 failed' } else { '1 failed' }
     [void](Start-GuestDriver)
 }
 }
@@ -269,7 +308,7 @@ catch {
 }
 
 # leave nothing behind in the guest
-[void](Remote 'powershell -NoProfile -Command "foreach($f in ''ext4test.ps1'',''ext4sys.ps1'',''ext4hold.ps1'',''stress.ps1'',''repro.ps1'',''pending.ps1'',''race.ps1'',''interop.ps1'',''security.ps1'',''luks.ps1'',''features.ps1'',''ext4ctl.exe'',''handle64.exe''){ $p=\"C:\Windows\Temp\$f\"; if([IO.File]::Exists($p)){ [IO.File]::Delete($p) } }"')
+[void](Remote 'powershell -NoProfile -Command "foreach($f in ''ext4test.ps1'',''resize.ps1'',''ext4sys.ps1'',''ext4hold.ps1'',''stress.ps1'',''repro.ps1'',''pending.ps1'',''race.ps1'',''interop.ps1'',''security.ps1'',''luks.ps1'',''features.ps1'',''ext4ctl.exe'',''handle64.exe''){ $p=\"C:\Windows\Temp\$f\"; if([IO.File]::Exists($p)){ [IO.File]::Delete($p) } }"')
 
 ""
 "== SUMMARY ($([math]::Round($total.Elapsed.TotalSeconds)) s)"

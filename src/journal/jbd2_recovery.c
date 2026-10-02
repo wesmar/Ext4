@@ -12,8 +12,6 @@
 #include <linux/jbd2.h>
 #include <linux/errno.h>
 
-//#include <linux/crc32.h>
-//#include <linux/blkdev.h>
 
 /*
  * Maintain information about the progress of the recovery job, so that
@@ -118,7 +116,6 @@ static int do_readahead(journal_t *journal, unsigned int start)
 		if (!buffer_uptodate(bh) && !buffer_locked(bh)) {
 			bufs[nbufs++] = bh;
 			if (nbufs == MAXBUF) {
-				//ll_rw_block(REQ_OP_READ, 0, nbufs, bufs);
                 ll_rw_block(READ, nbufs, bufs);
 				journal_brelse_array(bufs, nbufs);
 				nbufs = 0;
@@ -128,7 +125,6 @@ static int do_readahead(journal_t *journal, unsigned int start)
 	}
 
 	if (nbufs)
-		//ll_rw_block(REQ_OP_READ, 0, nbufs, bufs);
         ll_rw_block(READ, nbufs, bufs);
 	err = 0;
 
@@ -320,7 +316,6 @@ int jbd2_journal_skip_recovery(journal_t *journal)
 
 	struct recovery_info	info;
 
-    //DbgPrint("jbd2_journal_skip_recovery: begin\n");
 
 	memset (&info, 0, sizeof(info));
 
@@ -334,7 +329,6 @@ int jbd2_journal_skip_recovery(journal_t *journal)
 	}
 
 	journal->j_tail = 0;
-    //DbgPrint("jbd2_journal_skip_recovery: end\n");
 	return err;
 }
 

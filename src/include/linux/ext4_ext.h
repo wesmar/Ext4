@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef _LINUX_EXT4_EXT
 #define _LINUX_EXT4_EXT
 

@@ -174,9 +174,7 @@ Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 
         DeviceObject = IrpContext->DeviceObject;
 
-        //
-        // This request is not allowed on the main device object
-        //
+        /* This request is not allowed on the main device object */
         if (IsExt2FsDevice(DeviceObject)) {
             Status = STATUS_INVALID_DEVICE_REQUEST;
             __leave;
@@ -189,9 +187,7 @@ Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
             __leave;
         }
 
-        //
-        // This request is not allowed on volumes
-        //
+        /* This request is not allowed on volumes */
         if (Fcb->Identifier.Type == EXT2VCB) {
             Status = STATUS_INVALID_PARAMETER;
             __leave;
@@ -446,7 +442,7 @@ Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
             FileBasicInformation->ChangeTime = Mcb->Icb->ChangeTime;
 
             FileBasicInformation->FileAttributes = Mcb->FileAttr;
-            if (IsMcbSymLink(Mcb) && IsFileDeleted(Mcb->Target)) {
+            if (IsMcbSymLink(Mcb) && Ext2IsLinkDangling(Vcb, Mcb)) {
                 ClearFlag(FileBasicInformation->FileAttributes, FILE_ATTRIBUTE_DIRECTORY);
             }
             if (FileBasicInformation->FileAttributes == 0) {
@@ -474,7 +470,7 @@ Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
                 FSI->EndOfFile = Fcb->Header.FileSize;
             }
 
-            // The "inode number"
+            /* The "inode number" */
             FileInternalInformation->IndexNumber.QuadPart = (LONGLONG)Mcb->Inode->i_ino;
 
             FileEaInformation->EaSize = 0;
@@ -510,13 +506,6 @@ Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
             Status = STATUS_SUCCESS;
         }
         break;
-
-        /*
-        case FileAlternateNameInformation:
-        {
-            // TODO: Handle FileAlternateNameInformation
-        }
-        */
 
         case FileNetworkOpenInformation:
         {

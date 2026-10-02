@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+# SPDX-License-Identifier: GPL-2.0-only
 <#
 .SYNOPSIS
     Self-configuring build of the ext4 kernel-mode file system driver.

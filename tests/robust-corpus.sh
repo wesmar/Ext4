@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # robust-corpus.sh [dir]: the corpus of the robustness run - the corrupted
 # file system images of the e2fsprogs test suite (tests/*/image.gz, each a
 # real bug report or a hand-made corruption), unpacked to <dir>/img/<test>.img

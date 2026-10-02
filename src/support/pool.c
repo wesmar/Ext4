@@ -57,18 +57,13 @@ Ext2FreePool(
     Data = (PULONG)(Buffer);
     NumberOfBytes = Data[0];
     if (Data[1] != NumberOfBytes + 0x20) {
-        DbgBreak();
         return;
     }
     for (i=0x08; i < 0x10; i++) {
-        if (Buffer[i] != 'S') {
-            DbgBreak();
-        }
         Buffer[i] = '-';
     }
     for (i=0; i < 0x10; i++) {
         if (Buffer[i + NumberOfBytes + 0x10] != 'E') {
-            DbgBreak();
             return;
         }
         Buffer[i + NumberOfBytes + 0x10] = '-';

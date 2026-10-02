@@ -1,4 +1,5 @@
-﻿# ext4test.ps1 - one-shot functional test of the Ext4Fsd driver.
+﻿# SPDX-License-Identifier: GPL-2.0-only
+# ext4test.ps1 - one-shot functional test of the Ext4Fsd driver.
 #
 # Runs on the test machine against a mounted ext4 volume and exercises, as far as
 # Win32 allows, everything a file system driver has to get right: data paths
@@ -21,9 +22,14 @@ param(
     [switch]$KeepAll
 )
 
-$ErrorActionPreference = 'Continue'
+$ErrorActionPreference = 'Stop'
 $script:fail = 0
 $script:pass = 0
+trap {
+    $script:fail++
+    "  FAIL unexpected error at line $($_.InvocationInfo.ScriptLineNumber): $($_.Exception.Message)"
+    continue
+}
 $sw = [Diagnostics.Stopwatch]::StartNew()
 
 function Check($name, $cond, $extra = '') {

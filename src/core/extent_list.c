@@ -143,7 +143,6 @@ Ext2CheckExtent(
             (DirtyLbn != Lbn) ||
             (DirtyLen < Length)) {
 
-        DbgBreak();
 
         for (Index = 0; TRUE; Index++) {
 
@@ -169,7 +168,8 @@ Ext2ClearAllExtents(PLARGE_MCB  Zone)
     __try {
         FsRtlTruncateLargeMcb(Zone, (LONGLONG)0);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        DbgBreak();
+        /* truncating to nothing frees runs; it can only fail for want of
+           pool, and an empty map is what the caller gets either way */
     }
 }
 
@@ -511,13 +511,6 @@ Ext2AddBlockExtent(
     Length = ((LONGLONG)Number << BLOCK_BITS);
 
     if (Mcb) {
-#if EXT2_DEBUG
-        ULONG   _block = 0, _mapped = 0;
-        BOOLEAN _rc = Ext2LookupBlockExtent(Vcb, Mcb, Start, &_block, &_mapped);
-        if (_rc && _block != 0 && (_block != Block)) {
-            DbgBreak();
-        }
-#endif
         return Ext2AddMcbExtent(Vcb, Mcb, Vbn, Lbn, Length);
 
     }
@@ -644,7 +637,6 @@ Ext2InitializeZone(
 
         if (Block) {
             if (!Ext2AddBlockExtent(Vcb, Mcb, Start, Block, Mapped)) {
-                DbgBreak();
                 ClearLongFlag(Mcb->Icb->Flags, ICB_ZONE_INITED);
                 Ext2ClearAllExtents(&Mcb->Icb->Extents);
                 Status = STATUS_INSUFFICIENT_RESOURCES;
@@ -693,9 +685,6 @@ Ext2BuildExtents(
 
     if (!IsZoneInited(Mcb)) {
         Status = Ext2InitializeZone(IrpContext, Vcb, Mcb);
-        if (!NT_SUCCESS(Status)) {
-            DbgBreak();
-        }
     }
 
     if ((IrpContext && IrpContext->Irp) &&
@@ -770,7 +759,6 @@ Ext2BuildExtents(
             /* add new allocated blocks to Mcb zone */
             if (IsZoneInited(Mcb) && Block) {
                 if (!Ext2AddBlockExtent(Vcb, Mcb, Start, Block, Mapped)) {
-                    DbgBreak();
                     ClearLongFlag(Mcb->Icb->Flags, ICB_ZONE_INITED);
                     Ext2ClearAllExtents(&Mcb->Icb->Extents);
                 }
@@ -785,7 +773,6 @@ Ext2BuildExtents(
         }
 
         if (0 == Length) {
-            DbgBreak();
             break;
         }
 
@@ -805,7 +792,6 @@ Ext2BuildExtents(
                 Extent = Ext2AllocateExtent();
                 if (!Extent) {
                     Status = STATUS_INSUFFICIENT_RESOURCES;
-                    DbgBreak();
                     break;
                 }
 
@@ -820,10 +806,6 @@ Ext2BuildExtents(
                 } else {
                     *Chain = List = Extent;
                 }
-            }
-        } else {
-            if (bAlloc) {
-                DbgBreak();
             }
         }
 

@@ -158,6 +158,28 @@ Ext2SaveSuper(
     IN PEXT2_VCB            Vcb
 );
 
+ULONGLONG
+Ext2FreeBlocks(IN PEXT2_VCB Vcb);
+
+ULONG
+Ext2FreeInodes(IN PEXT2_VCB Vcb);
+
+VOID
+Ext2SyncSuperTotals(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb);
+
+VOID
+Ext2LockSuper(IN PEXT2_VCB Vcb);
+
+VOID
+Ext2UnlockSuper(IN PEXT2_VCB Vcb);
+
+VOID
+Ext2SetSuperRoCompat(
+    IN PEXT2_IRP_CONTEXT    IrpContext,
+    IN PEXT2_VCB            Vcb,
+    IN ULONG                Feature
+);
+
 BOOLEAN
 Ext2RefreshSuper(
     IN PEXT2_IRP_CONTEXT    IrpContext,
@@ -381,7 +403,8 @@ Ext2RemoveEntry (
     IN PEXT2_IRP_CONTEXT    IrpContext,
     IN PEXT2_VCB            Vcb,
     IN PEXT2_FCB            Dcb,
-    IN PEXT2_MCB            Mcb
+    IN PEXT2_MCB            Mcb,
+    OUT PBOOLEAN            LastName OPTIONAL
 );
 
 NTSTATUS

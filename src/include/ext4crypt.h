@@ -35,6 +35,8 @@ CTL_CODE(FILE_DEVICE_UNKNOWN, 2012, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define EXT4_CRYPT_DEVICE_CHARS     128     /* \Device\HarddiskVolumeN and the like */
 #define EXT4_CRYPT_UUID_CHARS       40      /* LUKS UUID, text, NUL-terminated */
 #define EXT4_CRYPT_MAX_KEY          64      /* AES-256-XTS: two 256-bit keys */
+#define EXT4_CRYPT_KEY_AES128_XTS   32      /* two 128-bit keys */
+#define EXT4_CRYPT_KEY_AES256_XTS   64
 #define EXT4_CRYPT_MAX_VOLUMES      16
 
 /* sector encryption; the only one LUKS has used by default since 2011 */

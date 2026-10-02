@@ -83,13 +83,49 @@ Ext2AllocateFcb (
     return Fcb;
 }
 
+/*
+ * The Fcb of the directory Mcb, referenced for the caller (Ext2ReleaseFcb),
+ * made if there is none yet. It is there nearly always - the directory of
+ * the previous create or delete - and then FcbLock is only taken shared: a
+ * reference taken under it cannot race the last release, which drops the
+ * count to zero with the lock held exclusively (Ext2ReleaseFcb). Every
+ * create and delete took it exclusively, and they queued on it.
+ */
+PEXT2_FCB
+Ext2ReferDcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb)
+{
+    PEXT2_FCB   Dcb;
+
+    ExAcquireResourceSharedLite(&Vcb->FcbLock, TRUE);
+    Dcb = Mcb->Icb->Fcb;
+    if (Dcb) {
+        Ext2ReferXcb(&Dcb->ReferenceCount);
+    }
+    ExReleaseResourceLite(&Vcb->FcbLock);
+
+    if (Dcb == NULL) {
+        ExAcquireResourceExclusiveLite(&Vcb->FcbLock, TRUE);
+        Dcb = Mcb->Icb->Fcb;
+        if (Dcb == NULL) {
+            Dcb = Ext2AllocateFcb(Vcb, Mcb);
+        }
+        if (Dcb) {
+            Ext2ReferXcb(&Dcb->ReferenceCount);
+        }
+        ExReleaseResourceLite(&Vcb->FcbLock);
+    }
+
+    return Dcb;
+}
+
 VOID
 Ext2UnlinkFcb(IN PEXT2_FCB Fcb)
 {
     PEXT2_VCB  Vcb = Fcb->Vcb;
     PEXT2_MCB  Mcb;
 
-    ExAcquireResourceExclusiveLite(&Vcb->McbLock, TRUE);
+    /* the caller holds FcbLock exclusively, which guards Icb->Fcb; the
+       name's own state has its own locks (Ext2RemoveMcb, the list lock) */
     Mcb = Fcb->Mcb;
 
     DEBUG(DL_INF, ("Ext2FreeFcb: Fcb (%p) to be unlinked: %wZ.\n",
@@ -107,9 +143,9 @@ Ext2UnlinkFcb(IN PEXT2_FCB Fcb)
             Ext2RemoveMcb(Vcb, Mcb);
             Mcb->Icb->Fcb = NULL;
 
-            Ext2UnlinkMcb(Vcb, Mcb);
+            /* due for the reaper: oldest end first, then let go */
+            Ext2MoveMcbToHead(Vcb, Mcb);
             Ext2DerefMcb(Mcb);
-            Ext2LinkHeadMcb(Vcb, Mcb);
 
         } else {
             Mcb->Icb->Fcb = NULL;
@@ -117,8 +153,6 @@ Ext2UnlinkFcb(IN PEXT2_FCB Fcb)
         }
         Fcb->Mcb = NULL;
     }
-
-    ExReleaseResourceLite(&Vcb->McbLock);
 }
 
 VOID
@@ -161,11 +195,25 @@ Ext2ReleaseFcb (IN PEXT2_FCB Fcb)
     PEXT2_VCB   Vcb = Fcb->Vcb;
     PEXT2_MCB   Mcb;
     BOOLEAN     Gone;
+    LONG        Count;
 
-    if (0 != Ext2DerefXcb(&Fcb->ReferenceCount))
-        return;
+    /* Any reference but the last goes without a lock. The last one goes
+       under FcbLock: the reaper frees an Fcb whose count it sees at 0
+       (under that lock), and an Fcb dropped to 0 before the lock was
+       taken here could be freed - or moved to the reaper's own list -
+       before it is moved below (a list entry removed twice, 0x139). */
+    for (Count = Fcb->ReferenceCount; Count > 1; Count = Fcb->ReferenceCount) {
+        if (InterlockedCompareExchange(&Fcb->ReferenceCount, Count - 1, Count) == Count) {
+            return;
+        }
+    }
 
     ExAcquireResourceExclusiveLite(&Vcb->FcbLock, TRUE);
+    if (0 != Ext2DerefXcb(&Fcb->ReferenceCount)) {
+        /* an open took a new reference meanwhile */
+        ExReleaseResourceLite(&Vcb->FcbLock);
+        return;
+    }
     ExAcquireResourceExclusiveLite(&Fcb->MainResource, TRUE);
 
     Mcb = Fcb->Mcb;
@@ -266,14 +314,20 @@ Ext2FreeCcb (IN PEXT2_VCB Vcb, IN PEXT2_CCB Ccb)
         DEBUG(DL_INF, ( "Ext2FreeCcb: Ccb SymLink: %wZ.\n",
                         &Ccb->SymLink->FullName));
         /* the link may have been demoted meanwhile (its target went, an
-           open cleared Target): no target is as gone as a deleted one */
-        if (Ccb->SymLink->Target == NULL || IsFileDeleted(Ccb->SymLink->Target)) {
-            Ext2UnlinkMcb(Vcb, Ccb->SymLink);
-            Ext2DerefMcb(Ccb->SymLink);
-            Ext2LinkHeadMcb(Vcb, Ccb->SymLink);
-        } else {
-            Ext2DerefMcb(Ccb->SymLink);
+           open cleared Target): no target is as gone as a deleted one.
+           Target is read under LinkLock: a demotion drops its reference. */
+        BOOLEAN Gone;
+
+        KeEnterCriticalRegion();
+        ExAcquireResourceSharedLite(&Vcb->LinkLock, TRUE);
+        Gone = Ccb->SymLink->Target == NULL || IsFileDeleted(Ccb->SymLink->Target);
+        ExReleaseResourceLite(&Vcb->LinkLock);
+        KeLeaveCriticalRegion();
+
+        if (Gone) {
+            Ext2MoveMcbToHead(Vcb, Ccb->SymLink);
         }
+        Ext2DerefMcb(Ccb->SymLink);
     }
 
     if (Ccb->Mcb) {

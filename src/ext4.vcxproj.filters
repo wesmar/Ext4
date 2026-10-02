@@ -57,6 +57,9 @@
     <ClCompile Include="core\mcb.c">
       <Filter>core</Filter>
     </ClCompile>
+    <ClCompile Include="core\stripes.c">
+      <Filter>core</Filter>
+    </ClCompile>
     <ClCompile Include="core\reaper.c">
       <Filter>core</Filter>
     </ClCompile>
@@ -172,6 +175,9 @@
       <Filter>fsd</Filter>
     </ClCompile>
     <ClCompile Include="fsd\create_file.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
+    <ClCompile Include="fsd\create_new.c">
       <Filter>fsd</Filter>
     </ClCompile>
     <ClCompile Include="fsd\delete.c">
@@ -450,6 +456,12 @@
     <ClCompile Include="volume\crypt.c">
       <Filter>volume</Filter>
     </ClCompile>
+    <ClCompile Include="volume\crypt_io.c">
+      <Filter>volume</Filter>
+    </ClCompile>
+    <ClCompile Include="volume\vdisk.c">
+      <Filter>volume</Filter>
+    </ClCompile>
     <ClCompile Include="volume\lvm.c">
       <Filter>volume</Filter>
     </ClCompile>
@@ -468,6 +480,9 @@
     <ClCompile Include="volume\vcb.c">
       <Filter>volume</Filter>
     </ClCompile>
+    <ClCompile Include="volume\vcb_init.c">
+      <Filter>volume</Filter>
+    </ClCompile>
     <ClCompile Include="volume\vcb_params.c">
       <Filter>volume</Filter>
     </ClCompile>
@@ -478,6 +493,12 @@
   <ItemGroup>
     <ClInclude Include="core\core_internal.h">
       <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="volume\crypt_internal.h">
+      <Filter>volume</Filter>
+    </ClInclude>
+    <ClInclude Include="volume\vcb_internal.h">
+      <Filter>volume</Filter>
     </ClInclude>
     <ClInclude Include="driver\driver_internal.h">
       <Filter>driver</Filter>

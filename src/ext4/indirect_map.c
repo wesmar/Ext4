@@ -35,7 +35,7 @@ Ext2ExpandLast(
                     EXT2_DATA_MAGIC
                 );
         if (!pData) {
-            DEBUG(DL_ERR, ( "Ex2ExpandBlock: failed to allocate memory for Data.\n"));
+            DEBUG(DL_ERR, ( "Ext2ExpandBlock: failed to allocate memory for Data.\n"));
             Status = STATUS_INSUFFICIENT_RESOURCES;
             goto errorout;
         }
@@ -64,7 +64,7 @@ Ext2ExpandLast(
     if (Layer == 0) {
 
         if (IsMcbDirectory(Mcb)) {
-            /* for directory we need initialize it's entry structure */
+            /* for directory we need initialize its entry structure */
             PEXT2_DIR_ENTRY2 pEntry;
             pEntry = (PEXT2_DIR_ENTRY2) pData;
             pEntry->rec_len = (USHORT)(BLOCK_SIZE);
@@ -160,7 +160,6 @@ Ext2GetBlock(
         } else {
             /* check the block is valid or not */
             if (BlockArray[0] >= TOTAL_BLOCKS) {
-                DbgBreak();
                 Status = STATUS_DISK_CORRUPT_ERROR;
                 goto errorout;
             }
@@ -180,7 +179,6 @@ Ext2GetBlock(
 
         /* check the block is valid or not */
         if (BlockArray[0] == 0 || BlockArray[0] >= TOTAL_BLOCKS) {
-            DbgBreak();
             Status = STATUS_DISK_CORRUPT_ERROR;
             goto errorout;
         }
@@ -393,7 +391,6 @@ Ext2ExpandBlock(
             for (j = i; j < SizeArray && j < i + *Extra; j++) {
 
                 if (BlockArray[j] >= TOTAL_BLOCKS) {
-                    DbgBreak();
                     BlockArray[j] = 0;
                 }
 
@@ -409,7 +406,6 @@ Ext2ExpandBlock(
                 /* add block extent into Mcb */
                 ASSERT(BlockArray[i] != 0);
                 if (!Ext2AddBlockExtent(Vcb, Mcb, Base + i, BlockArray[i], 1)) {
-                    DbgBreak();
                     ClearLongFlag(Mcb->Icb->Flags, ICB_ZONE_INITED);
                     Ext2ClearAllExtents(&Mcb->Icb->Extents);
                 }
@@ -455,7 +451,6 @@ Ext2ExpandBlock(
         if (Layer <= 3) {
 
             if (BlockArray[i] >= TOTAL_BLOCKS) {
-                DbgBreak();
                 BlockArray[i] = 0;
             }
 
@@ -486,7 +481,6 @@ Ext2ExpandBlock(
                     DEBUG(DL_ERR, ( "Ext2ExpandInode: failed to load block %xh...\n",
                                     BlockArray[i]));
                     Status = STATUS_CANT_WAIT;
-                    DbgBreak();
                     goto errorout;
                 }
                 pData = (__u32 *)bh->b_data;
@@ -543,7 +537,6 @@ Ext2ExpandBlock(
             }
 
             if (!NT_SUCCESS(Status)) {
-                DbgBreak();
                 break;
             }
         }
@@ -621,7 +614,6 @@ Ext2MapIndirect(
 
                     /* save the inode */
                     if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode)) {
-                        DbgBreak();
                         Status = STATUS_UNSUCCESSFUL;
                         goto errorout;
                     }

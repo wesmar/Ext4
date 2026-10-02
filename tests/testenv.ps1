@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # testenv.ps1 - test environment settings shared by the host-side scripts.
 #
 # Defaults describe a Hyper-V guest reachable over ssh. Machine-specific values

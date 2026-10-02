@@ -73,6 +73,27 @@ Ext2ScanDir (
     struct dentry         **dentry
 );
 
+VOID
+Ext2ResolveLink (
+    IN PEXT2_IRP_CONTEXT    IrpContext,
+    IN PEXT2_VCB            Vcb,
+    IN PEXT2_MCB            Mcb,
+    IN ULONG                Linkdep,
+    IN BOOLEAN              NotFollow
+);
+
+NTSTATUS
+Ext2InsertName (
+    IN PEXT2_IRP_CONTEXT    IrpContext,
+    IN PEXT2_VCB            Vcb,
+    IN PEXT2_MCB            Parent,
+    IN PUNICODE_STRING      FileName,
+    IN ULONG                Ino,
+    IN struct dentry       *de,
+    IN BOOLEAN              Fresh,
+    OUT PEXT2_MCB          *Result
+);
+
 BOOLEAN
 Ext2IsSpecialSystemFile(
     IN PUNICODE_STRING FileName,
@@ -115,7 +136,9 @@ Ext2CreateInode(
     IN PEXT2_FCB           pParentFcb,
     IN ULONG               Type,
     IN ULONG               FileAttr,
-    IN PUNICODE_STRING     FileName);
+    IN PUNICODE_STRING     FileName,
+    OUT PULONG             NewIno OPTIONAL,
+    OUT struct dentry    **NewEntry OPTIONAL);
 
 NTSTATUS
 Ext2SupersedeOrOverWriteFile(
@@ -152,14 +175,14 @@ Ext2ProcessUserProperty(
 );
 
 NTSTATUS
-Ex2ProcessUserPerfStat(
+Ext2ProcessUserPerfStat(
     IN PEXT2_IRP_CONTEXT        IrpContext,
     IN PEXT2_QUERY_PERFSTAT     QueryPerf,
     IN ULONG                    Length
 );
 
 NTSTATUS
-Ex2ProcessMountPoint(
+Ext2ProcessMountPoint(
     IN PEXT2_IRP_CONTEXT        IrpContext,
     IN PEXT2_MOUNT_POINT        MountPoint,
     IN ULONG                    Length

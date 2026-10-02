@@ -1,4 +1,5 @@
-﻿# features.ps1 - Linux features through ext4.sys (guest), on the disk of features-image.sh.
+﻿# SPDX-License-Identifier: GPL-2.0-only
+# features.ps1 - Linux features through ext4.sys (guest), on the disk of features-image.sh.
 #
 # Names are looked up folded as Linux folds them ("ŁÓDŹ.TXT" is "Łódź.txt",
 # "STRASSE.TXT" is "straße.txt"), a name that folds to an existing one is

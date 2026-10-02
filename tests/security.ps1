@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # security.ps1 - the driver's private IOCTLs against callers that must not use them (guest).
 #
 # As administrator: the kernel-only unload IOCTL is refused, empty or short

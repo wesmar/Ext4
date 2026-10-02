@@ -39,7 +39,6 @@ Ext2ZeroData (
         rc = CcZeroData(FileObject, Start, End, Ext2CanIWait());
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         rc = FALSE;
-        DbgBreak();
     }
 
     return rc;
@@ -98,9 +97,7 @@ Ext2WriteInode (
 
             ASSERT(IrpContext != NULL);
 
-            //
-            // We assume the offset is aligned.
-            //
+            /* We assume the offset is aligned. */
 
             Status = Ext2ReadWriteBlocks(
                          IrpContext,
@@ -231,7 +228,7 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
         }
 
         if (IsInodeDeleted(Fcb) ||
-            (IsSymLink(Fcb) && IsFileDeleted(Fcb->Mcb->Target)) ) {
+            (IsSymLink(Fcb) && Ext2IsLinkDangling(Vcb, Fcb->Mcb)) ) {
             Status = STATUS_FILE_DELETED;
             __leave;
         }
@@ -393,9 +390,7 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                 }
             }
 
-            //
-            //  Do flushing for such cases
-            //
+            /* Do flushing for such cases */
             if (Nocache && Ccb != NULL && Fcb->SectionObject.DataSectionObject != NULL)  {
 
                 ExAcquireSharedStarveExclusive( &Fcb->PagingIoResource, TRUE);
@@ -439,16 +434,12 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                     __leave;
                 }
 
-                //
-                //  Set the flag indicating if Fast I/O is possible
-                //
+                /* Set the flag indicating if Fast I/O is possible */
 
                 Fcb->Header.IsFastIoPossible = Ext2IsFastIoPossible(Fcb);
             }
 
-            //
-            //  Extend the inode size when the i/o is beyond the file end ?
-            //
+            /* Extend the inode size when the i/o is beyond the file end ? */
 
             if ((ByteOffset.QuadPart + Length) > Fcb->Header.FileSize.QuadPart) {
 
@@ -506,8 +497,7 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
 
                 if (Fcb->Header.FileSize.QuadPart >= 0x80000000 &&
                         !IsFlagOn(SUPER_BLOCK->s_feature_ro_compat, EXT2_FEATURE_RO_COMPAT_LARGE_FILE)) {
-                    SetFlag(SUPER_BLOCK->s_feature_ro_compat, EXT2_FEATURE_RO_COMPAT_LARGE_FILE);
-                    Ext2SaveSuper(IrpContext, Vcb);
+                    Ext2SetSuperRoCompat(IrpContext, Vcb, EXT2_FEATURE_RO_COMPAT_LARGE_FILE);
                 }
 
                 DEBUG(DL_IO, ("Ext2WriteFile: expanding %wZ to FS: %I64xh FA: %I64xh\n",
@@ -548,7 +538,6 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
 
                 Buffer = Ext2GetUserBuffer(Irp);
                 if (Buffer == NULL) {
-                    DbgBreak();
                     Status = STATUS_INVALID_USER_BUFFER;
                     __leave;
                 }
@@ -562,7 +551,6 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                                       &Fcb->Header.ValidDataLength, &ByteOffset);
                     if (!rc) {
                         Status = STATUS_PENDING;
-                        DbgBreak();
                         __leave;
                     }
                 }
@@ -601,7 +589,6 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                                       &ByteOffset);
                     if (!rc) {
                         Status = STATUS_PENDING;
-                        DbgBreak();
                         __leave;
                     }
                 }
@@ -820,9 +807,6 @@ Ext2Write (IN PEXT2_IRP_CONTEXT IrpContext)
             if (FcbOrVcb->Identifier.Type == EXT2VCB) {
 
                 Status = Ext2WriteVolume(IrpContext);
-                if (!NT_SUCCESS(Status)) {
-                    DbgBreak();
-                }
                 bCompleteRequest = FALSE;
 
             } else if (FcbOrVcb->Identifier.Type == EXT2FCB) {
@@ -846,9 +830,6 @@ Ext2Write (IN PEXT2_IRP_CONTEXT IrpContext)
                 }
 
                 Status = Ext2WriteFile(IrpContext);
-                if (!NT_SUCCESS(Status)) {
-                    DbgBreak();
-                }
 
                 bCompleteRequest = FALSE;
             } else {

@@ -46,7 +46,10 @@ Ext2IsHandleCountZero(IN PEXT2_VCB Vcb)
 {
     PEXT2_FCB   Fcb;
     PLIST_ENTRY List;
+    BOOLEAN     Zero = TRUE;
 
+    /* the list changes under FcbLock (opens, closes, the reaper) */
+    ExAcquireResourceSharedLite(&Vcb->FcbLock, TRUE);
     for ( List = Vcb->FcbList.Flink;
             List != &Vcb->FcbList;
             List = List->Flink )  {
@@ -56,15 +59,14 @@ Ext2IsHandleCountZero(IN PEXT2_VCB Vcb)
         ASSERT((Fcb->Identifier.Type == EXT2FCB) &&
                (Fcb->Identifier.Size == sizeof(EXT2_FCB)));
 
-        DEBUG(DL_INF, ( "Ext2IsHandleCountZero: Inode:%xh File:%S OpenHandleCount=%xh\n",
-                        Fcb->Inode->i_ino, Fcb->Mcb->ShortName.Buffer, Fcb->OpenHandleCount));
-
         if (Fcb->OpenHandleCount) {
-            return FALSE;
+            Zero = FALSE;
+            break;
         }
     }
+    ExReleaseResourceLite(&Vcb->FcbLock);
 
-    return TRUE;
+    return Zero;
 }
 
 NTSTATUS
@@ -102,7 +104,7 @@ Ext2LockVcb (IN PEXT2_VCB    Vcb,
         DEBUG(DL_INF, ( "Ext2LockVcb: Volume locked.\n"));
 
     } __finally {
-        // Nothing
+        /* Nothing */
     }
 
     return Status;
@@ -128,9 +130,7 @@ Ext2LockVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 
         Status = STATUS_UNSUCCESSFUL;
 
-        //
-        // This request is not allowed on the main device object
-        //
+        /* This request is not allowed on the main device object */
         if (IsExt2FsDevice(DeviceObject)) {
             Status = STATUS_INVALID_PARAMETER;
             __leave;
@@ -208,7 +208,7 @@ Ext2UnlockVcb ( IN PEXT2_VCB    Vcb,
         }
 
     } __finally {
-        // Nothing
+        /* Nothing */
     }
 
     return Status;
@@ -234,9 +234,7 @@ Ext2UnlockVolume (
         DeviceObject = IrpContext->DeviceObject;
         IrpSp = IoGetCurrentIrpStackLocation(IrpContext->Irp);
 
-        //
-        // This request is not allowed on the main device object
-        //
+        /* This request is not allowed on the main device object */
         if (IsExt2FsDevice(DeviceObject)) {
             Status = STATUS_INVALID_PARAMETER;
             __leave;

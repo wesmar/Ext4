@@ -34,9 +34,7 @@ Ext2QueryVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 
         DeviceObject = IrpContext->DeviceObject;
 
-        //
-        // This request is not allowed on the main device object
-        //
+        /* This request is not allowed on the main device object */
         if (IsExt2FsDevice(DeviceObject)) {
             Status = STATUS_INVALID_DEVICE_REQUEST;
             __leave;
@@ -123,7 +121,7 @@ Ext2QueryVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
             FsSizeInfo->TotalAllocationUnits.QuadPart =
                 ext3_blocks_count(SUPER_BLOCK);
             FsSizeInfo->AvailableAllocationUnits.QuadPart =
-                ext3_free_blocks_count(SUPER_BLOCK);
+                Ext2FreeBlocks(Vcb);
             FsSizeInfo->SectorsPerAllocationUnit =
                 Vcb->BlockSize / Vcb->DiskGeometry.BytesPerSector;
             FsSizeInfo->BytesPerSector =
@@ -220,11 +218,11 @@ Ext2QueryVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
                 ext3_blocks_count(SUPER_BLOCK);
 
             PFFFSI->CallerAvailableAllocationUnits.QuadPart =
-                ext3_free_blocks_count(SUPER_BLOCK);
+                Ext2FreeBlocks(Vcb);
 
                 /* - Vcb->SuperBlock->s_r_blocks_count; */
             PFFFSI->ActualAvailableAllocationUnits.QuadPart =
-                ext3_free_blocks_count(SUPER_BLOCK);
+                Ext2FreeBlocks(Vcb);
 
             PFFFSI->SectorsPerAllocationUnit =
                 Vcb->BlockSize / Vcb->DiskGeometry.BytesPerSector;
@@ -280,9 +278,7 @@ Ext2SetVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 
         DeviceObject = IrpContext->DeviceObject;
 
-        //
-        // This request is not allowed on the main device object
-        //
+        /* This request is not allowed on the main device object */
         if (IsExt2FsDevice(DeviceObject)) {
             Status = STATUS_INVALID_DEVICE_REQUEST;
             __leave;
@@ -315,8 +311,8 @@ Ext2SetVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
         Irp = IrpContext->Irp;
         IoStackLocation = IoGetCurrentIrpStackLocation(Irp);
 
-        //Notes: SetVolume is not defined in ntddk.h of win2k ddk,
-        //       But it's same to QueryVolume ....
+        /* Notes: SetVolume is not defined in ntddk.h of win2k ddk,
+           But it's same to QueryVolume .... */
         FsInformationClass =
             IoStackLocation->Parameters./*SetVolume*/QueryVolume.FsInformationClass;
 

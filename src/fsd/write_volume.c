@@ -208,7 +208,6 @@ Ext2WriteVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 
                 Buffer = Ext2GetUserBuffer(Irp);
                 if (Buffer == NULL) {
-                    DbgBreak();
 
                     Status = STATUS_INVALID_USER_BUFFER;
                     __leave;
@@ -278,7 +277,7 @@ Ext2WriteVolume (IN PEXT2_IRP_CONTEXT IrpContext)
                     Extent = Ext2AllocateExtent();
 
                     if (!Extent) {
-                        DEBUG(DL_ERR, ( "Ex2WriteVolume: failed to allocate Extent\n"));
+                        DEBUG(DL_ERR, ( "Ext2WriteVolume: failed to allocate Extent\n"));
                         Status = STATUS_INSUFFICIENT_RESOURCES;
                         __leave;
                     }

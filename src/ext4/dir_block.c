@@ -31,26 +31,49 @@ void ext3_warning (struct super_block * sb, const char * function,
 
 /* ext3_bread is safe for meta-data blocks. it's not safe to read file data,
    since file data is managed by file cache, not volume cache */
+static struct buffer_head *ext3_bread_mapped(struct ext2_icb *icb, struct inode *inode,
+                                             PEXT2_MCB Mcb, unsigned long block, int *err);
+
 struct buffer_head *ext3_bread(struct ext2_icb *icb, struct inode *inode,
                                            unsigned long block, int *err)
 {
-    struct buffer_head * bh = NULL;
-    NTSTATUS    status = STATUS_SUCCESS;
-    ULONG       lbn = 0, num = 0;
-
-    PEXT2_MCB   Mcb = (PEXT2_MCB) inode->i_priv;    /* a name of this inode */
+    PEXT2_MCB           Mcb = (PEXT2_MCB) inode->i_priv;    /* a name of this inode */
+    PEXT2_MCB           Target;
+    struct buffer_head *bh;
 
     /* an inline directory has no block: its view, built in memory */
     if (S_ISDIR(inode->i_mode) && Ext4IsInline(inode))
         return Ext4InlineDirBlock(icb, inode, block, err);
 
-    /* for symlink file, read it's target instead */
-    if (NULL != Mcb && IsMcbSymLink(Mcb))
-        Mcb = Mcb->Target;
     if (NULL == Mcb) {
         *err = -EINVAL;
         return NULL;
     }
+
+    /* A directory listed through a symlink to it is read through the
+       link's entry: the blocks are the target's. The target is held while
+       they are mapped (a demotion of the link may drop it meanwhile). */
+    if (IsMcbSymLink(Mcb)) {
+        Target = Ext2ReferLinkTarget((PEXT2_VCB)inode->i_sb->s_priv, Mcb);
+        if (Target == NULL) {
+            *err = -ENOENT;
+            return NULL;
+        }
+        bh = ext3_bread_mapped(icb, inode, Target, block, err);
+        Ext2DerefMcb(Target);
+        return bh;
+    }
+
+    return ext3_bread_mapped(icb, inode, Mcb, block, err);
+}
+
+/* block of the file Mcb names, read into the volume cache */
+static struct buffer_head *ext3_bread_mapped(struct ext2_icb *icb, struct inode *inode,
+                                             PEXT2_MCB Mcb, unsigned long block, int *err)
+{
+    struct buffer_head * bh = NULL;
+    NTSTATUS    status = STATUS_SUCCESS;
+    ULONG       lbn = 0, num = 0;
 
     /* mapping file offset to ext2 block */
     if (INODE_HAS_EXTENT(Mcb->Inode)) {
@@ -66,6 +89,15 @@ struct buffer_head *ext3_bread(struct ext2_icb *icb, struct inode *inode,
     if (!NT_SUCCESS(status)) {
         *err = Ext2LinuxError(status);
         return bh;
+    }
+
+    /* A hole: no block behind this part of the directory. Block 0 is what
+       the mapping reports for one, and it is the superblock's - a directory
+       block read from it and written back destroyed the volume. Linux
+       refuses a hole in a directory the same way (ext4_read_dirblock). */
+    if (lbn == 0) {
+        *err = -EIO;
+        return NULL;
     }
 
     bh = sb_getblk(inode->i_sb, lbn);
@@ -87,26 +119,36 @@ struct buffer_head *ext3_bread(struct ext2_icb *icb, struct inode *inode,
 struct buffer_head *ext3_append(struct ext2_icb *icb, struct inode *inode,
                                             ext3_lblk_t *block, int *err)
 {
-    PEXT2_MCB   mcb = (PEXT2_MCB) inode->i_priv;    /* a name of this inode */
-    PEXT2_FCB   dcb = mcb->Icb->Fcb;
-    NTSTATUS    status;
+    PEXT2_MCB       mcb = (PEXT2_MCB) inode->i_priv;    /* a name of this inode */
+    PEXT2_FCB       dcb = mcb->Icb->Fcb;
+    LARGE_INTEGER   Size;
+    NTSTATUS        status;
 
     ASSERT(dcb);
     ASSERT(inode == dcb->Inode);
 
-    /* allocate new block since there's no space for us */
+    /* One block after the last one, and nothing changes unless it is
+       there. The size used to be raised before the expansion and kept when
+       it failed (a full volume): the directory then ended in a hole, its
+       index pointed past its blocks, and the block was read anyway - from
+       the hole, i.e. block 0 - and written as a directory block over the
+       superblock. */
     *block = (ext3_lblk_t)(inode->i_size >> inode->i_sb->s_blocksize_bits);
-    dcb->Header.AllocationSize.QuadPart += dcb->Vcb->BlockSize;
-    status = Ext2ExpandFile(icb, dcb->Vcb, mcb, &(dcb->Header.AllocationSize));
-    if (NT_SUCCESS(status)) {
-
-        /* update Dcb */
-        dcb->Header.ValidDataLength = dcb->Header.FileSize = dcb->Header.AllocationSize;
-        mcb->Inode->i_size = dcb->Header.AllocationSize.QuadPart;
-
-        /* save parent directory's inode */
-        Ext2SaveInode(icb, dcb->Vcb, inode);
+    Size.QuadPart = ((LONGLONG)*block + 1) << inode->i_sb->s_blocksize_bits;
+    status = Ext2ExpandFile(icb, dcb->Vcb, mcb, &Size);
+    if (!NT_SUCCESS(status)) {
+        *err = Ext2LinuxError(status);
+        return NULL;
     }
+    if (Size.QuadPart < (((LONGLONG)*block + 1) << inode->i_sb->s_blocksize_bits)) {
+        *err = -ENOSPC;
+        return NULL;
+    }
+
+    dcb->Header.AllocationSize = Size;
+    dcb->Header.ValidDataLength = dcb->Header.FileSize = Size;
+    mcb->Inode->i_size = Size.QuadPart;
+    Ext2SaveInode(icb, dcb->Vcb, inode);
 
     return ext3_bread(icb, inode, *block, err);
 }
