@@ -23,7 +23,7 @@ typedef struct _EXT2_VCB {
        its InodeLock (inode before block when both), the shared descriptor
        is checksummed under its DescLock; the superblock - its counters,
        its checksum, its write - under SuperLock, taken inside a group lock,
-       never around one (core\stripes.c) */
+       never around one (core\LockStripes.c) */
     PEXT2_GROUP_STRIPE          GroupLocks;
     PVOID                       GroupLockPool;
     ULONG                       GroupLockMask;
@@ -36,7 +36,7 @@ typedef struct _EXT2_VCB {
 
     /* Symlink targets of the name cache: Mcb->Target and the link type
        bits change under it exclusively and are followed under it shared.
-       Taken before any name stripe, never while one is held (core\mcb.c). */
+       Taken before any name stripe, never while one is held (core\NameCache.c). */
     ERESOURCE                   LinkLock;
 
     /* List of FCBs for open files on this volume */
@@ -45,7 +45,7 @@ typedef struct _EXT2_VCB {
     LONG                        FcbCount;
     LONG                        FcbGone;    /* idle Fcbs of deleted files since the last reaper scan */
 
-    /* The name cache (core\mcb.c). The hash is keyed by parent and name;
+    /* The name cache (core\NameCache.c). The hash is keyed by parent and name;
        its chains are guarded by stripes, chain i by stripe i & StripeMask,
        sized from the processor count. McbList is the reaping order, under
        McbLruLock; McbReapLock lets one reaper at a time free names. */
@@ -76,7 +76,7 @@ typedef struct _EXT2_VCB {
     SECTION_OBJECT_POINTERS     SectionObject;
 
     /* Dirty Mcbs of modifications for volume stream */
-    LARGE_MCB                   Extents;
+    EXT4_RUN_MAP                   Extents;
 
 
     /* Share Access for the file object */
@@ -169,7 +169,7 @@ typedef struct _EXT2_VCB {
     /* mountpoint: symlink to DesDevices */
     UCHAR                       DrvLetter;
 
-    /* the mounted-device interface letter.c registered on the volume's
+    /* the mounted-device interface DriveLetters.c registered on the volume's
        PDO so that the mount manager tracks a hidden volume */
     UNICODE_STRING              MountDevLink;
 
@@ -180,7 +180,7 @@ typedef struct _EXT2_VCB {
     /* write-ahead journal engine (jbd2\commit.c), NULL when inactive */
     struct _EXT2_JOURNAL        *Journal;
 
-    /* multi-mount protection while the volume is ours (volume\mmp.c) */
+    /* multi-mount protection while the volume is ours (volume\MultiMountProtection.c) */
     PVOID                       Mmp;
 
     /* device cache flushes (Ext2FlushDisk): the number the last one issued
@@ -206,7 +206,7 @@ typedef struct _EXT2_VCB {
 #define VCB_USER_IDS            0x00000040  /* uid/gid specified by user */
 #define VCB_USER_EIDS           0x00000080  /* euid/egid specified by user */
 #define VCB_GD_LOADED           0x00000100  /* group desc loaded */
-#define VCB_LETTER_ASSIGNED     0x00000200  /* DrvLetter was created by letter.c */
+#define VCB_LETTER_ASSIGNED     0x00000200  /* DrvLetter was created by DriveLetters.c */
 #define VCB_STREAM_TEARDOWN     0x00000400  /* one thread owns Ext2TearDownStream */
 
 #define VCB_BEING_DROPPED       0x00002000
@@ -306,7 +306,7 @@ typedef struct _EXT2_FCB {
    see one struct inode, one block map and one Fcb, hence one cache.
    Reached through Mcb->Icb; Mcb->Inode and Fcb->Inode point into it. */
 
-/* the caseless names of a large directory (ext4\dir_names.c) */
+/* the caseless names of a large directory (ext4\DirectoryNameCache.c) */
 typedef struct _EXT4_DIR_NAMES EXT4_DIR_NAMES, *PEXT4_DIR_NAMES;
 
 struct _EXT2_ICB {
@@ -330,10 +330,10 @@ struct _EXT2_ICB {
     PEXT2_FCB                       Fcb;
 
     /* Extents zone */
-    LARGE_MCB                       Extents;
+    EXT4_RUN_MAP                       Extents;
 
     /* Metablocks */
-    LARGE_MCB                       MetaExts;
+    EXT4_RUN_MAP                       MetaExts;
 
     /* Time stamps */
     LARGE_INTEGER                   CreationTime;
@@ -342,14 +342,14 @@ struct _EXT2_ICB {
     LARGE_INTEGER                   LastAccessTime;
 
     /* A directory's names folded to upper case, as hashes: a miss in its
-       index needs no scan for other spellings (ext4\dir_names.c) */
+       index needs no scan for other spellings (ext4\DirectoryNameCache.c) */
     EX_PUSH_LOCK                    CaselessLock;
     PEXT4_DIR_NAMES                 Caseless;
     volatile LONG                   CaselessGeneration;
 
     /* A directory's namespace: held exclusively from "is the name free"
        to "the entry is in", by create and delete, and by every entry
-       change (ext4\dir_ops.c). Taken before the directory's Fcb resources
+       change (ext4\DirectoryOperations.c). Taken before the directory's Fcb resources
        and before the name stripes; lookups do not take it. Plain files
        leave it be. */
     ERESOURCE                       DirResource;
@@ -428,7 +428,7 @@ struct _EXT2_MCB {
 #define MCB_DELETE_PENDING          0x00000010  /* this name goes with the last handle */
 #define MCB_ACCESSED                0x00000020  /* looked up since the reaper last saw it */
 
-/* lock striping (core\stripes.c): stripes per processor, the largest
+/* lock striping (core\LockStripes.c): stripes per processor, the largest
    power of two a count is rounded to, the pool tag of a set */
 #define EXT4_STRIPES_PER_CPU        4
 #define EXT4_POW2_MAX               0x80000000UL
@@ -447,7 +447,7 @@ struct _EXT2_MCB {
 #define Ext2McbLowWater()           (Ext2McbHighWater() * 3 / 4)
 
 /* cached Fcbs of a volume: past the high water mark the oldest idle ones
-   go whatever their age, down to the low water mark (reaper.c) */
+   go whatever their age, down to the low water mark (CacheReaper.c) */
 #define Ext2FcbHighWater()          (((ULONG)Ext2Global->MaxDepth) * 64)
 #define Ext2FcbLowWater()           (Ext2FcbHighWater() * 3 / 4)
 

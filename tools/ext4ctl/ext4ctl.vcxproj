@@ -72,7 +72,7 @@
     <ClCompile Include="main.c" />
     <ClCompile Include="passphrase.c" />
     <ClCompile Include="selftest.c" />
-    <ClCompile Include="..\..\src\crypto\xts.c" />
+    <ClCompile Include="..\..\src\crypto\AesXts.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ext4ctl.h" />

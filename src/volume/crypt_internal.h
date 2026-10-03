@@ -1,5 +1,5 @@
 /**
- * crypt_internal.h - what the LUKS device files share (crypt.c, crypt_io.c).
+ * crypt_internal.h - what the LUKS device files share (LuksVolume.c, LuksIo.c).
  *
  * Copyright (c) 2026 Marek Wesolowski (WESMAR)
  * SPDX-License-Identifier: GPL-2.0-only
@@ -101,12 +101,12 @@ struct _EXT4_CRYPT_DEVICE {
     CHAR                Uuid[EXT4_CRYPT_UUID_CHARS];
 };
 
-/* the open devices (crypt.c) */
+/* the open devices (LuksVolume.c) */
 extern LIST_ENTRY          Ext4CryptList;
 extern FAST_MUTEX          Ext4CryptListLock;
 extern BCRYPT_ALG_HANDLE   Ext4AesEcb;
 
-/* the I/O engine (crypt_io.c) */
+/* the I/O engine (LuksIo.c) */
 NTSTATUS
 Ext4CryptLowerIoctl(IN PDEVICE_OBJECT Lower, IN ULONG Code, OUT PVOID Out, IN ULONG OutLength);
 

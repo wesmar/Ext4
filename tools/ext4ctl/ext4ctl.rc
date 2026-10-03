@@ -2,6 +2,7 @@
  * Version resource for ext4ctl.exe: the driver's version, from version.h.
  */
 
+#pragma code_page(65001)
 #include "version.h"
 
 1 VERSIONINFO

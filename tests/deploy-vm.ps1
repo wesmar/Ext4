@@ -9,15 +9,28 @@
 # driver that still claims ext volumes (the old Ext2Fsd) is stopped first.
 #
 #   pwsh tests\deploy-vm.ps1 [-Ip a.b.c.d] [-NoStart]
-param([string]$Ip = '', [switch]$NoStart)
+param([string]$Ip = '', [switch]$NoStart,
+    [string]$ImagePath = '', [string]$SymbolsPath = '')
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\testenv.ps1"
 if (-not $Ip) { $Ip = Get-TestVmIp }
 $ssh = Get-SshOptions
 $target = "$($TestEnv.User)@$Ip"
 
-$bin = Join-Path (Split-Path $PSScriptRoot) "bin\$($TestEnv.Driver)"
+$bin = if ($ImagePath) { [IO.Path]::GetFullPath($ImagePath) }
+       else { Join-Path (Split-Path $PSScriptRoot) "bin\$($TestEnv.Driver)" }
 if (-not (Test-Path $bin)) { throw "$bin not found - run build.ps1 first" }
+# Preserve each tested image and its symbols before the next build overwrites them.
+$imageId = (Get-FileHash -LiteralPath $bin -Algorithm SHA256).Hash.ToLowerInvariant()
+$evidence = Join-Path $PSScriptRoot "logs/builds/$imageId"
+New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+Copy-Item -LiteralPath $bin -Destination (Join-Path $evidence $TestEnv.Driver) -Force
+$pdb = if ($SymbolsPath) { [IO.Path]::GetFullPath($SymbolsPath) }
+       elseif (-not $ImagePath) { Join-Path (Split-Path $PSScriptRoot) 'symbols/ext4.pdb' }
+       else { '' }
+if ($pdb -and (Test-Path -LiteralPath $pdb)) {
+    Copy-Item -LiteralPath $pdb -Destination (Join-Path $evidence 'ext4.pdb') -Force
+}
 $signtool = Find-SignTool
 if (-not $signtool) { throw 'signtool.exe not found in Windows Kits\10\bin' }
 $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Subject -eq $TestEnv.CertSubject -and $_.HasPrivateKey } |

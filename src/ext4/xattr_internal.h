@@ -84,7 +84,7 @@ static inline size_t ext4_xattr_item_space(struct ext4_xattr_item *item)
 	return ext4_xattr_space(item->name_len, item->data_size, item->ea);
 }
 
-/* xattr_inode.c */
+/* AttributeInodes.c */
 __u32 ext4_xattr_inode_value_hash(PEXT2_VCB Vcb, const void *data, size_t size);
 int ext4_xattr_inode_read(struct ext4_xattr_ref *ref, __u32 ino, void *buf,
 			  size_t size, __u32 *hash);

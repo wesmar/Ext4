@@ -1,5 +1,5 @@
 /**
- * create_internal.h - what the IRP_MJ_CREATE files share (create.c, create_file.c, create_new.c).
+ * create_internal.h - what the IRP_MJ_CREATE files share (CreateDispatch.c, FileOpen.c, FileCreate.c).
  *
  * Copyright (c) 2026 Marek Wesolowski (WESMAR)
  * Derived from Ext2Fsd (Matt Wu), Ext4Fsd (Bo Branten) and Linux ext4/jbd2.
@@ -29,7 +29,7 @@ Ext4InheritSecurityLabel(
     IN PEXT2_MCB            Mcb
 );
 
-/* a new name (create_new.c) */
+/* a new name (FileCreate.c) */
 NTSTATUS
 Ext2CreateNewName(
     IN PEXT2_IRP_CONTEXT    IrpContext,

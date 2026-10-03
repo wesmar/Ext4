@@ -55,14 +55,14 @@ typedef struct _EXT2_IDENTIFIER {
 typedef struct _EXT2_MCB  EXT2_MCB, *PEXT2_MCB;
 typedef struct _EXT2_ICB  EXT2_ICB, *PEXT2_ICB;
 
-/* one lock of a striped set (core\stripes.c), alone on its cache lines:
+/* one lock of a striped set (core\LockStripes.c), alone on its cache lines:
    stripes are taken by different processors at once, and two sharing a
    line would bounce it between them as one lock does */
 typedef struct DECLSPEC_CACHEALIGN _EXT2_LOCK_STRIPE {
     ERESOURCE   Lock;
 } EXT2_LOCK_STRIPE, *PEXT2_LOCK_STRIPE;
 
-/* the locks of the block groups that fall on one stripe (core\stripes.c):
+/* the locks of the block groups that fall on one stripe (core\LockStripes.c):
    the block bitmap and the inode bitmap are changed apart - a delete frees
    both at once - and the descriptor they share is checksummed as one step */
 typedef struct DECLSPEC_CACHEALIGN _EXT2_GROUP_STRIPE {
@@ -134,7 +134,7 @@ typedef struct _EXT2_GLOBAL {
     /* Volumes dismounted but not yet destroyed: their cached Fcbs still
        hold references, and the Fcb reaper drains them (memory.c) */
     LIST_ENTRY                  DismountingVcbList;
-    LIST_ENTRY                  SwapVpbList;    /* VPBs of ours still on devices (dismount.c) */
+    LIST_ENTRY                  SwapVpbList;    /* VPBs of ours still on devices (VolumeDismount.c) */
     KSPIN_LOCK                  SwapVpbLock;
 
     /* Cleaning thread related: resource cleaner */
@@ -151,7 +151,7 @@ typedef struct _EXT2_GLOBAL {
     PKEVENT                     LowMemory;
     HANDLE                      LowMemoryHandle;
 
-    /* bare "sc stop" support (devctl.c, "Bare sc stop support") */
+    /* bare "sc stop" support (DeviceControl.c, "Bare sc stop support") */
 #define EXT2_UNLOAD_IDLE        0   /* nothing seen yet */
 #define EXT2_UNLOAD_PROBING     1   /* probe work item queued or running */
 #define EXT2_UNLOAD_DRAINING    2   /* sc stop seen, drain thread owns the rest */
@@ -167,7 +167,7 @@ typedef struct _EXT2_GLOBAL {
     volatile LONG               MountsInFlight; /* Ext2MountVolume calls not yet done */
     volatile LONG               VcbTeardownsInFlight; /* unlinked VCBs still being destroyed */
 
-    /* drive letters for ext volumes (letter.c) */
+    /* drive letters for ext volumes (DriveLetters.c) */
     PVOID                       VolumeNotifyEntry;    /* PnP volume-interface watch */
     PVOID                       PartitionNotifyEntry; /* same for hidden partitions */
     EX_RUNDOWN_REF              LetterRundown;     /* probes and assignments in flight */
@@ -215,7 +215,7 @@ typedef struct _EXT2_GLOBAL {
 #define EXT3_FORCE_WRITING      0x00000004
 #define EXT2_CHECKING_BITMAP    0x00000008
 #define EXT2_AUTO_MOUNT         0x00000010
-#define EXT2_DEVICES_DELETED    0x00000020  /* control devices already gone (devctl.c) */
+#define EXT2_DEVICES_DELETED    0x00000020  /* control devices already gone (DeviceControl.c) */
 
 /* Glboal Ext2Fsd Memory Block */
 

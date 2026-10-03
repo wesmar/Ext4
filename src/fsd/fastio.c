@@ -1,5 +1,5 @@
 /**
- * fastio.c - fast I/O entry points: read, write and information queries.
+ * FastIo.c - fast I/O entry points: read, write and information queries.
  *
  * Copyright (c) 2026 Marek Wesolowski (WESMAR)
  * Derived from Ext2Fsd (Matt Wu), Ext4Fsd (Bo Branten) and Linux ext4/jbd2.

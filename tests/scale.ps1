@@ -12,7 +12,10 @@
 # thread. A file system that serialises its threads stays near 1.0x.
 #
 #   powershell -File scale.ps1 [-Targets C,E] [-Threads 1,2,4,8] [-Files 2000] [-BigMB 128]
-param([string[]]$Targets = @('C', 'E'), [int[]]$Threads = @(1, 2, 4, 8), [int]$Files = 2000, [int]$BigMB = 128)
+param([string[]]$Targets = @('C', 'E'),
+    [ValidateRange(1,256)][int[]]$Threads = @(1, 2, 4, 8),
+    [ValidateRange(256,1000000)][int]$Files = 2000,
+    [ValidateRange(16,65536)][int]$BigMB = 128)
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @"
 using System;
@@ -24,6 +27,12 @@ using Microsoft.Win32.SafeHandles;
 public static class Scale {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern SafeFileHandle CreateFile(string p, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr VirtualAlloc(IntPtr address, UIntPtr size, uint type, uint protect);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool VirtualFree(IntPtr address, UIntPtr size, uint type);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool ReadFile(SafeFileHandle file, IntPtr buffer, uint count, out uint read, IntPtr overlapped);
     const uint NO_BUFFERING = 0x20000000;
 
     // runs body(thread) on n threads released together; the wall time in ms
@@ -33,12 +42,13 @@ public static class Scale {
         Exception err = null;
         for (int t = 0; t < n; t++) {
             int k = t;
-            ts[t] = new Thread(() => { go.WaitOne(); try { body(k); } catch (Exception e) { err = e; } });
+            ts[t] = new Thread(() => { go.WaitOne(); try { body(k); } catch (Exception e) { Interlocked.CompareExchange(ref err, e, null); } });
             ts[t].Start();
         }
         var sw = Stopwatch.StartNew();
         go.Set();
         foreach (var t in ts) t.Join();
+        go.Dispose();
         if (err != null) throw err;
         return sw.Elapsed.TotalMilliseconds;
     }
@@ -48,7 +58,7 @@ public static class Scale {
         var r = new System.Text.StringBuilder();
         int per = files / n;
         byte[] four = new byte[4096]; new Random(1).NextBytes(four);
-        if (Directory.Exists(root)) Directory.Delete(root, true);
+        if (Directory.Exists(root)) throw new IOException("Benchmark directory already exists");
         Directory.CreateDirectory(root);
         for (int t = 0; t < n; t++) Directory.CreateDirectory(Path.Combine(root, "t" + t));
         string shared = Path.Combine(root, "shared"); Directory.CreateDirectory(shared);
@@ -67,9 +77,20 @@ public static class Scale {
         ms = Par(n, t => { using (var f = new FileStream(Path.Combine(root, "big" + t), FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20)) { for (int i = 0; i < mb; i++) f.Write(chunk, 0, chunk.Length); f.Flush(true); } });
         r.AppendFormat("seq-write {0} {1:F0} MB/s\n", n, mb * n * 1000.0 / ms);
         ms = Par(n, t => {
-            using (var h = CreateFile(Path.Combine(root, "big" + t), 0x80000000, 1, IntPtr.Zero, 3, NO_BUFFERING, IntPtr.Zero))
-            using (var f = new FileStream(h, FileAccess.Read, 1 << 20, false)) {
-                byte[] b = new byte[1 << 20]; while (f.Read(b, 0, b.Length) > 0) { }
+            IntPtr buffer = VirtualAlloc(IntPtr.Zero, (UIntPtr)(1 << 20), 0x3000, 4);
+            if (buffer == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            try {
+                using (var h = CreateFile(Path.Combine(root, "big" + t), 0x80000000, 1, IntPtr.Zero, 3, NO_BUFFERING, IntPtr.Zero)) {
+                    if (h.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                    for (int i = 0; i < mb; i++) {
+                        uint read;
+                        if (!ReadFile(h, buffer, 1U << 20, out read, IntPtr.Zero))
+                            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                        if (read != 1U << 20) throw new IOException("Short unbuffered read");
+                    }
+                }
+            } finally {
+                VirtualFree(buffer, UIntPtr.Zero, 0x8000);
             }
         });
         r.AppendFormat("seq-read {0} {1:F0} MB/s\n", n, mb * n * 1000.0 / ms);
@@ -79,15 +100,18 @@ public static class Scale {
 }
 "@
 $counts = $Threads
+$runId = [guid]::NewGuid().ToString('N')
 foreach ($drive in $Targets) {
+    if ($drive -notmatch '^[A-Za-z]$') { throw "Invalid drive letter: $drive" }
     $fs = (Get-Volume -DriveLetter $drive).FileSystem
     "== ${drive}: ($fs)"
     $base = @{}
     foreach ($n in $counts) {
-        foreach ($line in ([Scale]::Run("${drive}:\scale-bench", $n, $Files, $BigMB) -split "`n" | Where-Object { $_ })) {
+        foreach ($line in ([Scale]::Run("${drive}:\scale-bench-$runId-$n", $n, $Files, $BigMB) -split "`n" | Where-Object { $_ })) {
             $name, $t, $v, $unit = $line -split ' '
             if ($n -eq $counts[0]) { $base[$name] = [double]$v }
             "{0,-11} {1,2} threads {2,8} {3,-8} {4,5:F1}x" -f $name, $t, $v, $unit, ([double]$v / $base[$name])
         }
     }
 }
+'SCALE: ALL PASSED'

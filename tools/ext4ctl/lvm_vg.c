@@ -13,7 +13,7 @@
  * Linear (striped, one stripe) segments map extents of the LV to extents of
  * the PV directly; thin volumes are mapped in lvm_thin.c. The result is a
  * table of runs over the LUKS device, contiguous pieces merged, which the
- * driver serves read-only (volume\lvm.c).
+ * driver serves read-only (volume\LvmVolume.c).
  */
 
 #include "lvm_internal.h"

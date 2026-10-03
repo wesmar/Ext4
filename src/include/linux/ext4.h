@@ -1974,7 +1974,7 @@ int ext4_block_bitmap_csum_verify(struct super_block *sb, ext4_group_t group,
 				  struct ext4_group_desc *gdp,
 				  struct buffer_head *bh);
 
-/* balloc.c */
+/* Linux fs/ext4/balloc.c declarations. */
 extern void ext4_get_group_no_and_offset(struct super_block *sb,
 					 ext4_fsblk_t blocknr,
 					 ext4_group_t *blockgrpp,
@@ -2114,7 +2114,7 @@ extern int ext4_sync_file(struct file *, loff_t, loff_t, int);
 extern int ext4fs_dirhash(const char *name, int len, struct
 			  dx_hash_info *hinfo);
 
-/* ialloc.c */
+/* Linux fs/ext4/ialloc.c declarations. */
 extern struct inode *__ext4_new_inode(handle_t *, struct inode *, umode_t,
 				      const struct qstr *qstr, __u32 goal,
 				      uid_t *owner, __u32 i_flags,
@@ -2164,7 +2164,7 @@ extern int ext4_group_add_blocks(handle_t *handle, struct super_block *sb,
 extern int ext4_trim_fs(struct super_block *, struct fstrim_range *);
 extern void ext4_process_freed_data(struct super_block *sb, tid_t commit_tid);
 
-/* inode.c */
+/* Linux fs/ext4/inode.c declarations. */
 int ext4_inode_is_fast_symlink(struct inode *inode);
 struct buffer_head *ext4_getblk(handle_t *, struct inode *, ext4_lblk_t, int);
 struct buffer_head *ext4_bread(handle_t *, struct inode *, ext4_lblk_t, int);
@@ -2284,7 +2284,7 @@ extern int ext4_group_extend(struct super_block *sb,
 				ext4_fsblk_t n_blocks_count);
 extern int ext4_resize_fs(struct super_block *sb, ext4_fsblk_t n_blocks_count);
 
-/* super.c */
+/* Linux fs/ext4/super.c declarations. */
 extern struct buffer_head *ext4_sb_bread(struct super_block *sb,
 					 sector_t block, int op_flags);
 extern int ext4_seq_options_show(struct seq_file *seq, void *offset);
@@ -2486,7 +2486,7 @@ extern const struct inode_operations ext4_file_inode_operations;
 extern const struct file_operations ext4_file_operations;
 extern loff_t ext4_llseek(struct file *file, loff_t offset, int origin);
 
-/* inline.c */
+/* Linux fs/ext4/inline.c declarations. */
 extern int ext4_get_max_inline_size(struct inode *inode);
 extern int ext4_find_inline_data_nolock(struct inode *inode);
 extern int ext4_init_inline_data(handle_t *handle, struct inode *inode,
@@ -2672,7 +2672,7 @@ extern int ext4_bio_write_page(struct ext4_io_submit *io,
 			       struct writeback_control *wbc,
 			       bool keep_towrite);
 
-/* mmp.c */
+/* Linux fs/ext4/mmp.c declarations. */
 extern int ext4_multi_mount_protect(struct super_block *, ext4_fsblk_t);
 #define in_range(b, first, len)	((b) >= (first) && (b) <= (first) + (len) - 1)
 

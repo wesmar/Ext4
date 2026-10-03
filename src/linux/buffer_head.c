@@ -102,11 +102,9 @@ static struct buffer_head *__buffer_head_search(struct rb_root *root,
     while (new) {
         struct buffer_head *bh =
             container_of(new, struct buffer_head, b_rb_node);
-        s64 result = blocknr - bh->b_blocknr;
-
-        if (result < 0)
+        if (blocknr < bh->b_blocknr)
             new = new->rb_left;
-        else if (result > 0)
+        else if (blocknr > bh->b_blocknr)
             new = new->rb_right;
         else
             return bh;
@@ -119,14 +117,11 @@ static struct buffer_head *__buffer_head_search(struct rb_root *root,
 static int buffer_head_blocknr_cmp(struct rb_node *a, struct rb_node *b)
 {
     struct buffer_head *a_bh, *b_bh;
-    s64 result;
     a_bh = container_of(a, struct buffer_head, b_rb_node);
     b_bh = container_of(b, struct buffer_head, b_rb_node);
-    result = a_bh->b_blocknr - b_bh->b_blocknr;
-
-    if (result < 0)
+    if (a_bh->b_blocknr < b_bh->b_blocknr)
         return -1;
-    if (result > 0)
+    if (a_bh->b_blocknr > b_bh->b_blocknr)
         return 1;
     return 0;
 }
@@ -506,7 +501,7 @@ void mark_buffer_dirty(struct buffer_head *bh)
     PEXT2_VCB Vcb = (PEXT2_VCB)bh->b_bdev->bd_priv;
 
     /* a view of an inline directory has no block to go to: whoever
-       changes a directory converts it to blocks first (inline.c) */
+       changes a directory converts it to blocks first (InlineData.c) */
     if (buffer_virtual(bh)) {
         DbgPrint("ext4: a change to an inline directory view was dropped\n");
         ASSERT(FALSE);

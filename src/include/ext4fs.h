@@ -18,8 +18,10 @@
 
 #include "ext4fs_config.h"
 #include "ext4fs_global.h"
+#include "RunMap.h"
 #include "ext4fs_objects.h"
 #include "ext4fs_common.h"
+#include "FileLimits.h"
 
 #include "ext4fs_driver.h"
 #include "ext4fs_support.h"

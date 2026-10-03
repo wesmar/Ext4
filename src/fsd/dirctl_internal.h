@@ -1,5 +1,5 @@
 /**
- * dirctl_internal.h - definitions shared by the files split from dirctl.c.
+ * dirctl_internal.h - definitions shared by the files split from DirectoryControl.c.
  *
  * Copyright (c) 2026 Marek Wesolowski (WESMAR)
  * Derived from Ext2Fsd (Matt Wu), Ext4Fsd (Bo Branten) and Linux ext4/jbd2.

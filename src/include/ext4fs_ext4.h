@@ -16,7 +16,7 @@ Ext2MapExtent(
     IN PEXT2_MCB            Mcb,
     IN ULONG                Index,
     IN BOOLEAN              Alloc,
-    OUT PULONG              Block,
+    OUT PULONGLONG          Block,
     OUT PULONG              Number
     );
 
@@ -236,7 +236,7 @@ Ext2LoadInode (
 /* struct inode onto the on-disk inode (the fields it has; the rest stays) */
 void Ext2EncodeInode(struct ext4_inode *dst, struct inode *src);
 
-/* inline.c: inline_data, files and directories inside their inode */
+/* InlineData.c: inline_data, files and directories inside their inode */
 BOOLEAN Ext4IsInline(struct inode *inode);
 loff_t Ext4DirSize(struct inode *dir);
 struct buffer_head *Ext4InlineDirBlock(struct ext2_icb *icb, struct inode *dir,
@@ -275,7 +275,7 @@ Ext2SaveInodeXattr(IN PEXT2_IRP_CONTEXT IrpContext,
 BOOLEAN
 Ext2LoadBlock (
     IN PEXT2_VCB Vcb,
-    IN ULONG     dwBlk,
+    IN ULONGLONG dwBlk,
     IN PVOID     Buffer
 );
 
@@ -283,7 +283,7 @@ BOOLEAN
 Ext2SaveBlock (
     IN PEXT2_IRP_CONTEXT    IrpContext,
     IN PEXT2_VCB            Vcb,
-    IN ULONG                dwBlk,
+    IN ULONGLONG            dwBlk,
     IN PVOID                Buf
 );
 
@@ -342,16 +342,17 @@ Ext2NewBlock(
     IN PEXT2_IRP_CONTEXT    IrpContext,
     IN PEXT2_VCB            Vcb,
     IN ULONG                GroupHint,
-    IN ULONG                BlockHint,
-    OUT PULONG              Block,
-    IN OUT PULONG           Number
+    IN ULONGLONG            BlockHint,
+    OUT PULONGLONG          Block,
+    IN OUT PULONG           Number,
+    IN ULONGLONG            BlockLimit
 );
 
 NTSTATUS
 Ext2FreeBlock(
     IN PEXT2_IRP_CONTEXT    IrpContext,
     IN PEXT2_VCB            Vcb,
-    IN ULONG                Block,
+    IN ULONGLONG            Block,
     IN ULONG                Number
 );
 
@@ -510,7 +511,7 @@ Ext2MapIndirect(
     IN PEXT2_MCB            Mcb,
     IN ULONG                Index,
     IN BOOLEAN              bAlloc,
-    OUT PULONG              pBlock,
+    OUT PULONGLONG          pBlock,
     OUT PULONG              Number
 );
 
@@ -555,7 +556,7 @@ static __inline ext4_fsblk_t ext4_inode_to_goal_block(struct inode *inode)
     return (ext4_fsblk_t)Group * BLOCKS_PER_GROUP + EXT2_FIRST_DATA_BLOCK;
 }
 
-/* the caseless names of a large directory (dir_names.c) */
+/* the caseless names of a large directory (DirectoryNameCache.c) */
 BOOLEAN Ext4DirNameMayExist(struct ext2_icb *icb, struct inode *dir, const char *name, int len);
 VOID    Ext4DirNameAdded(struct inode *dir, const char *name, int len);
 VOID    Ext4DirNameRemoved(struct inode *dir);

@@ -159,11 +159,11 @@ Ext2BuildExtents(
 );
 
 BOOLEAN
-Ext2ListExtents(PLARGE_MCB  Extents);
+Ext2ListExtents(PEXT4_RUN_MAP  Extents);
 
 VOID
 Ext2CheckExtent(
-    PLARGE_MCB  Zone,
+    PEXT4_RUN_MAP  Zone,
     LONGLONG    Vbn,
     LONGLONG    Lbn,
     LONGLONG    Length,
@@ -171,7 +171,7 @@ Ext2CheckExtent(
 );
 
 VOID
-Ext2ClearAllExtents(PLARGE_MCB  Zone);
+Ext2ClearAllExtents(PEXT4_RUN_MAP  Zone);
 
 VOID
 Ext2InvalidateZone(IN PEXT2_MCB Mcb);
@@ -228,7 +228,7 @@ BOOLEAN
 Ext2AddMcbMetaExts (
     IN PEXT2_VCB Vcb,
     IN PEXT2_MCB Mcb,
-    IN ULONG     Block,
+    IN ULONGLONG Block,
     IN ULONG     Length
 );
 
@@ -236,7 +236,7 @@ BOOLEAN
 Ext2RemoveMcbMetaExts (
     IN PEXT2_VCB Vcb,
     IN PEXT2_MCB Mcb,
-    IN ULONG     Block,
+    IN ULONGLONG Block,
     IN ULONG     Length
 );
 
@@ -244,8 +244,8 @@ BOOLEAN
 Ext2AddBlockExtent(
     IN PEXT2_VCB    Vcb,
     IN PEXT2_MCB    Mcb,
-    IN ULONG        Start,
-    IN ULONG        Block,
+    IN ULONGLONG    Start,
+    IN ULONGLONG    Block,
     IN ULONG        Number
 );
 
@@ -254,7 +254,7 @@ Ext2LookupBlockExtent(
     IN PEXT2_VCB    Vcb,
     IN PEXT2_MCB    Mcb,
     IN ULONG        Start,
-    IN PULONG       Block,
+    IN PULONGLONG   Block,
     IN PULONG       Mapped
 );
 
@@ -262,7 +262,7 @@ BOOLEAN
 Ext2RemoveBlockExtent(
     IN PEXT2_VCB    Vcb,
     IN PEXT2_MCB    Mcb,
-    IN ULONG        Start,
+    IN ULONGLONG    Start,
     IN ULONG        Number
 );
 

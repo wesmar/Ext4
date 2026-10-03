@@ -7,6 +7,8 @@
  * compiles the same way whatever SDK the build machine has.
  */
 
+/* version.h is UTF-8; preserve the author's name in the Unicode resource. */
+#pragma code_page(65001)
 #include "version.h"
 
 1 VERSIONINFO

@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-only
- * Compile the actual production vpb.c against a deterministic ownership model.
+ * Compile the actual production VolumePointerOwnership.c against a deterministic ownership model.
  * This checks ownership transitions, not real kernel scheduling or IRQL rules.
  */
 #include <stdio.h>
 #include "ext4fs.h"
-#include "../../src/volume/vpb.c"
+#include "../../src/volume/VolumePointerOwnership.c"
 
 EXT2_GLOBAL Global;
 EXT2_GLOBAL *Ext2Global = &Global;

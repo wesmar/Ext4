@@ -1,7 +1,7 @@
 /**
  * version.h - driver identity and version, shared by the C sources and ext4.rc.
  *
- * Copyright (c) 2026 Marek Wesolowski (WESMAR)
+ * Copyright (c) 2026 Marek Wesołowski (WESMAR)
  * Derived from Ext2Fsd (Matt Wu), Ext4Fsd (Bo Branten) and Linux ext4/jbd2.
  * SPDX-License-Identifier: GPL-2.0-only
  */
@@ -25,7 +25,7 @@
 #define EXT4_DRIVER_FILE        "ext4.sys"
 #define EXT4_PRODUCT_NAME       "ext4 - ext2/ext3/ext4 file system driver for Windows"
 #define EXT4_COMPANY            "WESMAR - Marek Wesolowski"
-#define EXT4_COPYRIGHT          "Copyright (c) 2026 Marek Wesolowski (WESMAR)"
+#define EXT4_COPYRIGHT          "© Marek Wesołowski (WESMAR) 2026 "
 #define EXT4_CONTACT            "marek@wesolowski.eu.org - https://kvc.pl"
 
 #endif /* _EXT4_VERSION_H_ */

@@ -267,7 +267,7 @@ Ext2BlockMap(
     IN PEXT2_MCB            Mcb,
     IN ULONG                Index,
     IN BOOLEAN              bAlloc,
-    OUT PULONG              pBlock,
+    OUT PULONGLONG          pBlock,
     OUT PULONG              Number
 );
 

@@ -34,7 +34,7 @@
 
 **A drive letter for your Linux partition • journaled writes • controlled unload**
 
-*jbd2 journal, extents with unwritten preallocation, htree directories, metadata checksums, 64-bit group descriptors*
+*jbd2 journal, extents with unwritten preallocation, htree directories, metadata checksums, wide physical block addressing*
 
 *Windows writes checked from Linux: metadata consistency and byte-exact contents*
 
@@ -56,6 +56,7 @@
 - [Overview](#overview)
 - [Code Lineage and Redesign](#code-lineage-and-redesign)
 - [Architecture](#architecture)
+- [Physical Addressing and File Bounds](#physical-addressing-and-file-bounds)
 - [Write Path and the Journal](#write-path-and-the-journal)
 - [Unwritten Extents](#unwritten-extents)
 - [Performance Engineering](#performance-engineering)
@@ -114,6 +115,8 @@ What changed on the way to `ext4.sys`, in short:
 - **Structure.** The monolithic source tree is divided by responsibility into `driver`, `fsd`, `volume`, `core`, `ext4`, `journal`, `linux`, `nls` and `support`. Each area has its own header; the former umbrella header had 3 400 lines. Before behavior changed, preprocessing proved the split token-identical across 1 615 functions.
 - **Journal commits and recovery.** A Windows-native jbd2 commit engine logs every metadata change and commits it before the home write. Linux `e2fsck` or the driver replays an interrupted transaction at the next mount.
 - **Stopping and unloading.** `sc stop` drains mounted volumes and outstanding references before releasing the driver.
+- **Physical addressing.** Allocation, block I/O, extent caches and metadata tracking carry wide physical addresses. A driver-owned red-black run map replaces the Windows mapping interface that discarded the upper physical-block bits. Legacy on-disk pointers retain their specified width.
+- **Journal ownership.** The journal engine belongs to the volume control block. Stopping its session and freeing the engine are separate steps, so a late stream close cannot enter a freed journal during teardown.
 - **Drive letters** for partitions the mount manager treats as hidden (MBR type `0x83`, GPT "Linux filesystem").
 - **Dozens of fixes** found by the test suite: data exposure past a write into preallocated space, extents created one block at a time, a block allocator that started every file in group 0, registry buffer overruns, uninitialised return values, unload hangs, reapers polling on timers, extended attribute blocks written without their checksum, a Windows EA write that erased the Linux ACLs of the file, xattr blocks leaked on delete, lazily initialised block bitmaps that never reached the disk, and reference leaks - a refused open, a close cut short on a demoted symlink, a delete taken over by the wrong handle - that kept `sc stop` pending for ever.
 
@@ -133,7 +136,7 @@ flowchart TB
         DRIVER["driver/<br/>entry, dispatch, registry, unload drain thread"]
         FSD["fsd/<br/>create, read, write, fileinfo, dirctl, fsctl, pnp"]
         VOL["volume/<br/>mount, VCB, dismount, drive letters"]
-        CORE["core/<br/>FCB, MCB, ICB caches, extent lists, reapers"]
+        CORE["core/<br/>FCB, MCB, ICB caches, 64-bit run maps, reapers"]
         EXT4["ext4/<br/>extents, htree, allocators, inodes, xattr, csum"]
         JNL["journal/<br/>jbd2 commit, checkpoint, replay"]
         LNX["linux/<br/>buffer heads over the cache manager"]
@@ -162,9 +165,30 @@ File data goes through the cache manager like any Windows file system: cached re
 
 ---
 
+## Physical Addressing and File Bounds
+
+The former 2³²-block **volume** ceiling is removed. Physical block numbers remain wide through allocation, extent lookup, run caching, metadata tracking and device I/O. A file can therefore use blocks above the old boundary without their upper bits being lost. Sparse GPT test disks exercise that boundary with 1, 2 and 4 KiB blocks; the 4 KiB fixture is larger than 16 TiB.
+
+Physical addresses and file-logical indexes have different jobs and different on-disk widths:
+
+| Address domain | Contract |
+|---|---|
+| Driver physical-block arithmetic | 64-bit values; geometry and conversions to signed Windows byte offsets are checked before use |
+| ext4 extent data and tree pointers | 48-bit physical addresses, as stored in the ext4 format |
+| ext4 file-logical indexes | 32-bit indexes; the current mapper requires the exclusive logical end to fit, giving a per-file bound of `(2³² − 1) × block size` |
+| ext2/ext3 indirect pointers | 32-bit physical pointers on disk; allocation is constrained below 2³² blocks even on an ext4 volume containing a legacy-mapped inode |
+
+At 4 KiB, the current extent-mapped per-file bound is 16 TiB minus one block. It is independent of the volume's size. Indirect-mapped files also obey the capacity of their direct, single-, double- and triple-indirect trees. Oversized EOF, allocation and write requests fail before the file's contents or allocation are changed; negative sizes and overflowing ranges are rejected.
+
+Changing the stored indirect pointers to 64 bits would create a different disk format. Compatibility instead requires checked arithmetic, explicit allocation bounds and narrowing only after a value has been proved representable. The layouts are documented in the [Linux kernel's inode block-mapping specification](https://www.kernel.org/doc/html/latest/filesystems/ext4/ifork.html).
+
+`core/RunMap.c` owns the in-memory range map. It uses the shared red-black tree, merges compatible adjacent runs, validates overlaps before mutation and preserves the original map if a required split allocation fails. Lookup is O(log n); sequential enumeration walks the runs in O(n). Its model tests compile the production implementation, rather than a separate copy of the algorithm.
+
+---
+
 ## Write Path and the Journal
 
-Every metadata change passes through one hook, `mark_buffer_dirty`, which attaches the block to the running jbd2 transaction of the calling thread. The volume stream itself will only write byte ranges the driver has registered as dirty, so the cache manager cannot flush a metadata page behind the journal's back: write-ahead ordering is enforced, not hoped for.
+Every metadata change passes through one hook, `mark_buffer_dirty`. On journaled volumes it attaches the block to the running jbd2 transaction of the calling thread. The volume stream itself will only write byte ranges the driver has registered as dirty, so the cache manager cannot flush a metadata page behind the journal's back: write-ahead ordering is enforced, not hoped for. Ext2 uses its specified non-journaled write path.
 
 ```mermaid
 sequenceDiagram
@@ -191,7 +215,8 @@ Rules the engine keeps, each one learned from a failure it caused:
 2. **A handle joins a transaction only if it still fits the log**, the rule jbd2's `start_this_handle` enforces; otherwise it asks for a commit and waits. Without it a fast writer filled the log and the commit aborted the journal.
 3. **Superseded records retire without I/O.** A block logged again by a newer committed transaction is not written home from the older one, so a hot working set cannot pin the log.
 4. **The journal superblock is written with its checksum**, through `jbd2_write_superblock` — otherwise `e2fsck` calls it corrupt and the next mount refuses it.
-5. **No journal, no writes.** An external, corrupt or unreplayable journal mounts the volume read-only, as Linux does.
+5. **A required journal must be usable.** An external, corrupt or unreplayable journal mounts the volume read-only. Ext2, whose format has no journal, remains writable through its non-journaled path.
+6. **Lifetime follows ownership.** Stream teardown stops the journal session. The VCB retains the engine until stream, inode-map, buffer-head and group-cache teardown is complete; entering an IRP scope touches only thread-owned state.
 
 Verified by crashing the VM in the middle of heavy metadata churn: Linux `e2fsck` replays the log and finds nothing to fix; the driver's own replay at the next mount leaves the volume just as clean.
 
@@ -222,6 +247,7 @@ The design reduces work per I/O and contention between independent files.
 | Mechanism | Engineering effect |
 |---|---|
 | Extent conversion per I/O run, followed by merging | Keeps sequential data contiguous and bounds extent-tree growth |
+| Driver-owned 64-bit red-black run map | O(log n) lookup, O(n) sequential traversal and merged contiguous mappings without physical-address truncation |
 | Unwritten preallocation | Growing an extent-mapped file reserves blocks; only the initialized tail needs explicit zeroing |
 | Allocation goals based on the inode's block group | Preserves locality and spreads allocations across the volume |
 | CPU-scaled lock stripes for names, blocks and inodes | Independent groups and directories can progress concurrently |
@@ -241,7 +267,7 @@ For *T* concurrent holders choosing independently and uniformly among *S* stripe
 
 Comparisons use the same guest and storage backend, alternate the volume order and run with Driver Verifier disabled. Exact timings depend on the storage, cache state, CPU allocation and antivirus policy. Performance results are recorded alongside the tested build.
 
-The latest same-guest repetitions show strong bulk-copy and file-creation performance, with ext4 ahead of NTFS in copying, creation, rename and deletion. NTFS leads in enumeration and append-and-flush workloads. Random and sequential I/O remain close in this setup.
+Same-guest comparisons found ext4 ahead in file creation, rename and deletion; NTFS led in enumeration and append-and-flush workloads. Random and sequential I/O varied by workload. Alternating the previous and wide-address builds preserved comparable warm-cache performance; the initial cold-to-warm timing shift was larger than the difference between the builds. These are workload-specific VM results, separate from the bare-metal copy demonstration above.
 
 ---
 
@@ -266,7 +292,7 @@ To replace the driver, run `sc stop ext4`, wait for `STOPPED`, copy the new `ext
 
 The volume manager creates a volume device for every partition, but the mount manager hands out drive letters only to partition types it knows. An MBR type `0x83` or a GPT "Linux filesystem" partition is treated as hidden: no letter, no `\\?\Volume{...}` link, and nobody opens it, so no file system is ever asked to mount it.
 
-`volume\letter.c` listens for both hidden-volume and mounted-device arrivals, including devices already present when the driver loads. It opens each device once so the I/O manager asks the registered file systems to mount it. During reload, Mount Manager may remember `D:` after the live DOS link has gone. The worker restores that link before the open, breaking the wait between a missing path and an unmounted file system. After a successful mount, the driver registers the mounted-device interface on the volume PDO. Mount Manager then creates the `Volume{GUID}` link, restores its recorded letter and removes both when the device leaves. A new volume receives the first free letter from `D:`. `mountvol` and Disk Management see the same assignments.
+`volume\DriveLetters.c` listens for both hidden-volume and mounted-device arrivals, including devices already present when the driver loads. It opens each device once so the I/O manager asks the registered file systems to mount it. During reload, Mount Manager may remember `D:` after the live DOS link has gone. The worker restores that link before the open, breaking the wait between a missing path and an unmounted file system. After a successful mount, the driver registers the mounted-device interface on the volume PDO. Mount Manager then creates the `Volume{GUID}` link, restores its recorded letter and removes both when the device leaves. A new volume receives the first free letter from `D:`. `mountvol` and Disk Management see the same assignments.
 
 Hot unplug with a handle open withdraws the letters in under half a second; replugging brings them back just as fast.
 
@@ -351,10 +377,10 @@ Ext4/
 │   ├── fsd/           # One file per IRP family: create, read, write, cleanup, close,
 │   │                  # fileinfo, dirctl, fsctl, lock, ea, reparse, pnp, fast I/O ...
 │   ├── volume/        # Mount and verify, VCB, dismount, volume lock, drive letters,
-│   │                  # LUKS disk devices (crypt.c), LVM volumes inside them (lvm.c)
+│   │                  # LUKS disk devices (LuksVolume.c), LVM volumes inside them (LvmVolume.c)
 │   ├── crypto/        # AES-XTS over CNG, shared by the driver and ext4ctl
 │   ├── unicode/       # Casefolded directories: Linux's UTF-8 NFD / case folding tables
-│   ├── core/          # FCB/CCB, MCB name cache, ICB inode table, extent lists, reapers
+│   ├── core/          # FCB/CCB, MCB name cache, ICB inode table, 64-bit run maps, reapers
 │   ├── ext4/          # Extent tree, htree, directory entries, block and inode allocators,
 │   │                  # group descriptors, superblock, xattr, metadata checksums,
 │   │                  # ext2/ext3 indirect block maps
@@ -362,7 +388,7 @@ Ext4/
 │   ├── linux/         # Buffer heads over the cache manager, kernel services, rbtree
 │   ├── nls/           # Character set tables (cp437 ... cp1255, ISO-8859-x, KOI8, UTF-8)
 │   ├── support/       # Disk I/O, pool, name conversion, errno ↔ NTSTATUS, time, debug
-│   ├── include/       # ext4fs.h and one ext4fs_<area>.h per folder; linux/ compatibility headers
+│   ├── include/       # Area headers, checked file bounds, run-map contract; linux/ compatibility
 │   ├── ext4.vcxproj   # WDK kernel-mode driver project
 │   └── ext4.rc        # Version resource, generated from include/version.h
 ├── tools/ext4ctl/     # LUKS unlock and driver control: LUKS1/2, Argon2, BLAKE2b, JSON,
@@ -378,14 +404,25 @@ The driver and control tool are split by responsibility. LUKS header formats, ke
 
 ## Testing and Validation
 
-The current Release x64 build is warning-free under `/W4 /WX`. With Driver Verifier enabled for `ext4.sys`, it passed **80 consecutive stop/start cycles** and **2,400 shrink/regrow cases** across plain and LUKS2 volumes. File and directory handles were open during selected stops; drive letters returned and written data survived each restart. The guest stayed on the same boot throughout the series.
+The current source build is warning-free under `/W4 /WX`. Following the wide-address conversion and a journal-lifetime fix, the Release x64 driver passed the full Windows/Linux matrix with Driver Verifier enabled for `ext4.sys`. The latest matrix completed **18 sections in about five minutes**, including **480 shrink/regrow cases** across plain and LUKS2 volumes. Fixture preparation, model runs and targeted regressions are measured separately.
 
-The final full Windows/Linux matrix also passed: functional operations, security boundaries, parallel I/O, namespace races, hot-plug, LUKS1/LUKS2, read-only LVM and Linux feature interoperability. Linux reported clean metadata and matching test manifests after Windows writes.
+Lifecycle validation then covered **80 consecutive stop/start cycles**, **20 more cycles with concurrent open/read/close workers**, and **10 concurrent-access cycles with the larger-than-16-TiB fixture attached**. Written proof data survived, drive letters returned and no new bugcheck occurred in these runs. **Three clean Windows restarts** with mounted test volumes also preserved their proof data. Verifier remained enabled for these correctness checks.
+
+The production run-map model passed **32 reproducible seeds: 1.6 million randomized operations and 32 million fragmented-map lookups**. It checks mapping results against an independent oracle, red-black tree invariants, allocation-failure atomicity and pool ownership. Each fragmentation run builds 100,000 separate ranges. These counts describe operations and lookups, rather than millions of independent end-to-end driver tests.
+
+The full matrix covers functional operations, security boundaries, parallel I/O, namespace races, hot-plug, LUKS1/LUKS2, read-only LVM and Linux feature interoperability. Targeted fixtures check high physical data blocks, extent-tree blocks, external EA blocks, allocation at the legacy-pointer boundary, ENOSPC rollback and rejected logical-size overflow. Linux reported clean metadata and matching contents after Windows writes; the driver-written fixtures were checked without repair.
+
+Real **ext2 with 1 KiB blocks** and **ext3 with 4 KiB blocks** also passed a separate write smoke test: Linux-seeded data, an 8 MiB-plus payload using direct, single- and double-indirect blocks, rename, delete, shrink/regrow with zero-tail checks, service reload and independent Linux read-back. Both finished with clean `e2fsck -fn`. This is targeted compatibility coverage, rather than the complete ext4 feature matrix.
+
+I develop this driver as a solo project. The validation combines several hours of iterative builds and targeted diagnosis with repeatable model and cross-platform checks. A short final matrix is the regression checkpoint; the retained build symbols, seeds and logs are what make a failure reproducible.
 
 ### Regression invariants
 
 - **Allocation rollback:** extent insertion forced to fail after data allocation must return exactly the allocated block range, including an early-group reuse case. Free space, file length, contents and `e2fsck` are checked.
 - **Object lifetime:** buffer-head release reads reference-protected state before dropping ownership. A model compiles the production VPB reclaimer and exercises busy references, nested swaps, persistent flags and allocation failure.
+- **Journal lifetime:** stream close cannot borrow an engine already freed by stream teardown; the VCB owns the engine until the remaining volume state has drained.
+- **Address width:** high physical mappings survive lookup, allocation, truncation and reload. Legacy indirect allocations stay representable on disk; file-logical bounds are checked before mutation.
+- **Run-map atomicity:** conflicting overlaps and failed split allocations leave the original mapping intact. Every deterministic seed checks tree structure and mapping contents.
 - **Resize correctness:** cached and uncached handles shrink and regrow files across sector and block boundaries. Every retained byte must match; every newly exposed byte must be zero.
 - **Unload:** teardown includes outstanding VCB destruction and replacement VPBs. A busy object remains owned until it can be reclaimed.
 - **Tester correctness:** child exit codes and completion summaries are both required. An unhandled exception counts as failure; an empty or interrupted run is rejected.
@@ -406,6 +443,15 @@ pwsh tests\run-ext4test.ps1 -Quick
 
 # Malformed images from the e2fsprogs corpus
 pwsh tests\robust.ps1
+
+# Production range-map model, 32 deterministic seeds
+pwsh tests\run-map-model.ps1 -Rounds 32
+
+# One dedicated ext2/ext3 write and independent Linux read-back run
+pwsh tests\legacy-vm.ps1
+
+# Clean Windows restarts in the configured guest, with persistent proof data
+pwsh tests\reboot-vm.ps1 -Roots 'D:\,U:\' -Cycles 3
 ```
 
 Configure the disposable guest and test-image paths in `tests/testenv.local.psd1`; that file stays local. The host runner transfers guest scripts over SSH and checks native process results. Formatting and write tests use dedicated fixtures.
@@ -420,6 +466,10 @@ Configure the disposable guest and test-image paths in `tests/testenv.local.psd1
 | Encryption and LVM | LUKS1/LUKS2 key derivation and digest checks, sector-boundary I/O, lock/unlock, read-only linear and thin logical volumes |
 | Linux features | Casefolded and large indexed directories, immutable/append-only flags, MMP, shared xattrs, `ea_inode` and `inline_data` |
 | Media integrity | Linux `e2fsck` and manifest-based content verification after Windows writes |
+| Wide physical addresses | Sparse GPT volumes crossing 2³² blocks with 1/2/4 KiB blocks; high data, extent-tree and EA blocks; legacy-pointer boundary |
+| Legacy formats | Actual ext2/ext3 media: write, indirect-block growth, shrink/regrow, rename, delete and read-back after reload |
+| Deterministic models | Production run map and VPB reclaimer; independent oracle, tree invariants, ownership and forced allocation failures |
+| Lifecycle | Repeated stop/start with concurrent file access, drive-letter restoration and clean guest restarts |
 | Malformed media | Bounded traversal and read-back, attempted writes, dismount and Verifier checks; mount refusal and read-only fallback are recorded separately |
 
 Driver Verifier runs are correctness checks. Throughput measurements use a separate run with Verifier disabled.
@@ -430,7 +480,7 @@ Driver Verifier runs are correctness checks. Throughput measurements use a separ
 
 | ext4 feature | Support |
 |---|---|
-| `extent`, `huge_file`, `large_file`, `sparse_super`, `flex_bg`, `meta_bg`, `64bit` group descriptors | Read / write |
+| `extent`, `huge_file`, `large_file`, `sparse_super`, `sparse_super2`, `flex_bg`, `meta_bg`, `64bit` group descriptors | Read / write; wide physical addressing, including blocks above 2³² |
 | `has_journal` (internal jbd2) | Read / write, journaled; replay at mount |
 | `dir_index` (htree), `filetype`, `dir_nlink`, `extra_isize` | Read / write |
 | `large_dir` (three-level htree, directories past 2 GiB) | Read / write: index blocks split at every level and a level is added under the root when all are full, as in Linux; tested with a three-level index the kernel built and one this driver grew from empty (45 000 names), both checked by `e2fsck` and by the kernel looking every name up through the index |
@@ -455,12 +505,13 @@ Driver Verifier runs are correctness checks. Throughput measurements use a separ
 
 ## Known Limitations
 
-1. **Fewer than 2³² blocks per volume — approximately 16 TiB with 4 KiB blocks.** The driver accepts the ext4 `64bit` descriptor format, but its Windows block-mapping interfaces still carry 32-bit physical block numbers. Larger volumes are refused at mount. Wider addressing is a separate engineering task.
-2. **Microsoft production signing is pending.** KVC and DrvLoader provide the controlled loading paths; HVCI systems may require a reboot before the first load.
-3. **No external journals.** A volume whose journal lives on another device is mounted read-only.
-4. **POSIX permissions are mapped, not enforced as ACLs.** Ownership can be overridden per volume (`uid`, `gid` in the registry); Windows security descriptors are not stored.
-5. **LUKS and LVM.** Ciphers other than AES-XTS are not supported. Logical volumes inside LUKS open read-only, linear (one stripe) and thin ones; striped, mirrored and RAID volumes, a volume group spanning several containers, and a partition table inside a volume (the root volumes of Qubes OS qubes) are not handled — the private volumes of Qubes OS qubes hold ext4 directly and open.
-6. **x64 only.** The code has no architecture-specific parts, but only x64 is built and tested.
+The old 16 TiB volume ceiling is removed. Disk-format and per-file bounds are described in [Physical Addressing and File Bounds](#physical-addressing-and-file-bounds).
+
+1. **Microsoft production signing is pending.** KVC and DrvLoader provide the controlled loading paths; HVCI systems may require a reboot before the first load.
+2. **No external journals.** A volume whose journal lives on another device is mounted read-only.
+3. **POSIX permissions are mapped, not enforced as ACLs.** Ownership can be overridden per volume (`uid`, `gid` in the registry); Windows security descriptors are not stored.
+4. **LUKS and LVM.** Ciphers other than AES-XTS are not supported. Logical volumes inside LUKS open read-only, linear (one stripe) and thin ones; striped, mirrored and RAID volumes, a volume group spanning several containers, and a partition table inside a volume (the root volumes of Qubes OS qubes) are not handled — the private volumes of Qubes OS qubes hold ext4 directly and open.
+5. **x64 only.** Only x64 is built and tested.
 
 ---
 
@@ -500,13 +551,13 @@ Download KVC from the [KVC project page](https://kvc.pl/project-kvc) or the [KVC
 
 ```cmd
 copy /y ext4.sys "%SystemRoot%\System32\drivers\ext4.sys"
-kvc driver load ext4 -s 3
+kvc driver load ext4
 
 sc query ext4
 fsutil fsinfo drives
 ```
 
-KVC restores DSE after the service starts. On an HVCI system it offers to disable Memory Integrity and reboot; after that reboot, run `kvc driver load ext4 -s 3` again. The driver then remains loaded for the current boot, while DSE is back in its original state.
+KVC restores DSE after the service starts. On an HVCI system it offers to disable Memory Integrity and reboot; after that reboot, run `kvc driver load ext4` again. The driver then remains loaded for the current boot, while DSE is back in its original state.
 
 ```cmd
 kvc driver reload ext4

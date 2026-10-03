@@ -37,7 +37,7 @@ Ext2LetterInUse (IN WCHAR Letter);
 NTSTATUS
 Ext2CreateLetter (IN WCHAR Letter, IN PUNICODE_STRING DeviceName);
 
-/* LUKS volumes (crypt.c) */
+/* LUKS volumes (LuksVolume.c) */
 
 VOID
 Ext4CryptInitialize (VOID);
@@ -60,7 +60,7 @@ Ext4CryptTeardownAll (VOID);
 PDEVICE_OBJECT
 Ext4CryptReference (IN ULONG Number, OUT PULONGLONG Size);
 
-/* shared by the LUKS and the LVM disk devices (vdisk.c): the sector they show (512e),
+/* shared by the LUKS and the LVM disk devices (VirtualDisk.c): the sector they show (512e),
    the unit every request to them is aligned to */
 #define EXT4_SECTOR             512
 #define EXT4_SECTOR_SHIFT       9
@@ -88,7 +88,7 @@ Ext4ForgetDevice (IN PCUNICODE_STRING DeviceName);
 VOID
 Ext4SetDeviceLetter (IN PCUNICODE_STRING Name, IN WCHAR Wanted);
 
-/* LVM volumes inside LUKS (lvm.c); called under the LUKS control lock */
+/* LVM volumes inside LUKS (LvmVolume.c); called under the LUKS control lock */
 
 struct _EXT4_LV_OPEN;
 struct _EXT4_LV_CLOSE;
@@ -118,7 +118,7 @@ Ext4LvCloseOn (IN ULONG Crypt);
 VOID
 Ext4LvTeardownAll (VOID);
 
-/* multi-mount protection (mmp.c) */
+/* multi-mount protection (MultiMountProtection.c) */
 NTSTATUS
 Ext4MmpStart (IN PEXT2_VCB Vcb);
 

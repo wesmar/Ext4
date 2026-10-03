@@ -35,6 +35,7 @@ param(
     [switch]$NoFsck
 )
 $ErrorActionPreference = 'Stop'
+$Letters = @($Letters | ForEach-Object { $_ -split '[,\s]+' } | Where-Object { $_ })
 . "$PSScriptRoot\testenv.ps1"
 if (-not $Ip) { $Ip = Get-TestVmIp }
 $Vm = $TestEnv.Vm
@@ -90,7 +91,7 @@ function Wait-GuestDrives([bool]$present, [int]$sec) {
 function Stop-GuestDriver {
     $r = & ssh @sshOpt $target "powershell -NoProfile -Command `"`$s=Get-Service $Svc; if(`$s.Status -ne \`"Stopped\`"){ sc.exe stop $Svc | Out-Null; `$s.WaitForStatus(\`"Stopped\`",[TimeSpan]::FromSeconds(120)) }; `$s.Refresh(); `$s.Status`""
     if ($r -ne 'Stopped') {
-        # where the unload got to (driver\unload.c, EXT2_STEP_*), read without a debugger
+        # where the unload got to (driver\DriverUnload.c, EXT2_STEP_*), read without a debugger
         $step = & ssh @sshOpt $target "reg query HKLM\SYSTEM\CurrentControlSet\Services\$Svc /v UnloadStep & reg query HKLM\SYSTEM\CurrentControlSet\Services\$Svc /v UnloadWaitStatus" 2>&1 | Select-String 'Unload' | ForEach-Object { $_.Line.Trim() }
         throw "driver did not stop: $r ($($step -join '; '))"
     }
