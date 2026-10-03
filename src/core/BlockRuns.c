@@ -220,7 +220,7 @@ Ext2AddVcbExtent (
     return rc;
 }
 
-/* a range that stays registered only costs one more write of clean data */
+/* A failed split preserves the dirty map; ownership changes must abort. */
 BOOLEAN
 Ext2RemoveVcbExtent (
     IN PEXT2_VCB Vcb,
@@ -646,12 +646,26 @@ Ext2BuildExtents(
 
     if (!IsZoneInited(Mcb)) {
         Status = Ext2InitializeZone(IrpContext, Vcb, Mcb);
+        if (!NT_SUCCESS(Status)) {
+            return Status;
+        }
     }
 
     if ((IrpContext && IrpContext->Irp) &&
             ((IrpContext->Irp->Flags & IRP_NOCACHE) ||
              (IrpContext->Irp->Flags & IRP_PAGING_IO))) {
-        Size = (Size + SECTOR_SIZE - 1) & (~(SECTOR_SIZE - 1));
+        ULONGLONG Aligned = ((ULONGLONG)Size + SECTOR_SIZE - 1) &
+                            ~((ULONGLONG)SECTOR_SIZE - 1);
+        if (Aligned > MAXULONG) {
+            return STATUS_INVALID_BUFFER_SIZE;
+        }
+        Size = (ULONG)Aligned;
+    }
+
+    if (Offset > MAXULONGLONG - Size - (BLOCK_SIZE - 1) ||
+        (Offset >> BLOCK_BITS) >= MAXULONG ||
+        ((Offset + Size + BLOCK_SIZE - 1) >> BLOCK_BITS) > MAXULONG) {
+        return STATUS_INVALID_PARAMETER;
     }
 
     Start = (ULONG)(Offset >> BLOCK_BITS);
@@ -711,10 +725,9 @@ Ext2BuildExtents(
                 break;
             }
 
-            /* a block number past the volume end is not a block: an inline
-               symlink keeps its target text where the map would be. Treat it as a hole. */
             if (Block >= TOTAL_BLOCKS) {
-                Block = 0;
+                Status = STATUS_DISK_CORRUPT_ERROR;
+                break;
             }
 
             /* add new allocated blocks to Mcb zone */
@@ -727,11 +740,19 @@ Ext2BuildExtents(
         }
 
         /* calculate i/o extent */
-        Lba = ((LONGLONG)Block << BLOCK_BITS) + Offset - ((LONGLONG)Start << BLOCK_BITS);
-        Length = (ULONG)(((LONGLONG)(Start + Mapped) << BLOCK_BITS) - Offset);
-        if (Length > Size) {
-            Length = Size;
+        if (!Mapped) {
+            Status = STATUS_DISK_CORRUPT_ERROR;
+            break;
         }
+        Mapped = min(Mapped, End - Start);
+        if (Block && (Block >= TOTAL_BLOCKS ||
+                      (ULONGLONG)Mapped > TOTAL_BLOCKS - Block)) {
+            Status = STATUS_DISK_CORRUPT_ERROR;
+            break;
+        }
+        Lba = ((LONGLONG)Block << BLOCK_BITS) + Offset - ((LONGLONG)Start << BLOCK_BITS);
+        Length = (ULONG)min((ULONGLONG)Size,
+            (((ULONGLONG)Start + Mapped) << BLOCK_BITS) - Offset);
 
         if (0 == Length) {
             break;
@@ -742,7 +763,8 @@ Ext2BuildExtents(
 
         if (Block != 0) {
 
-            if (List && List->Lba + List->Length == Lba) {
+            if (List && List->Lba + List->Length == Lba &&
+                List->Offset + List->Length == Total) {
 
                 /* it's continuous upon previous Extent */
                 List->Length += Length;

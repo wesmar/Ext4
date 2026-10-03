@@ -500,6 +500,7 @@ struct block_device {
                                                 holding bd_bh_lock shared */
     KEVENT                  bd_bh_notify; /* set when the reaper has none of ours */
     LONG                    bd_bh_reaping; /* bhs the reaper took and has not freed yet */
+    volatile LONG           bd_write_error; /* first metadata write error; cleared only at mount */
 };
 
 /* page information */

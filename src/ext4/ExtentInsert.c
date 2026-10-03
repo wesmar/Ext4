@@ -112,8 +112,7 @@ static int ext4_ext_search_right(struct inode *inode,
 
 	ex = path[depth].p_ext;
 	ee_len = ext4_ext_get_actual_len(ex);
-	/*if (*logical < le32_to_cpu(ex->ee_block)) {*/
-	if (*logical < (ex->ee_block)) {
+	if (*logical < le32_to_cpu(ex->ee_block)) {
 		if (unlikely(EXT_FIRST_EXTENT(path[depth].p_hdr) != ex)) {
 			EXT4_ERROR_INODE(inode,
 					"first_extent(path[%d].p_hdr) != ex",
@@ -132,12 +131,10 @@ static int ext4_ext_search_right(struct inode *inode,
 		goto found_extent;
 	}
 
-	/*if (unlikely(*logical < (le32_to_cpu(ex->ee_block) + ee_len))) {*/
-	if (unlikely(*logical < ((ex->ee_block) + ee_len))) {
+	if (unlikely(*logical < (le32_to_cpu(ex->ee_block) + ee_len))) {
 		EXT4_ERROR_INODE(inode,
 				"logical %d < ee_block %d + ee_len %d!",
-				/**logical, le32_to_cpu(ex->ee_block), ee_len);*/
-			*logical, (ex->ee_block), ee_len);
+				*logical, le32_to_cpu(ex->ee_block), ee_len);
 		return -EIO;
 	}
 
@@ -181,8 +178,7 @@ got_index:
 	eh = ext_block_hdr(bh);
 	ex = EXT_FIRST_EXTENT(eh);
 found_extent:
-	/**logical = le32_to_cpu(ex->ee_block);*/
-	*logical = (ex->ee_block);
+	*logical = le32_to_cpu(ex->ee_block);
 	*phys = ext4_ext_pblock(ex);
 	*ret_ex = ex;
 	if (bh)

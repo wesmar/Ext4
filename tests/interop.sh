@@ -66,6 +66,29 @@ for part in $(lsblk -rno NAME,FSTYPE "/dev/$dev" | awk '$2=="ext4" || $2=="ext3"
         check "win dir symlink target"         "dir"            "$(readlink "$W/dir-link" 2>&1)"
         check "win dir symlink is a link"      "symbolic link"  "$(stat -c %F "$W/dir-link" 2>&1)"
         check "win deep relative symlink"      "dir/inner.txt"  "$(readlink "$W/deep-link" 2>&1)"
+        blocksize=$(stat -f -c %S "$m")
+        for length in 59 60 61 127 255 511 1023 2047 4095 4096; do
+            if [ "$length" -ge "$blocksize" ]; then
+                absent=0
+                [ ! -e "$W/long-link-$length" ] && [ ! -L "$W/long-link-$length" ] && absent=1
+                check "win oversized $length-byte symlink absent" "1" "$absent"
+                continue
+            fi
+            remaining=$length
+            expected=''
+            while [ "$remaining" -gt 200 ]; do
+                segment=$(printf '%199s' '' | tr ' ' a)
+                expected="${expected}${segment}/"
+                remaining=$((remaining - 200))
+            done
+            segment=$(printf "%${remaining}s" '' | tr ' ' b)
+            expected="${expected}${segment}"
+            check "win $length-byte symlink target" "$expected" "$(readlink "$W/long-link-$length" 2>&1)"
+            check "win $length-byte symlink size" "$length" "$(stat -c %s "$W/long-link-$length" 2>&1)"
+            if [ "$length" -eq 127 ]; then
+                check "win block-backed directory symlink target" "$expected" "$(readlink "$W/long-dir-link" 2>&1)"
+            fi
+        done
         check "win hard link count"            "2"              "$(stat -c %h "$W/file.txt" 2>&1)"
         check "win hard link same inode"       "$(stat -c %i "$W/file.txt" 2>&1)" "$(stat -c %i "$W/hard.txt" 2>&1)"
         check "win set mtime"                  "1600000000"     "$(stat -c %Y "$W/timed.txt" 2>&1)"

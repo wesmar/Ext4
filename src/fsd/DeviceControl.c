@@ -264,6 +264,7 @@ Ext2ProcessVolumeProperty(
     PEXT2_VOLUME_PROPERTY  Property = (PVOID)Property3;
     NTSTATUS Status = STATUS_SUCCESS;
     BOOLEAN VcbResourceAcquired = FALSE;
+    BOOLEAN WriteTransitionOwned = FALSE;
 
     __try {
 
@@ -365,12 +366,16 @@ Ext2ProcessVolumeProperty(
                 } else if (IsFlagOn(Vcb->Flags, VCB_INITIALIZED)) {
                     /* going writable: replay if needed and start logging;
                        without a working journal the volume stays read-only */
+                    SetLongFlag(Vcb->Flags, VCB_WRITE_TRANSITION);
+                    WriteTransitionOwned = TRUE;
                     ClearLongFlag(Vcb->Flags, VCB_READ_ONLY);
                     if (!Ext4MmpHold(Vcb) ||
                         Ext2RecoverJournal(NULL, Vcb) != 0 ||
                         IsFlagOn(Vcb->Flags, VCB_JOURNAL_RECOVER)) {
                         SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
                     }
+                    ClearLongFlag(Vcb->Flags, VCB_WRITE_TRANSITION);
+                    WriteTransitionOwned = FALSE;
                 } else {
                     ClearLongFlag(Vcb->Flags, VCB_READ_ONLY);
                 }
@@ -462,6 +467,10 @@ Ext2ProcessVolumeProperty(
     } __finally {
 
         if (VcbResourceAcquired) {
+            if (WriteTransitionOwned) {
+                SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
+                ClearLongFlag(Vcb->Flags, VCB_WRITE_TRANSITION);
+            }
             ExReleaseResourceLite(&Vcb->MainResource);
         }
     }

@@ -38,13 +38,18 @@ static ext4_fsblk_t ext4_new_meta_blocks(void *icb, struct inode *inode,
 	return block;
 }
 
-static void ext4_free_blocks(void *icb, struct inode *inode,
+static int ext4_free_blocks(void *icb, struct inode *inode,
 	ext4_fsblk_t block, int count, int flags)
 {
     UNREFERENCED_PARAMETER(flags);
-	Ext2FreeBlock((PEXT2_IRP_CONTEXT)icb, inode->i_sb->s_priv, block, count);
-	inode->i_blocks -= count * (inode->i_sb->s_blocksize >> 9);
-	return;
+    NTSTATUS status = Ext2FreeBlock((PEXT2_IRP_CONTEXT)icb,
+                                   inode->i_sb->s_priv, block, count);
+    if (!NT_SUCCESS(status)) {
+        Ext2JournalAbortQuiet(inode->i_sb->s_priv);
+        return Ext2LinuxError(status);
+    }
+    inode->i_blocks -= (__u64)count * (inode->i_sb->s_blocksize >> 9);
+    return 0;
 }
 
 /*
@@ -385,17 +390,20 @@ void ext4_xattr_remove_all(struct ext4_xattr_ref *xattr_ref)
 	xattr_ref->dirty = TRUE;
 }
 
-static void ext4_xattr_try_free_block(struct ext4_xattr_ref *xattr_ref)
+static int ext4_xattr_try_free_block(struct ext4_xattr_ref *xattr_ref)
 {
 	ext4_fsblk_t xattr_block;
 	xattr_block = xattr_ref->inode_ref->Inode->i_file_acl;
-	xattr_ref->inode_ref->Inode->i_file_acl = 0;
+    int ret = ext4_free_blocks(xattr_ref->IrpContext, xattr_ref->inode_ref->Inode,
+                              xattr_block, 1, 0);
+    if (ret)
+        return ret;
+    xattr_ref->inode_ref->Inode->i_file_acl = 0;
 	extents_brelse(xattr_ref->block_bh);
 	xattr_ref->block_bh = NULL;
-	ext4_free_blocks(xattr_ref->IrpContext, xattr_ref->inode_ref->Inode,
-		xattr_block, 1, 0);
 	xattr_ref->IsOnDiskInodeDirty = TRUE;
-	xattr_ref->block_loaded = FALSE;
+    xattr_ref->block_loaded = FALSE;
+    return 0;
 }
 
 static void ext4_xattr_set_block_header(struct ext4_xattr_ref *xattr_ref)
@@ -505,7 +513,9 @@ int ext4_xattr_write_to_disk(struct ext4_xattr_ref *xattr_ref)
 			inode->i_file_acl = 0;
 			xattr_ref->IsOnDiskInodeDirty = TRUE;
 		} else {
-			ext4_xattr_try_free_block(xattr_ref);
+            ret = ext4_xattr_try_free_block(xattr_ref);
+            if (ret)
+                goto Finish;
 		}
 	}
 	if (new_bh) {

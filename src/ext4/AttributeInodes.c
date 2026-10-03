@@ -296,7 +296,9 @@ int ext4_xattr_inode_dec_ref(struct ext4_xattr_ref *ref, __u32 ino)
 		}
 		for (i = 0; i < EXT2_NDIR_BLOCKS; i++) {
 			if (ei.i_block[i]) {
-				Ext2FreeBlock(IrpContext, Vcb, ei.i_block[i], 1);
+                NTSTATUS Status = Ext2FreeBlock(IrpContext, Vcb, ei.i_block[i], 1);
+                if (!NT_SUCCESS(Status))
+                    return Ext2LinuxError(Status);
 				ei.i_block[i] = 0;
 			}
 		}

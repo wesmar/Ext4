@@ -208,6 +208,7 @@ typedef struct _EXT2_VCB {
 #define VCB_GD_LOADED           0x00000100  /* group desc loaded */
 #define VCB_LETTER_ASSIGNED     0x00000200  /* DrvLetter was created by DriveLetters.c */
 #define VCB_STREAM_TEARDOWN     0x00000400  /* one thread owns Ext2TearDownStream */
+#define VCB_WRITE_TRANSITION    0x00000800  /* replay/start before accepting user writes */
 
 #define VCB_BEING_DROPPED       0x00002000
 #define VCB_FORCE_WRITING       0x00004000

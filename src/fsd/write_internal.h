@@ -9,6 +9,15 @@
 #ifndef _EXT4_FSD_WRITE_INTERNAL_H_
 #define _EXT4_FSD_WRITE_INTERNAL_H_
 
+/* Bound the logical byte count before any unsigned EOF subtraction. */
+static __inline ULONG
+Ext4PagingWriteLength(LONGLONG Offset, LONGLONG FileSize, ULONG Length)
+{
+    if (Offset < 0 || Offset >= FileSize)
+        return 0;
+    return (ULONG)min((ULONGLONG)Length, (ULONGLONG)(FileSize - Offset));
+}
+
 NTSTATUS
 Ext2WriteVolume (IN PEXT2_IRP_CONTEXT IrpContext);
 

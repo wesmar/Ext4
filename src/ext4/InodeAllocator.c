@@ -27,7 +27,7 @@ Ext2NewInode(
     RTL_BITMAP      InodeBitmap;
 
     ULONG           Group, i, j;
-    ULONG           Average, Length;
+    ULONG           Length;
 
     ULONG           dwInode;
 
@@ -63,8 +63,6 @@ repeat:
 
     if (Type == EXT2_FT_DIR) {
 
-        Average = Ext2FreeInodes(Vcb) / Vcb->sbi.s_groups_count;
-
         for (j = 0; j < Vcb->sbi.s_groups_count; j++) {
 
             i = (j + GroupHint) % (Vcb->sbi.s_groups_count);
@@ -89,7 +87,8 @@ repeat:
 
             gd = NULL;
 
-            /* get the group with the biggest vacancy */
+            /* Prefer an uninitialised group or the first improvement
+               over a candidate with free inodes. */
             for (j = 0; j < Vcb->sbi.s_groups_count; j++) {
 
                 struct buffer_head *gt = NULL;

@@ -161,7 +161,7 @@ Ext2SaveGroup(
     mark_buffer_dirty(gb);
     fini_bh(&gb);
 
-    return TRUE;
+    return !IsVcbReadOnly(Vcb);
 }
 
 BOOLEAN

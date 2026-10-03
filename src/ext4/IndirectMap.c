@@ -70,7 +70,10 @@ Ext2ExpandLast(
             pEntry = (PEXT2_DIR_ENTRY2) pData;
             pEntry->rec_len = (USHORT)(BLOCK_SIZE);
             ASSERT(*Number == 1);
-            Ext2SaveBlock(IrpContext, Vcb, *Block, (PVOID)pData);
+            if (!Ext2SaveBlock(IrpContext, Vcb, *Block, (PVOID)pData)) {
+                Status = STATUS_UNEXPECTED_IO_ERROR;
+                goto errorout;
+            }
         }
 
         /* add the new run to the block map; on failure the maps are dropped */
@@ -80,7 +83,10 @@ Ext2ExpandLast(
 
         /* zero the content of all meta blocks */
         for (i = 0; i < *Number; i++) {
-            Ext2SaveBlock(IrpContext, Vcb, *Block + i, (PVOID)pData);
+            if (!Ext2SaveBlock(IrpContext, Vcb, *Block + i, (PVOID)pData)) {
+                Status = STATUS_UNEXPECTED_IO_ERROR;
+                goto errorout;
+            }
             /* add block to meta extents */
             /* on failure the block maps are dropped and rebuilt later */
             Ext2AddMcbMetaExts(Vcb, Mcb, *Block + i, 1);
@@ -242,7 +248,10 @@ Ext2GetBlock(
                 SetFlag(Vcb->Volume->Flags, FO_FILE_MODIFIED);
 
                 /* save inode information here */
-                Ext2SaveInode(IrpContext, Vcb, Mcb->Inode);
+                if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode)) {
+                    Status = STATUS_UNEXPECTED_IO_ERROR;
+                    goto errorout;
+                }
 
             } else {
 
@@ -524,7 +533,8 @@ Ext2ExpandBlock(
             if (bh) {
                 mark_buffer_dirty(bh);
             } else {
-                Ext2SaveBlock(IrpContext, Vcb, BlockArray[i], (PVOID)pData);
+                if (!Ext2SaveBlock(IrpContext, Vcb, BlockArray[i], (PVOID)pData))
+                    Status = STATUS_UNEXPECTED_IO_ERROR;
             }
 
             if (pData) {
@@ -734,8 +744,9 @@ Ext2ExpandIndirect(
 
     Size->QuadPart = ((LONGLONG)(End - Extra)) << BLOCK_BITS;
 
-    /* save inode whatever it succeeds to expand or not */
-    Ext2SaveInode(IrpContext, Vcb, Mcb->Inode);
+    /* Preserve the allocation error when saving a partially expanded inode. */
+    if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode) && NT_SUCCESS(Status))
+        Status = STATUS_UNEXPECTED_IO_ERROR;
 
     return Status;
 }

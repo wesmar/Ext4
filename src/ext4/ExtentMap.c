@@ -53,7 +53,7 @@ Ext2MapExtent(
             if (Block)
                 *Block = 0;
             if (Number) {
-                LONGLONG  _len = _len = Mcb->Inode->i_size;
+                LONGLONG  _len = Mcb->Inode->i_size;
                 if (Mcb->Icb->Fcb)
                     _len = Mcb->Icb->Fcb->Header.AllocationSize.QuadPart;
                 *Number = (ULONG)((_len + BLOCK_SIZE - 1) >> BLOCK_BITS);
@@ -97,8 +97,8 @@ Ext2MapExtent(
         DEBUG(DL_ERR, ("Block insufficient resources, err: %d\n", rc));
         return Ext2WinntError(rc);
     }
-    if (Alloc)
-        Ext2SaveInode(IrpContext, Vcb, Mcb->Inode);
+    if (Alloc && !Ext2SaveInode(IrpContext, Vcb, Mcb->Inode))
+        return STATUS_UNEXPECTED_IO_ERROR;
     if (Number)
         *Number = rc ? rc : 1;
     if (Block)
@@ -121,7 +121,11 @@ Ext2DoExtentExpand(
     struct buffer_head bh_got;
     int    rc, flags;
 
-    if (IsMcbDirectory(Mcb) || IrpContext->MajorFunction == IRP_MJ_WRITE) {
+    if (!Number || !*Number)
+        return STATUS_INVALID_PARAMETER;
+
+    if (IsMcbDirectory(Mcb) || IrpContext == NULL ||
+        IrpContext->MajorFunction == IRP_MJ_WRITE) {
         flags = EXT4_GET_BLOCKS_IO_CONVERT_EXT;
     } else {
         flags = EXT4_GET_BLOCKS_IO_CREATE_EXT;
@@ -152,7 +156,8 @@ Ext2DoExtentExpand(
     if (Block)
         *Block = bh_got.b_blocknr;
 
-    Ext2SaveInode(IrpContext, Vcb, Mcb->Inode);
+    if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode))
+        return STATUS_UNEXPECTED_IO_ERROR;
 
     return STATUS_SUCCESS;
 }
@@ -201,7 +206,8 @@ Ext2ExpandExtent(
     Size->QuadPart = ((LONGLONG)(Start + Count)) << BLOCK_BITS;
 
     /* save inode whatever it succeeds to expand or not */
-    Ext2SaveInode(IrpContext, Vcb, Mcb->Inode);
+    if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode) && NT_SUCCESS(Status))
+        Status = STATUS_UNEXPECTED_IO_ERROR;
 
     return Status;
 }
@@ -247,7 +253,8 @@ Ext2TruncateExtent(
         Mcb->Inode->i_size = (loff_t)(Size->QuadPart);
 
     /* Save modifications on i_blocks field and i_size field of the inode. */
-    Ext2SaveInode(IrpContext, Vcb, Mcb->Inode);
+    if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode) && NT_SUCCESS(Status))
+        Status = STATUS_UNEXPECTED_IO_ERROR;
 
     return Status;
 }

@@ -89,7 +89,7 @@ Ext2JournalDirtyBuffer(
     IN struct buffer_head *bh
 );
 
-VOID
+BOOLEAN
 Ext2JournalRevokeBlocks(
     IN PEXT2_VCB        Vcb,
     IN ULONGLONG        Block,

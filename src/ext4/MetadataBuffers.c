@@ -145,11 +145,14 @@ Ext2FlushRange(IN PEXT2_VCB Vcb, LARGE_INTEGER s, LARGE_INTEGER e)
 NTSTATUS
 Ext2FlushVcb(IN PEXT2_VCB Vcb)
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS Status = (NTSTATUS)InterlockedCompareExchange(&Vcb->bd.bd_write_error, 0, 0);
     IO_STATUS_BLOCK IoStatus;
     LARGE_INTEGER        s = {0}, o;
     struct rb_node      *node;
     struct buffer_head  *bh;
+
+    if (!NT_SUCCESS(Status))
+        return Status;
 
     /* the free totals live in the Vcb: into the superblock first (on a
        journaled volume Ext2JournalFlush does it) */
@@ -271,6 +274,8 @@ Ext2SaveBlock ( IN PEXT2_IRP_CONTEXT    IrpContext,
 
     __try {
 
+        if (IsVcbReadOnly(Vcb))
+            __leave;
         bh = sb_getblk_zero(&Vcb->sb, (sector_t)Index);
 
         if (!bh) {
@@ -288,7 +293,7 @@ Ext2SaveBlock ( IN PEXT2_IRP_CONTEXT    IrpContext,
             fini_bh(&bh);
     }
 
-    return rc;
+    return rc && !IsVcbReadOnly(Vcb);
 }
 
 BOOLEAN
@@ -433,6 +438,9 @@ Ext2SaveBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
     struct buffer_head *bh = NULL;
     BOOLEAN             rc = 0;
 
+    if (IsVcbReadOnly(Vcb))
+        return FALSE;
+
     __try {
 
         while (size) {
@@ -471,6 +479,10 @@ Ext2SaveBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
             } __finally {
                 fini_bh(&bh);
             }
+
+            /* Registration can abort the journal on allocation failure. */
+            if (IsVcbReadOnly(Vcb))
+                __leave;
 
             buf = (PUCHAR)buf + len;
             offset = offset + len;

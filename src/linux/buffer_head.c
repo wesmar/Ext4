@@ -267,6 +267,7 @@ int submit_bh_pin(int rw, struct buffer_head *bh)
         NTSTATUS Status;
 
         if (IsVcbReadOnly(Vcb)) {
+            rc = -EROFS;
             goto errorout;
         }
 
@@ -292,6 +293,9 @@ int submit_bh_pin(int rw, struct buffer_head *bh)
         if (!NT_SUCCESS(Status)) {
             DbgPrint("ext4: write of block %I64u failed (%xh)\n",
                      (ULONGLONG)bh->b_blocknr, Status);
+            /* brelse is void: retain the error for SaveBuffer and recovery. */
+            InterlockedCompareExchange(&bdev->bd_write_error, Status, STATUS_SUCCESS);
+            SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
             rc = -EIO;
         }
     }
@@ -477,7 +481,7 @@ void ll_rw_block(int rw, int nr, struct buffer_head * bhs[])
 int bh_submit_read(struct buffer_head *bh)
 {
 	ll_rw_block(READ, 1, &bh);
-    return 0;
+    return buffer_uptodate(bh) ? 0 : -EIO;
 }
 
 int sync_dirty_buffer(struct buffer_head *bh)
@@ -519,8 +523,12 @@ void mark_buffer_dirty(struct buffer_head *bh)
 int sync_blockdev(struct block_device *bdev)
 {
     PEXT2_VCB Vcb = (PEXT2_VCB) bdev->bd_priv;
-    Ext2FlushVolume(NULL, Vcb, FALSE);
-    return 0;
+    NTSTATUS Status = (NTSTATUS)InterlockedCompareExchange(&bdev->bd_write_error, 0, 0);
+    if (NT_SUCCESS(Status))
+        Status = Ext2FlushVolume(NULL, Vcb, FALSE);
+    if (NT_SUCCESS(Status))
+        Status = Ext2FlushDisk(Vcb);
+    return NT_SUCCESS(Status) ? 0 : Ext2LinuxError(Status);
 }
 
 /*

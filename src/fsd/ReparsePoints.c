@@ -396,20 +396,53 @@ Ext2WriteSymlink (
 {
     NTSTATUS Status = STATUS_SUCCESS;
     PUCHAR   Data = (PUCHAR)(&Mcb->Inode->i_block[0]);
+    PUCHAR   BlockData = NULL;
+
+    if (BytesWritten)
+        *BytesWritten = 0;
+
+    /* A block-backed symlink occupies one block, including its terminator. */
+    if (!Size || Size >= BLOCK_SIZE)
+        return STATUS_NAME_TOO_LONG;
 
     if (Size >= EXT2_LINKLEN_IN_INODE) {
+        ULONGLONG Block = 0;
+        ULONG Mapped = 1;
+
+        BlockData = Ext2AllocatePool(PagedPool, BLOCK_SIZE, 'NL4E');
+        if (!BlockData) {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto out;
+        }
+        RtlZeroMemory(BlockData, BLOCK_SIZE);
+        RtlCopyMemory(BlockData, Buffer, Size);
 
         /* initialize inode i_block[] */
         if (0 == Mcb->Inode->i_blocks) {
             memset(Data, 0, EXT2_LINKLEN_IN_INODE);
             ClearFlag(Mcb->Inode->i_flags, EXT4_EXTENTS_FL);
-            Ext2SaveInode(IrpContext, Vcb, Mcb->Inode);
+            if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode)) {
+                Status = STATUS_UNEXPECTED_IO_ERROR;
+                goto out;
+            }
         }
 
-        Status = Ext2WriteInode(IrpContext, Vcb, Mcb,
-                                0, Buffer, Size,
-                                FALSE, BytesWritten);
+        /* Allocate explicitly: the original inode may still be a directory.
+           Write the whole zeroed block so reuse cannot leave a stale suffix. */
+        Mcb->Inode->i_size = Size;
+        Status = Ext2BlockMap(IrpContext, Vcb, Mcb, 0, TRUE, &Block, &Mapped);
+        if (NT_SUCCESS(Status) && (!Block || Block >= TOTAL_BLOCKS || Mapped != 1))
+            Status = STATUS_DISK_CORRUPT_ERROR;
+        if (NT_SUCCESS(Status) &&
+            !Ext2SaveBuffer(IrpContext, Vcb, (LONGLONG)(Block << BLOCK_BITS),
+                            BLOCK_SIZE, BlockData))
+            Status = STATUS_UNEXPECTED_IO_ERROR;
         if (!NT_SUCCESS(Status)) {
+            LARGE_INTEGER Zero = {0};
+            /* Remove a partially allocated target; preserve the write error. */
+            Ext2TruncateFile(IrpContext, Vcb, Mcb, &Zero);
+            if (BytesWritten)
+                *BytesWritten = 0;
             goto out;
         }
 
@@ -418,7 +451,9 @@ Ext2WriteSymlink (
         /* free inode blocks before writing in line */
         if (Mcb->Inode->i_blocks) {
             LARGE_INTEGER Zero = {0, 0};
-            Ext2TruncateFile(IrpContext, Vcb, Mcb, &Zero);
+            Status = Ext2TruncateFile(IrpContext, Vcb, Mcb, &Zero);
+            if (!NT_SUCCESS(Status))
+                goto out;
         }
 
         ClearFlag(Mcb->Inode->i_flags, EXT4_EXTENTS_FL);
@@ -427,13 +462,20 @@ Ext2WriteSymlink (
     }
 
     Mcb->Inode->i_size = Size;
-    Ext2SaveInode(IrpContext, Vcb, Mcb->Inode);
+    if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode)) {
+        Status = STATUS_UNEXPECTED_IO_ERROR;
+        if (BytesWritten)
+            *BytesWritten = 0;
+        goto out;
+    }
 
     if (BytesWritten) {
         *BytesWritten = Size;
     }
 
 out:
+    if (BlockData)
+        Ext2FreePool(BlockData, 'NL4E');
     return Status;
 }
 
@@ -576,6 +618,11 @@ Ext2SetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
            may include room for a terminator, and a symlink's i_size must
            be the text length or e2fsck declares it invalid */
         OemNameLength = OemName.Length;
+        /* Reject before truncating or changing the original inode. */
+        if (OemNameLength <= 0 || (ULONG)OemNameLength >= BLOCK_SIZE) {
+            Status = STATUS_NAME_TOO_LONG;
+            __leave;
+        }
         OemName.Buffer[OemName.Length] = '\0';
         for (i = 0;i < OemName.Length;i++) {
             if (OemName.Buffer[i] == '\\') {
@@ -587,6 +634,9 @@ Ext2SetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
         {
             LARGE_INTEGER zero = {0};
             Status = Ext2TruncateFile(IrpContext, Vcb, Mcb, &zero);
+        }
+        if (!NT_SUCCESS(Status)) {
+            __leave;
         }
 
         /* decrease dir count of group desc and vcb stat */
@@ -604,7 +654,10 @@ Ext2SetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
         }
 
         /* overwrite inode mode as type SYMLINK */
-        Ext2SaveInode(IrpContext, Vcb, Mcb->Inode);
+        if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode)) {
+            Status = STATUS_UNEXPECTED_IO_ERROR;
+            __leave;
+        }
         ClearFlag(Mcb->FileAttr, FILE_ATTRIBUTE_NORMAL);   /* NORMAL stands alone */
         SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_REPARSE_POINT);
 

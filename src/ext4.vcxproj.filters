@@ -503,9 +503,6 @@
     <ClInclude Include="volume\vcb_internal.h">
       <Filter>volume</Filter>
     </ClInclude>
-    <ClInclude Include="driver\driver_internal.h">
-      <Filter>driver</Filter>
-    </ClInclude>
     <ClInclude Include="ext4\extents_internal.h">
       <Filter>ext4</Filter>
     </ClInclude>

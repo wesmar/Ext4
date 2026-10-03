@@ -45,7 +45,6 @@ static int ext4_xattr_item_cmp(struct rb_node *_a,
 	int result;
 	struct ext4_xattr_item *a, *b;
 	a = container_of(_a, struct ext4_xattr_item, node);
-	a = container_of(_a, struct ext4_xattr_item, node);
 	b = container_of(_b, struct ext4_xattr_item, node);
 
 	if (a->is_data && !b->is_data)
@@ -189,33 +188,28 @@ void ext4_xattr_item_free(struct ext4_xattr_item *item)
 	kfree(item);
 }
 
-static void *ext4_xattr_entry_data(struct ext4_xattr_ref *xattr_ref,
-				   struct ext4_xattr_entry *entry,
-				   BOOL in_inode)
+/* Validate integer ranges before forming a pointer into disk metadata. */
+static void *ext4_xattr_entry_data(struct ext4_xattr_entry *entry,
+				   char *value_base, size_t value_space,
+				   size_t value_min)
 {
-	char *ret;
-	int block_size;
-	if (in_inode) {
-		struct ext4_xattr_ibody_header *header;
-		struct ext4_xattr_entry *first_entry;
-		int inode_size = xattr_ref->fs->InodeSize;
-		header = EXT4_XATTR_IHDR(xattr_ref->OnDiskInode);
-		first_entry = EXT4_XATTR_IFIRST(header);
+	size_t size = le32_to_cpu(entry->e_value_size);
+	size_t offset = le16_to_cpu(entry->e_value_offs);
+	size_t padded;
 
-		ret = ((char *)first_entry + le16_to_cpu(entry->e_value_offs));
-		if (ret + EXT4_XATTR_SIZE(le32_to_cpu(entry->e_value_size)) -
-			(char *)xattr_ref->OnDiskInode > inode_size)
-			ret = NULL;
-
-		return ret;
-
-	}
-	block_size = xattr_ref->fs->BlockSize;
-	ret = ((char *)xattr_ref->block_bh->b_data + le16_to_cpu(entry->e_value_offs));
-	if (ret + EXT4_XATTR_SIZE(le32_to_cpu(entry->e_value_size)) -
-			(char *)xattr_ref->block_bh->b_data > block_size)
-		ret = NULL;
-	return ret;
+	if (size > EXT4_XATTR_SIZE_MAX)
+		return NULL;
+	/* Empty values carry no bytes; their offset need not name storage. */
+	if (!size)
+		return value_base;
+	if (offset < value_min || offset > value_space ||
+	    size > value_space - offset)
+		return NULL;
+	/* The format limit above bounds the addition, including on 32-bit hosts. */
+	padded = (size + EXT4_XATTR_ROUND) & ~(size_t)EXT4_XATTR_ROUND;
+	if (padded > value_space - offset)
+		return NULL;
+	return value_base + offset;
 }
 
 /*
@@ -223,7 +217,9 @@ static void *ext4_xattr_entry_data(struct ext4_xattr_ref *xattr_ref,
  * inode body or the block (data), or a value inode (e_value_inum).
  */
 static int ext4_xattr_entry_item(struct ext4_xattr_ref *xattr_ref,
-				 struct ext4_xattr_entry *entry, BOOL in_inode)
+				 struct ext4_xattr_entry *entry, BOOL in_inode,
+				 char *value_base, size_t value_space,
+				 size_t value_min)
 {
 	struct ext4_xattr_item *item;
 	__u32 inum = le32_to_cpu(entry->e_value_block);
@@ -231,15 +227,15 @@ static int ext4_xattr_entry_item(struct ext4_xattr_ref *xattr_ref,
 	void *data = NULL;
 	int ret;
 
+	if (size > EXT4_XATTR_SIZE_MAX)
+		return -EFSCORRUPTED;
 	if (inum) {
-		/* only with the feature, and no larger than Linux writes them */
-		if (!ext4_has_feature_ea_inode(&xattr_ref->fs->sb) ||
-		    size > EXT4_XATTR_SIZE_MAX)
+		if (!ext4_has_feature_ea_inode(&xattr_ref->fs->sb))
 			return -EFSCORRUPTED;
 	} else {
-		data = ext4_xattr_entry_data(xattr_ref, entry, in_inode);
+		data = ext4_xattr_entry_data(entry, value_base, value_space, value_min);
 		if (!data)
-			return -EIO;
+			return -EFSCORRUPTED;
 	}
 
 	item = ext4_xattr_item_alloc(entry->e_name_index, EXT4_XATTR_NAME(entry),
@@ -271,57 +267,102 @@ static int ext4_xattr_entry_item(struct ext4_xattr_ref *xattr_ref,
 }
 
 /*
- * The entries of a table that ends at end: each one whole inside it, the
- * list closed by four zero bytes inside it too (Linux's check_xattrs). A
- * table that runs past its end is corrupt, not read on into memory that
- * is not the table.
+ * Validate the complete table before allocating items. Integer offsets
+ * bound every entry, its terminator and each padded local value. The
+ * earliest nonempty value must follow the complete names list.
  */
 static int ext4_xattr_fetch_entries(struct ext4_xattr_ref *xattr_ref,
-				    struct ext4_xattr_entry *entry, char *end,
+				    struct ext4_xattr_entry *entry,
+				    char *value_base, size_t value_space,
 				    BOOL in_inode)
 {
+	size_t first = (char *)entry - value_base;
+	size_t offset = first;
+	size_t value_min = value_space;
+	size_t names_end;
 	int ret;
 
 	for (;;) {
-		if ((char *)entry + sizeof(__u32) > end)
+		size_t entry_size;
+		size_t size;
+		__u32 inum;
+
+		if (offset > value_space || value_space - offset < sizeof(__u32))
 			return -EFSCORRUPTED;
+		entry = (struct ext4_xattr_entry *)(value_base + offset);
 		if (EXT4_XATTR_IS_LAST_ENTRY(entry))
-			return 0;
-		if ((char *)entry + sizeof(struct ext4_xattr_entry) > end ||
-		    (char *)EXT4_XATTR_NEXT(entry) > end)
+			break;
+		if (value_space - offset < sizeof(*entry))
 			return -EFSCORRUPTED;
-		ret = ext4_xattr_entry_item(xattr_ref, entry, in_inode);
+		entry_size = EXT4_XATTR_LEN(entry->e_name_len);
+		if (entry_size > value_space - offset)
+			return -EFSCORRUPTED;
+		size = le32_to_cpu(entry->e_value_size);
+		inum = le32_to_cpu(entry->e_value_block);
+		if (size > EXT4_XATTR_SIZE_MAX ||
+		    (inum && !ext4_has_feature_ea_inode(&xattr_ref->fs->sb)))
+			return -EFSCORRUPTED;
+		if (!inum && size) {
+			if (!ext4_xattr_entry_data(entry, value_base, value_space, 0))
+				return -EFSCORRUPTED;
+			value_min = min(value_min, (size_t)le16_to_cpu(entry->e_value_offs));
+		}
+		offset += entry_size;
+	}
+	names_end = offset + sizeof(__u32);
+	if (value_min < names_end)
+		return -EFSCORRUPTED;
+
+	for (offset = first; offset < names_end - sizeof(__u32);
+	     offset += EXT4_XATTR_LEN(entry->e_name_len)) {
+		entry = (struct ext4_xattr_entry *)(value_base + offset);
+		ret = ext4_xattr_entry_item(xattr_ref, entry, in_inode,
+					  value_base, value_space, names_end);
 		if (ret)
 			return ret;
-		entry = EXT4_XATTR_NEXT(entry);
 	}
+	return 0;
 }
 
 static int ext4_xattr_block_fetch(struct ext4_xattr_ref *xattr_ref)
 {
 	ASSERT(xattr_ref->block_bh->b_data);
+	if (xattr_ref->fs->BlockSize < sizeof(struct ext4_xattr_header) + sizeof(__u32))
+		return -EFSCORRUPTED;
 	/* not an xattr block (Linux refuses it the same way) */
 	if (EXT4_XATTR_BHDR(xattr_ref->block_bh)->h_magic != cpu_to_le32(EXT4_XATTR_MAGIC) ||
 	    EXT4_XATTR_BHDR(xattr_ref->block_bh)->h_blocks != cpu_to_le32(1))
 		return -EFSCORRUPTED;
 	return ext4_xattr_fetch_entries(xattr_ref, EXT4_XATTR_BFIRST(xattr_ref->block_bh),
-					xattr_ref->block_bh->b_data + xattr_ref->fs->BlockSize,
+					xattr_ref->block_bh->b_data, xattr_ref->fs->BlockSize,
 					FALSE);
 }
 
 static int ext4_xattr_inode_fetch(struct ext4_xattr_ref *xattr_ref)
 {
 	struct ext4_xattr_ibody_header *header = NULL;
+	size_t inode_size = xattr_ref->fs->InodeSize;
+	size_t extra;
+	size_t value_offset;
 
 	/* no room for the table, or no table: nothing in the body */
+	if (inode_size <= EXT4_GOOD_OLD_INODE_SIZE)
+		return 0;
+	if (inode_size - EXT4_GOOD_OLD_INODE_SIZE <
+	    sizeof(xattr_ref->OnDiskInode->i_extra_isize))
+		return -EFSCORRUPTED;
+	extra = le16_to_cpu(xattr_ref->OnDiskInode->i_extra_isize);
+	if (extra > inode_size - EXT4_GOOD_OLD_INODE_SIZE)
+		return -EFSCORRUPTED;
 	if (ext4_xattr_inode_space(xattr_ref) <
 	    (__s32)(sizeof(struct ext4_xattr_ibody_header) + sizeof(__u32)))
 		return 0;
 	header = EXT4_XATTR_IHDR(xattr_ref->OnDiskInode);
 	if (header->h_magic != cpu_to_le32(EXT4_XATTR_MAGIC))
 		return 0;
+	value_offset = EXT4_GOOD_OLD_INODE_SIZE + extra + sizeof(*header);
 	return ext4_xattr_fetch_entries(xattr_ref, EXT4_XATTR_IFIRST(header),
-					(char *)xattr_ref->OnDiskInode + xattr_ref->fs->InodeSize,
+					(char *)EXT4_XATTR_IFIRST(header), inode_size - value_offset,
 					TRUE);
 }
 
@@ -335,7 +376,7 @@ __s32 ext4_xattr_inode_space(struct ext4_xattr_ref *xattr_ref)
 	if (inode_size <= EXT4_GOOD_OLD_INODE_SIZE)
 		return 0;
 	size_rem = inode_size - EXT4_GOOD_OLD_INODE_SIZE -
-		   xattr_ref->OnDiskInode->i_extra_isize;
+		   le16_to_cpu(xattr_ref->OnDiskInode->i_extra_isize);
 	return size_rem > 0 ? size_rem : 0;
 }
 

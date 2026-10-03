@@ -67,15 +67,21 @@ ext4_fsblk_t ext4_new_meta_blocks(void *icb, handle_t *handle, struct inode *ino
 	return block;
 }
 
-void ext4_free_blocks(void *icb, handle_t *handle, struct inode *inode, void *fake,
+int ext4_free_blocks(void *icb, handle_t *handle, struct inode *inode, void *fake,
 		ext4_fsblk_t block, int count, int flags)
 {
     UNREFERENCED_PARAMETER(fake);
     UNREFERENCED_PARAMETER(handle);
     UNREFERENCED_PARAMETER(flags);
-	Ext2FreeBlock((PEXT2_IRP_CONTEXT)icb, inode->i_sb->s_priv, block, count);
-	inode->i_blocks -= count * (inode->i_sb->s_blocksize >> 9);
-	return;
+    NTSTATUS status = Ext2FreeBlock((PEXT2_IRP_CONTEXT)icb,
+                                   inode->i_sb->s_priv, block, count);
+    if (!NT_SUCCESS(status)) {
+        /* Do not commit an extent removal when its blocks were not freed. */
+        Ext2JournalAbortQuiet(inode->i_sb->s_priv);
+        return Ext2LinuxError(status);
+    }
+    inode->i_blocks -= (__u64)count * (inode->i_sb->s_blocksize >> 9);
+    return 0;
 }
 
 /*
@@ -123,7 +129,7 @@ static int ext4_remove_blocks(void *icb, handle_t *handle, struct inode *inode,
 		unsigned long num;
 		num = le32_to_cpu(ex->ee_block) + ext4_ext_get_actual_len(ex) - from;
 		ext4_fsblk_t start = ext4_ext_pblock(ex) + ext4_ext_get_actual_len(ex) - num;
-		ext4_free_blocks(icb, handle, inode, NULL, start, num, 0);
+        return ext4_free_blocks(icb, handle, inode, NULL, start, num, 0);
 	} else if (from == le32_to_cpu(ex->ee_block)
 			&& to <= le32_to_cpu(ex->ee_block) + ext4_ext_get_actual_len(ex) - 1) {
 	} else {
@@ -151,8 +157,7 @@ int ext4_ext_rm_idx(void *icb, handle_t *handle, struct inode *inode,
 	path->p_hdr->eh_entries = cpu_to_le16(le16_to_cpu(path->p_hdr->eh_entries)-1);
 	if ((err = ext4_ext_dirty(icb, handle, inode, path)))
 		return err;
-	ext4_free_blocks(icb, handle, inode, NULL, leaf, 1, 0);
-	return err;
+    return ext4_free_blocks(icb, handle, inode, NULL, leaf, 1, 0);
 }
 
 static int

@@ -506,6 +506,7 @@ Ext2OpenVolumeStream(IN PEXT2_VCB Vcb, IN OUT PEXT2_MOUNT_STATE State)
     Vcb->bd.bd_part = Vcb->PartitionInformation;
     Vcb->bd.bd_volume = Vcb->Volume;
     Vcb->bd.bd_priv = (void *) Vcb;
+    Vcb->bd.bd_write_error = STATUS_SUCCESS;
     memset(&Vcb->bd.bd_bh_root, 0, sizeof(struct rb_root));
     InitializeListHead(&Vcb->bd.bd_bh_free);
     KeInitializeSpinLock(&Vcb->bd.bd_bh_free_lock);

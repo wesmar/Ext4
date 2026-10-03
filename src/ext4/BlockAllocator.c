@@ -49,6 +49,9 @@ Ext2NewBlock(
     SearchGroups = (ULONG)((Limit - EXT2_FIRST_DATA_BLOCK - 1) / BLOCKS_PER_GROUP + 1);
 
     Ext2JournalJoin(Vcb);       /* before the lock: see Ext2JournalJoin */
+    if (IsVcbReadOnly(Vcb)) {
+        return STATUS_MEDIA_WRITE_PROTECTED;
+    }
 
     /* validate the hint group and hint block */
     if (GroupHint >= SearchGroups) {
@@ -105,7 +108,10 @@ Again:
         Ext2ClearGroupFlag(gd, EXT4_BG_BLOCK_UNINIT);
         ext4_block_bitmap_csum_set(sb, Group, gd, bh);
         mark_buffer_dirty(bh);
-        Ext2SaveGroup(IrpContext, Vcb, Group);
+        if (!Ext2SaveGroup(IrpContext, Vcb, Group)) {
+            Status = STATUS_UNEXPECTED_IO_ERROR;
+            goto errorout;
+        }
     } else {
         bh = sb_getblk(sb, bitmap_blk);
         if (!bh) {
@@ -156,7 +162,10 @@ Again:
                 After = RtlNumberOfClearBits(&BlockBitmap);
                 ext4_free_blks_set(sb, gd, (__u32)After);
                 ext4_block_bitmap_csum_set(sb, Group, gd, bh);
-                Ext2SaveGroup(IrpContext, Vcb, Group);
+                if (!Ext2SaveGroup(IrpContext, Vcb, Group)) {
+                    Status = STATUS_UNEXPECTED_IO_ERROR;
+                    goto errorout;
+                }
                 Ext2AdjustVcbStat(IrpContext, Vcb, After - Before, 0);
 
                 dwHint = 0;
@@ -224,7 +233,10 @@ Again:
         After = RtlNumberOfClearBits(&BlockBitmap);
         ext4_free_blks_set(sb, gd, (__u32)After);
         ext4_block_bitmap_csum_set(sb, Group, gd, bh);
-        Ext2SaveGroup(IrpContext, Vcb, Group);
+        if (!Ext2SaveGroup(IrpContext, Vcb, Group)) {
+            Status = STATUS_UNEXPECTED_IO_ERROR;
+            goto errorout;
+        }
         Ext2AdjustVcbStat(IrpContext, Vcb, After - Before, 0);
 
         /* validate the new allocated block number */
@@ -233,7 +245,10 @@ Again:
         /* Always remove dirty MCB to prevent Volume's lazy writing.
            Metadata blocks will be re-added during modifications.*/
         if (!Ext2RemoveBlockExtent(Vcb, NULL, *Block, *Number)) {
-            Ext2RemoveBlockExtent(Vcb, NULL, *Block, *Number);  /* once more: out of pool */
+            /* The old dirty range must not write into a new block owner. */
+            Ext2JournalAbortQuiet(Vcb);
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto errorout;
         }
 
         DEBUG(DL_INF, ("Ext2NewBlock:  Block %I64xh - %I64x allocated.\n",
@@ -294,7 +309,10 @@ Ext2FreeBlock(
 
     /* any journaled copy of these blocks must be revoked before they can
        be reused (invariant I3) */
-    Ext2JournalRevokeBlocks(Vcb, Block, Number);
+    if (IsVcbReadOnly(Vcb) || !Ext2JournalRevokeBlocks(Vcb, Block, Number)) {
+        Status = STATUS_UNEXPECTED_IO_ERROR;
+        goto errorout;
+    }
 
     Group = (ULONG)((Block - EXT2_FIRST_DATA_BLOCK) / BLOCKS_PER_GROUP);
     Index = (ULONG)((Block - EXT2_FIRST_DATA_BLOCK) % BLOCKS_PER_GROUP);
@@ -363,10 +381,35 @@ Again:
         /* return the run to the group; a run crossing groups is finished by the loop below */
         RtlInitializeBitMap(&BlockBitmap, (PULONG)bh->b_data, Length);
         Count = min(Length - Index, Number);
+        {
+            ULONGLONG First = EXT2_FIRST_DATA_BLOCK +
+                              (ULONGLONG)Group * BLOCKS_PER_GROUP;
+            ULONG Reserved = ext3_bg_has_super(sb, Group);
+            if (!EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_META_BG) ||
+                Group < (ULONGLONG)le32_to_cpu(Vcb->sbi.s_es->s_first_meta_bg) *
+                        Vcb->sbi.s_desc_per_block) {
+                if (Reserved)
+                    Reserved += ext4_bg_num_gdb(sb, Group) +
+                        le16_to_cpu(Vcb->SuperBlock->s_reserved_gdt_blocks);
+            } else {
+                Reserved += ext4_bg_num_gdb(sb, Group);
+            }
+            /* Reject reserved metadata before changing any allocation bit. */
+            if (Block < First + Reserved ||
+                (ext4_block_bitmap(sb, gd) >= Block &&
+                 ext4_block_bitmap(sb, gd) - Block < Count) ||
+                (ext4_inode_bitmap(sb, gd) >= Block &&
+                 ext4_inode_bitmap(sb, gd) - Block < Count) ||
+                (Block < ext4_inode_table(sb, gd) + Vcb->sbi.s_itb_per_group &&
+                 ext4_inode_table(sb, gd) < Block + Count) ||
+                !RtlAreBitsSet(&BlockBitmap, Index, Count)) {
+                Status = STATUS_DISK_CORRUPT_ERROR;
+                goto errorout;
+            }
+        }
         RtlClearBits(&BlockBitmap, Index, Count);
 
-        /* update group description table; a block freed twice changes
-           nothing, so the total follows the bitmap, not Count */
+        /* Reconcile the descriptor with the validated bitmap transition. */
         {
             LONGLONG Before = ext4_free_blks_count(sb, gd);
             LONGLONG After = RtlNumberOfClearBits(&BlockBitmap);
@@ -380,11 +423,16 @@ Again:
         /* the bitmap block is dirty */
         mark_buffer_dirty(bh);
         fini_bh(&bh);
-        Ext2SaveGroup(IrpContext, Vcb, Group);
+        if (!Ext2SaveGroup(IrpContext, Vcb, Group)) {
+            Status = STATUS_UNEXPECTED_IO_ERROR;
+            goto errorout;
+        }
 
         /* remove dirty MCB to prevent Volume's lazy writing. */
         if (!Ext2RemoveBlockExtent(Vcb, NULL, Block, Count)) {
-            Ext2RemoveBlockExtent(Vcb, NULL, Block, Count);     /* once more: out of pool */
+            Ext2JournalAbortQuiet(Vcb);
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto errorout;
         }
 
         /* the superblock total follows this group's change */

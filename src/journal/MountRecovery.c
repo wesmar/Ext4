@@ -165,15 +165,22 @@ Ext2RecoverJournal(
     if (replayed) {
 
         /* reload super_block and group_description */
-        Ext2RefreshSuper(IrpContext, Vcb);
-        Ext2RefreshGroup(IrpContext, Vcb);
+        if (!Ext2RefreshSuper(IrpContext, Vcb) ||
+            !Ext2RefreshGroup(IrpContext, Vcb)) {
+            rc = -EIO;
+            goto errorout;
+        }
 
         /* clear recover flag in sb */
         ClearLongFlag(
             Vcb->SuperBlock->s_feature_incompat,
             EXT3_FEATURE_INCOMPAT_RECOVER);
-        Ext2SaveSuper(IrpContext, Vcb);
-        sync_blockdev(bd);
+        if (!Ext2SaveSuper(IrpContext, Vcb) || sync_blockdev(bd) != 0) {
+            SetLongFlag(Vcb->SuperBlock->s_feature_incompat,
+                        EXT3_FEATURE_INCOMPAT_RECOVER);
+            rc = -EIO;
+            goto errorout;
+        }
         ClearLongFlag(Vcb->Flags, VCB_JOURNAL_RECOVER);
     }
 

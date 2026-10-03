@@ -89,6 +89,22 @@ foreach ($d in $DriveList) {
     Check 'create directory symlink'       $true             ([IO2]::CreateSymbolicLink("$W\dir-link", 'dir', 1))
     Check 'create deep relative symlink'   $true             ([IO2]::CreateSymbolicLink("$W\deep-link", 'dir\inner.txt', 0))
     Check 'read through new symlink'       "from windows"    (Try { [IO.File]::ReadAllText("$W\rel-link").Trim() })
+    # Cross the 60-byte fast-symlink boundary and the block-capacity boundary.
+    $blockSize = (Get-Volume -DriveLetter $d).AllocationUnitSize
+    foreach ($length in 59, 60, 61, 127, 255, 511, 1023, 2047, 4095, 4096) {
+        $remaining = $length
+        $pieces = [Collections.Generic.List[string]]::new()
+        while ($remaining -gt 200) {
+            $pieces.Add(('a' * 199))
+            $remaining -= 200
+        }
+        $pieces.Add(('b' * $remaining))
+        $target = $pieces -join '\'
+        Check "create $length-byte symlink" ($length -lt $blockSize) ([IO2]::CreateSymbolicLink("$W\long-link-$length", $target, 0))
+        if ($length -eq 127) {
+            Check 'create block-backed directory symlink' $true ([IO2]::CreateSymbolicLink("$W\long-dir-link", $target, 1))
+        }
+    }
     Check 'create hard link'               $true             ([IO2]::CreateHardLink("$W\hard.txt", "$W\file.txt", [IntPtr]::Zero))
     [IO.File]::WriteAllText("$W\timed.txt", "t`n")
     [IO.File]::SetLastWriteTimeUtc("$W\timed.txt", [DateTime]::SpecifyKind([DateTime]'1970-01-01', 'Utc').AddSeconds(1600000000).AddTicks(1234567))

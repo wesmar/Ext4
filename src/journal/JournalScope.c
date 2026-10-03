@@ -303,7 +303,8 @@ Ext2JournalIsActive(IN PEXT2_VCB Vcb)
 
 /*
  * mark_buffer_dirty() hook: file the buffer into the running transaction.
- * Returns FALSE when the engine is not active (legacy path applies).
+ * Returns TRUE when the engine owns the operation, including an abort.
+ * Only an inactive engine permits the legacy dirty-buffer path.
  */
 BOOLEAN
 Ext2JournalDirtyBuffer(IN PEXT2_VCB Vcb, IN struct buffer_head *bh)
@@ -314,19 +315,22 @@ Ext2JournalDirtyBuffer(IN PEXT2_VCB Vcb, IN struct buffer_head *bh)
     KIRQL           irql;
     BOOLEAN         request = FALSE;
 
-    if (!J || !(J->Flags & JF_ACTIVE) || (J->Flags & JF_ABORTED))
+    if (!J || !(J->Flags & JF_ACTIVE))
         return FALSE;
+    /* An aborted journal must not fall through to unjournaled writes. */
+    if (J->Flags & JF_ABORTED)
+        return TRUE;
 
     r = ExAllocateFromNPagedLookasideList(&J->RecLookaside);
     if (!r) {
         JnlAbort(J, STATUS_INSUFFICIENT_RESOURCES);
-        return FALSE;
+        return TRUE;
     }
 
     /* count this thread's handle in the running transaction */
     if (JnlActivate(J) == NULL) {
         ExFreeToNPagedLookasideList(&J->RecLookaside, r);
-        return FALSE;
+        return TRUE;
     }
 
     JnlLock(J, irql);
@@ -334,7 +338,7 @@ Ext2JournalDirtyBuffer(IN PEXT2_VCB Vcb, IN struct buffer_head *bh)
     if (!(J->Flags & JF_ACTIVE) || (J->Flags & JF_ABORTED)) {
         JnlUnlock(J, irql);
         ExFreeToNPagedLookasideList(&J->RecLookaside, r);
-        return FALSE;
+        return TRUE;
     }
 
     t = J->Running;
@@ -384,18 +388,20 @@ Ext2JournalDirtyBuffer(IN PEXT2_VCB Vcb, IN struct buffer_head *bh)
  * live log window must be revoked so that replay does not resurrect old
  * metadata into a block that may be reused for data (invariant I3).
  */
-VOID
+BOOLEAN
 Ext2JournalRevokeBlocks(IN PEXT2_VCB Vcb, IN ULONGLONG Block, IN ULONG Count)
 {
     PEXT2_JOURNAL        J = Vcb->Journal;
     struct block_device *bdev = &Vcb->bd;
     ULONG                i;
 
-    if (!J || !(J->Flags & JF_ACTIVE) || (J->Flags & JF_ABORTED))
-        return;
+    if (!J || !(J->Flags & JF_ACTIVE))
+        return TRUE;
+    if (J->Flags & JF_ABORTED)
+        return FALSE;
 
     if (JnlActivate(J) == NULL)
-        return;
+        return FALSE;
 
     for (i = 0; i < Count; i++) {
 
@@ -454,6 +460,13 @@ Ext2JournalRevokeBlocks(IN PEXT2_VCB Vcb, IN ULONGLONG Block, IN ULONG Count)
 
         t = J->Running;
 
+        if (!r && !bh->b_jrec && bh->b_jrefs > 0) {
+            JnlUnlock(J, irql);
+            put_bh(bh);
+            JnlAbort(J, STATUS_INSUFFICIENT_RESOURCES);
+            return FALSE;
+        }
+
         if (bh->b_jrec) {
             /* dirtied in this transaction: log a revoke instead of data */
             PEXT2_JREC cur = (PEXT2_JREC)bh->b_jrec;
@@ -485,4 +498,5 @@ Ext2JournalRevokeBlocks(IN PEXT2_VCB Vcb, IN ULONGLONG Block, IN ULONG Count)
             ExFreeToNPagedLookasideList(&J->RecLookaside, r);
         put_bh(bh);
     }
+    return TRUE;
 }

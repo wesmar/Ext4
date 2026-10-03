@@ -22,7 +22,7 @@
 </div>
 > **Engineering status**
 >
-> `ext4.sys` provides native ext2/ext3/ext4 read/write access on bare-metal Windows systems and in virtual machines. The current build passed the documented Windows/Linux validation, including Driver Verifier and repeated unload testing. Engineering refinements continue. Microsoft production signing is pending; loading uses KVC or DrvLoader on systems you administer. Keep a backup of important data.
+> `ext4.sys` provides native ext2/ext3/ext4 read/write access on bare-metal Windows systems and in virtual machines. Validation includes Windows/Linux media checks, Driver Verifier and repeated unload testing; the latest write-path changes passed targeted regression and fault-injection models. Engineering refinements continue, including the crash-consistency work listed below. Microsoft production signing is pending; loading uses KVC or DrvLoader on systems you administer. Keep a backup of important data.
 
 > **Repository policy:** the release archive is not password-protected. Git tracks the active source, project files, tests and documentation. Build outputs, symbols, local tooling, virtual disks and test logs stay outside the repository. Test passphrase defaults in two PowerShell scripts are represented by `<TEST_LUKS_PASSPHRASE>`.
 
@@ -99,16 +99,16 @@ Design rules the code follows:
 
 ## Code Lineage and Redesign
 
-Parts of the codebase and several core algorithms come from four open-source projects. They provide the ext file-system model, Linux on-disk semantics, Windows file-system scaffolding and the original extended-attribute implementation. Because these components remain in the combined work, the complete source is distributed under the GNU General Public License version 2 (`GPL-2.0-only`).
+I replaced or substantially rewrote the active Windows paths for writes, allocation, journaling, mount and unload, security checks and hot-path lookup. I organised the modules by responsibility and verified their behaviour with production-code models and Windows-to-Linux media checks. Mathematical precision guides this work: explicit invariants, bounded state transitions, clear ownership and measured hot paths.
 
-| Project | Authors | Retained foundation |
+The table below records the origins of retained code, data structures and algorithms. Their attribution and licence notices remain with the source. The combined work is distributed under the GNU General Public License version 2 (`GPL-2.0-only`).
+
+| Source project | Attribution | Retained components and lineage |
 |---|---|---|
-| **Ext2Fsd** | Matt Wu, with KaHo Ng | IRP dispatch scaffolding, FCB/MCB model, cache manager integration and ext2/ext3 handling |
-| **Ext4Fsd** | Bo Branten | ext4 structures, metadata checksums, jbd2 support with 64-bit block numbers and Visual Studio project lineage |
+| **Ext2Fsd** | Matt Wu, with KaHo Ng | Windows FSD and ext2/ext3 lineage, including the FCB/MCB model |
+| **Ext4Fsd** | Bo Branten | ext4 structures, checksum and jbd2 lineage, Visual Studio project ancestry |
 | **Linux kernel** — `fs/ext4`, `fs/jbd2`, `lib/rbtree.c`, `fs/nls` | Linus Torvalds, Stephen Tweedie, Red Hat, Cluster File Systems and the ext4 / jbd2 developers | Extent-tree, htree, checksum and journal algorithms; character set tables |
 | **lwext4** | Grzegorz Kostka, KaHo Ng | The original extended-attribute implementation; its BSD notice remains in `ext4_xattr.h` |
-
-My standard for the redesign was mathematical precision: explicit invariants, bounded state transitions, clear ownership, measured hot paths and reproducible failures. The resulting code replaces or substantially rewrites the active paths for writes, allocation, journaling, mount and unload, security checks and hot-path lookup.
 
 What changed on the way to `ext4.sys`, in short:
 
@@ -218,7 +218,7 @@ Rules the engine keeps, each one learned from a failure it caused:
 5. **A required journal must be usable.** An external, corrupt or unreplayable journal mounts the volume read-only. Ext2, whose format has no journal, remains writable through its non-journaled path.
 6. **Lifetime follows ownership.** Stream teardown stops the journal session. The VCB retains the engine until stream, inode-map, buffer-head and group-cache teardown is complete; entering an IRP scope touches only thread-owned state.
 
-Verified by crashing the VM in the middle of heavy metadata churn: Linux `e2fsck` replays the log and finds nothing to fix; the driver's own replay at the next mount leaves the volume just as clean.
+Earlier crash-injection runs during metadata churn finished with clean Linux and driver replay. Those scenarios did not isolate freeing a block and immediately reusing it before the freeing transaction commits; that case remains open in [Known Limitations](#known-limitations).
 
 ---
 
@@ -226,7 +226,7 @@ Verified by crashing the VM in the middle of heavy metadata churn: Linux `e2fsck
 
 Windows programs usually set the file size first and write the data afterwards — `CopyFile` does exactly that. On ext4 the size change allocates **unwritten extents**: the blocks are reserved and contiguous, but they read as zeros until data is written into them. The write then converts exactly the blocks it covers.
 
-The conversion is where the old code went wrong, twice:
+The tests exposed several faults in allocation, conversion and resize:
 
 | Problem | Effect | Fix |
 |---|---|---|
@@ -261,7 +261,7 @@ The design reduces work per I/O and contention between independent files.
 
 Lock stripes use four stripes per logical processor across all processor groups, rounded up to a power of two and capped by the volume's group count. Stripes occupy separate cache lines. Workloads concentrated on one directory or block group remain a separate contention case.
 
-For *T* concurrent holders choosing independently and uniformly among *S* stripes, the collision union bound is min(1, (*T* − 1) / *S*). This states the assumptions explicitly; benchmark workloads determine the actual contention. LUKS workers are bounded by CPU count and a fixed buffer-memory budget.
+For one specified holder among *T* concurrent holders choosing independently and uniformly among *S* stripes, the probability that it shares a stripe with another holder is bounded by min(1, (*T* − 1) / *S*). This is a per-holder bound, not the probability of any collision across all pairs. Benchmark workloads determine the actual contention. LUKS workers are bounded by CPU count and a fixed buffer-memory budget.
 
 `tests/copybench.ps1` measures preallocated writes, streaming writes, copies and cached reads. Completed writes and copies are checked with SHA-256 outside the timed interval. `tests/fsbench.ps1` covers small-file operations, append-and-flush, random I/O and sequential I/O; uncached reads use aligned native buffers.
 
@@ -294,13 +294,13 @@ The volume manager creates a volume device for every partition, but the mount ma
 
 `volume\DriveLetters.c` listens for both hidden-volume and mounted-device arrivals, including devices already present when the driver loads. It opens each device once so the I/O manager asks the registered file systems to mount it. During reload, Mount Manager may remember `D:` after the live DOS link has gone. The worker restores that link before the open, breaking the wait between a missing path and an unmounted file system. After a successful mount, the driver registers the mounted-device interface on the volume PDO. Mount Manager then creates the `Volume{GUID}` link, restores its recorded letter and removes both when the device leaves. A new volume receives the first free letter from `D:`. `mountvol` and Disk Management see the same assignments.
 
-Hot unplug with a handle open withdraws the letters in under half a second; replugging brings them back just as fast.
+Hot-plug tests with an open handle withdrew the letters on removal and restored them after replug. Timing depends on the storage stack and outstanding references.
 
 ---
 
 ## Encrypted Volumes — LUKS
 
-Most Linux installations encrypt their partitions with LUKS (dm-crypt): Fedora, Ubuntu and Debian with full-disk encryption, Qubes OS always. `ext4.sys` opens them the way Linux does, split the way Linux splits it:
+LUKS (dm-crypt) is used by encrypted Fedora, Ubuntu and Debian installations, as well as Qubes OS. `ext4.sys` separates user-mode key derivation from the kernel-mode encrypted device:
 
 ```mermaid
 flowchart TB
@@ -374,7 +374,7 @@ One responsibility per folder, one header per folder, `/W4 /WX` clean.
 Ext4/
 ├── src/
 │   ├── driver/        # DriverEntry, IRP dispatch and work queue, registry, unload drain thread
-│   ├── fsd/           # One file per IRP family: create, read, write, cleanup, close,
+│   ├── fsd/           # IRP handlers split by responsibility: create, read, write, cleanup, close,
 │   │                  # fileinfo, dirctl, fsctl, lock, ea, reparse, pnp, fast I/O ...
 │   ├── volume/        # Mount and verify, VCB, dismount, volume lock, drive letters,
 │   │                  # LUKS disk devices (LuksVolume.c), LVM volumes inside them (LvmVolume.c)
@@ -404,7 +404,7 @@ The driver and control tool are split by responsibility. LUKS header formats, ke
 
 ## Testing and Validation
 
-The current source build is warning-free under `/W4 /WX`. Following the wide-address conversion and a journal-lifetime fix, the Release x64 driver passed the full Windows/Linux matrix with Driver Verifier enabled for `ext4.sys`. The latest matrix completed **18 sections in about five minutes**, including **480 shrink/regrow cases** across plain and LUKS2 volumes. Fixture preparation, model runs and targeted regressions are measured separately.
+The current source build is warning-free under `/W4 /WX`. The wide-address build, including the journal-lifetime fix, passed the full Windows/Linux matrix with Driver Verifier enabled for `ext4.sys`. That full matrix completed **18 sections in about five minutes**, including **480 shrink/regrow cases** across plain and LUKS2 volumes. The subsequent write-path fixes passed focused Windows/Linux regression, clean media checks, concurrent-access stop/start cycles and production-code fault models. Fixture preparation, model runs and targeted regressions are measured separately.
 
 Lifecycle validation then covered **80 consecutive stop/start cycles**, **20 more cycles with concurrent open/read/close workers**, and **10 concurrent-access cycles with the larger-than-16-TiB fixture attached**. Written proof data survived, drive letters returned and no new bugcheck occurred in these runs. **Three clean Windows restarts** with mounted test volumes also preserved their proof data. Verifier remained enabled for these correctness checks.
 
@@ -413,6 +413,8 @@ The production run-map model passed **32 reproducible seeds: 1.6 million randomi
 The full matrix covers functional operations, security boundaries, parallel I/O, namespace races, hot-plug, LUKS1/LUKS2, read-only LVM and Linux feature interoperability. Targeted fixtures check high physical data blocks, extent-tree blocks, external EA blocks, allocation at the legacy-pointer boundary, ENOSPC rollback and rejected logical-size overflow. Linux reported clean metadata and matching contents after Windows writes; the driver-written fixtures were checked without repair.
 
 Real **ext2 with 1 KiB blocks** and **ext3 with 4 KiB blocks** also passed a separate write smoke test: Linux-seeded data, an 8 MiB-plus payload using direct, single- and double-indirect blocks, rename, delete, shrink/regrow with zero-tail checks, service reload and independent Linux read-back. Both finished with clean `e2fsck -fn`. This is targeted compatibility coverage, rather than the complete ext4 feature matrix.
+
+The write-path review added fault-injection models that compile the production block builder, symlink writer, journal registration, revoke and device-sync functions. They check sparse-run boundaries, paging writes beyond EOF, failed inode and buffer saves, allocation failures and error propagation through recovery flushes. The xattr parser has a separate malformed-input model. These user-mode models pass on x86 and x64; kernel runtime validation remains x64. Windows-created block-backed symlinks were also checked by Linux on 1 KiB and 4 KiB volumes, including target contents, the trailing terminator, boundary rejection and clean `e2fsck -fn` without repair.
 
 I develop this driver as a solo project. The validation combines several hours of iterative builds and targeted diagnosis with repeatable model and cross-platform checks. A short final matrix is the regression checkpoint; the retained build symbols, seeds and logs are what make a failure reproducible.
 
@@ -446,6 +448,13 @@ pwsh tests\robust.ps1
 
 # Production range-map model, 32 deterministic seeds
 pwsh tests\run-map-model.ps1 -Rounds 32
+
+# Production write-path and journal error contracts (runs both models)
+pwsh tests\journal-error-model.ps1 -Architecture x64
+pwsh tests\journal-error-model.ps1 -Architecture x86
+
+# Malformed extended-attribute parser inputs
+pwsh tests\xattr-model.ps1
 
 # One dedicated ext2/ext3 write and independent Linux read-back run
 pwsh tests\legacy-vm.ps1
@@ -512,6 +521,7 @@ The old 16 TiB volume ceiling is removed. Disk-format and per-file bounds are de
 3. **POSIX permissions are mapped, not enforced as ACLs.** Ownership can be overridden per volume (`uid`, `gid` in the registry); Windows security descriptors are not stored.
 4. **LUKS and LVM.** Ciphers other than AES-XTS are not supported. Logical volumes inside LUKS open read-only, linear (one stripe) and thin ones; striped, mirrored and RAID volumes, a volume group spanning several containers, and a partition table inside a volume (the root volumes of Qubes OS qubes) are not handled — the private volumes of Qubes OS qubes hold ext4 directly and open.
 5. **x64 only.** Only x64 is built and tested.
+6. **Crash-consistency work remains.** Revoke failures now stop block freeing, but transaction-bound delayed reuse of freed blocks is still an open allocator task. Passing clean-shutdown and reload tests does not establish correctness for a power loss between freeing and reusing a block. Metadata-range checks during freeing cover the current group descriptor and reserved group prefix; volume-wide protection for relocated `flex_bg` metadata still needs a dedicated system-zone map.
 
 ---
 
@@ -616,7 +626,7 @@ Set-Location .\Ext4
 
 The project compiles with `/W4 /WX /std:clatest` in Release and Debug — no warnings, and none suppressed to get there. After a successful build `obj\` is deleted and the PDB files move to `symbols\`; `bin\` contains `ext4.sys` and `ext4ctl.exe`.
 
-The two configurations differ in what they carry, not in how they behave. `DBG`, set by the WDK for Debug only, switches `EXT2_DEBUG`: the Debug build adds assertions, a breakpoint at every internal inconsistency, level-filtered tracing of each IRP with process names and `NTSTATUS` texts, guard bytes and accounting on every pool allocation, and the full object and IRP statistics (`IOCTL_APP_QUERY_PERFSTAT`). The Release build keeps error messages and the one counter the driver itself runs on (cached names, which drive the name-cache reaper) - no per-operation statistics, no shared counters every CPU writes to. The current Release driver is under 1 MB; most of it is character set tables.
+The configurations share the file-system algorithms; Debug adds diagnostic checks and tracing. `DBG`, set by the WDK for Debug only, switches `EXT2_DEBUG`: the Debug build adds assertions, a breakpoint at every internal inconsistency, level-filtered tracing of each IRP with process names and `NTSTATUS` texts, guard bytes and accounting on every pool allocation, and the full object and IRP statistics (`IOCTL_APP_QUERY_PERFSTAT`). The Release build keeps error messages and the one counter the driver itself runs on (cached names, which drive the name-cache reaper) - no per-operation statistics, no shared counters every CPU writes to. The current Release driver is under 1 MB; most of it is character set tables.
 
 | Output | Description |
 |---|---|
@@ -651,6 +661,6 @@ GNU General Public License version 2 — see [LICENSE.md](LICENSE.md) and [COPYI
 
 - **Author:** Marek Wesołowski (WESMAR)
 - **Contact:** marek@wesolowski.eu.org
-- **Based on:** Ext2Fsd by Matt Wu, Ext4Fsd by Bo Branten, and the Linux ext4 / jbd2 code
+- **Retained code and algorithms:** see [Code Lineage and Redesign](#code-lineage-and-redesign)
 - **Build host:** Windows 10/11 x64, MSVC + WDK, C23
 - **Runtime:** Windows 10 / 11 x64

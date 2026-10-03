@@ -225,7 +225,6 @@
     <ClInclude Include="core\core_internal.h" />
     <ClInclude Include="volume\crypt_internal.h" />
     <ClInclude Include="volume\vcb_internal.h" />
-    <ClInclude Include="driver\driver_internal.h" />
     <ClInclude Include="ext4\extents_internal.h" />
     <ClInclude Include="ext4\htree_internal.h" />
     <ClInclude Include="ext4\xattr_internal.h" />

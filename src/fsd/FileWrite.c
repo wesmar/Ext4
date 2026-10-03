@@ -89,8 +89,24 @@ Ext2WriteInode (
         }
 
         if (Chain == NULL) {
-            Status = STATUS_SUCCESS;
+            Status = Size ? STATUS_DISK_CORRUPT_ERROR : STATUS_SUCCESS;
             __leave;
+        }
+
+        {
+            PEXT2_EXTENT Extent;
+            ULONGLONG Covered = 0;
+            for (Extent = Chain; Extent; Extent = Extent->Next) {
+                if (Extent->Offset != Covered || !Extent->Length) {
+                    Status = STATUS_DISK_CORRUPT_ERROR;
+                    __leave;
+                }
+                Covered += Extent->Length;
+            }
+            if (Covered < Size) {
+                Status = STATUS_DISK_CORRUPT_ERROR;
+                __leave;
+            }
         }
 
         if (bDirectIo) {
@@ -118,6 +134,7 @@ Ext2WriteInode (
                             Extent->Length,
                             (PVOID)((PUCHAR)Buffer + Extent->Offset)
                         )) {
+                    Status = STATUS_UNEXPECTED_IO_ERROR;
                     __leave;
                 }
             }
@@ -341,13 +358,37 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
             }
             PagingIoResourceAcquired = TRUE;
 
+            /* Discard paging writes entirely beyond EOF before subtracting.
+               The last partial page is bounded by the logical file size. */
+            ReturnedLength = Ext4PagingWriteLength(ByteOffset.QuadPart,
+                Fcb->Header.FileSize.QuadPart, Length);
+            if (!ReturnedLength) {
+                Status = STATUS_SUCCESS;
+                Irp->IoStatus.Information = 0;
+                __leave;
+            }
+
             /* a mapped view written to a file Linux keeps inline: the
                cached writes would have converted it, a mapping did not */
             if (Ext4IsInline(Fcb->Inode)) {
+                ExReleaseResourceLite(&Fcb->PagingIoResource);
+                PagingIoResourceAcquired = FALSE;
+                ExAcquireResourceExclusiveLite(&Fcb->PagingIoResource, TRUE);
+                PagingIoResourceAcquired = TRUE;
+                /* Another writer may have converted the inode meanwhile. */
                 Status = Ext4UninlineFile(IrpContext, Vcb, Fcb->Mcb, TRUE);
                 if (!NT_SUCCESS(Status)) {
                     __leave;
                 }
+                ExConvertExclusiveToSharedLite(&Fcb->PagingIoResource);
+            }
+
+            ReturnedLength = Ext4PagingWriteLength(ByteOffset.QuadPart,
+                Fcb->Header.FileSize.QuadPart, Length);
+            if (!ReturnedLength) {
+                Status = STATUS_SUCCESS;
+                Irp->IoStatus.Information = 0;
+                __leave;
             }
 
             if ( (ByteOffset.QuadPart + Length) > Fcb->Header.FileSize.QuadPart) {
@@ -390,10 +431,14 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
             /* inline data (Linux keeps small files in the inode) goes to a
                block before anything is written */
             if (Ext4IsInline(Fcb->Inode)) {
+                ExAcquireResourceExclusiveLite(&Fcb->PagingIoResource, TRUE);
+                PagingIoResourceAcquired = TRUE;
                 Status = Ext4UninlineFile(IrpContext, Vcb, Fcb->Mcb, TRUE);
                 if (!NT_SUCCESS(Status)) {
                     __leave;
                 }
+                ExReleaseResourceLite(&Fcb->PagingIoResource);
+                PagingIoResourceAcquired = FALSE;
             }
 
             /* Do flushing for such cases */
@@ -492,7 +537,10 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                 }
 
                 Fcb->Header.FileSize.QuadPart = Fcb->Inode->i_size = ByteOffset.QuadPart + Length;
-                Ext2SaveInode(IrpContext, Vcb, Fcb->Inode);
+                if (!Ext2SaveInode(IrpContext, Vcb, Fcb->Inode)) {
+                    Status = STATUS_UNEXPECTED_IO_ERROR;
+                    __leave;
+                }
 
                 if (CcIsFileCached(FileObject)) {
                     CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
@@ -711,12 +759,6 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
         }
     }
 
-    DEBUG(DL_IO, ("Ext2WriteFile: %wZ written at Offset=%I64xh Length=%xh PagingIo=%d Nocache=%d "
-                  "RetLen=%xh VDL=%I64xh FileSize=%I64xh i_size=%I64xh Status=%xh\n",
-                  &Fcb->Mcb->ShortName, ByteOffset, Length, PagingIo, Nocache, ReturnedLength,
-                  Fcb->Header.ValidDataLength.QuadPart,Fcb->Header.FileSize.QuadPart,
-                  Fcb->Inode->i_size, Status));
-
     return Status;
 }
 
@@ -794,6 +836,13 @@ Ext2Write (IN PEXT2_IRP_CONTEXT IrpContext)
 
             if (IsVcbReadOnly(Vcb)) {
                 Status = STATUS_MEDIA_WRITE_PROTECTED;
+                __leave;
+            }
+
+            /* Recovery may flush the internal stream, never user data. */
+            if (IsFlagOn(Vcb->Flags, VCB_WRITE_TRANSITION) &&
+                FileObject != Vcb->Volume) {
+                Status = STATUS_DEVICE_NOT_READY;
                 __leave;
             }
 

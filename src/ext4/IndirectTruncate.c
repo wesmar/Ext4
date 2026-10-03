@@ -235,7 +235,11 @@ Ext2TruncateIndirectFast(
             if (-1 == Lba || Vba == 0 || Length <= 0)
                 continue;
             /* now do data block free */
-            Ext2FreeBlock(IrpContext, Vcb, (ULONG)(Lba - 1), (ULONG)Length);
+            Status = Ext2FreeBlock(IrpContext, Vcb, (ULONGLONG)(Lba - 1), (ULONG)Length);
+            if (!NT_SUCCESS(Status)) {
+                Ext2JournalAbortQuiet(Vcb);
+                goto errorout;
+            }
         }
     }
 
@@ -246,7 +250,11 @@ Ext2TruncateIndirectFast(
             if (-1 == Lba || Vba == 0 || Length <= 0)
                 continue;
             /* now do meta block free */
-            Ext2FreeBlock(IrpContext, Vcb, (ULONG)(Lba - 1), (ULONG)Length);
+            Status = Ext2FreeBlock(IrpContext, Vcb, (ULONGLONG)(Lba - 1), (ULONG)Length);
+            if (!NT_SUCCESS(Status)) {
+                Ext2JournalAbortQuiet(Vcb);
+                goto errorout;
+            }
         }
     }
 
@@ -345,7 +353,8 @@ errorout:
     /* save inode */
     if (Mcb->Inode->i_size > (loff_t)(Size->QuadPart))
         Mcb->Inode->i_size = (loff_t)(Size->QuadPart);
-    Ext2SaveInode(IrpContext, Vcb, Mcb->Inode);
+    if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode) && NT_SUCCESS(Status))
+        Status = STATUS_UNEXPECTED_IO_ERROR;
 
     return Status;
 }
