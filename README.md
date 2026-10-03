@@ -626,7 +626,7 @@ Set-Location .\Ext4
 
 The project compiles with `/W4 /WX /std:clatest` in Release and Debug — no warnings, and none suppressed to get there. After a successful build `obj\` is deleted and the PDB files move to `symbols\`; `bin\` contains `ext4.sys` and `ext4ctl.exe`.
 
-The configurations share the file-system algorithms; Debug adds diagnostic checks and tracing. `DBG`, set by the WDK for Debug only, switches `EXT2_DEBUG`: the Debug build adds assertions, a breakpoint at every internal inconsistency, level-filtered tracing of each IRP with process names and `NTSTATUS` texts, guard bytes and accounting on every pool allocation, and the full object and IRP statistics (`IOCTL_APP_QUERY_PERFSTAT`). The Release build keeps error messages and the one counter the driver itself runs on (cached names, which drive the name-cache reaper) - no per-operation statistics, no shared counters every CPU writes to. The current Release driver is under 1 MB; most of it is character set tables.
+The configurations share the file-system algorithms; Debug adds diagnostic checks and tracing. `DBG`, set by the WDK for Debug only, switches `EXT2_DEBUG`: the Debug build adds assertions, a breakpoint at every internal inconsistency, level-filtered tracing of each IRP with process names and `NTSTATUS` texts, guard bytes and accounting on every pool allocation, and the full object and IRP statistics (`IOCTL_APP_QUERY_PERFSTAT`). The Release build keeps error reporting and functional accounting for allocation, object lifetime and cache reaping; per-operation diagnostic statistics are disabled. The current Release driver is under 1 MB; most of it is character set tables.
 
 | Output | Description |
 |---|---|
