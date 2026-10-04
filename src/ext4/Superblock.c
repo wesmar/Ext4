@@ -77,7 +77,9 @@ Ext2SetSuperRoCompat(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG
     Ext2LockSuper(Vcb);
     if (!IsFlagOn(Vcb->SuperBlock->s_feature_ro_compat, Feature)) {
         SetFlag(Vcb->SuperBlock->s_feature_ro_compat, Feature);
-        Ext2SaveSuper(IrpContext, Vcb);
+        /* fails only once the volume stopped writing: then what needs the
+           feature is not written either */
+        (void)Ext2SaveSuper(IrpContext, Vcb);
     }
     Ext2UnlockSuper(Vcb);
 }
@@ -219,7 +221,7 @@ Ext2SyncSuperTotals(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb)
         le32_to_cpu(SUPER_BLOCK->s_free_inodes_count) != Inodes) {
         ext3_free_blocks_count_set(SUPER_BLOCK, (ext4_fsblk_t)Blocks);
         SUPER_BLOCK->s_free_inodes_count = cpu_to_le32(Inodes);
-        Ext2SaveSuper(IrpContext, Vcb);
+        (void)Ext2SaveSuper(IrpContext, Vcb);   /* totals only: e2fsck and Linux recount them */
     }
     Ext2UnlockSuper(Vcb);
 }

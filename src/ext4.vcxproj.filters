@@ -126,6 +126,12 @@
     <ClCompile Include="ext4\GroupDescriptors.c">
       <Filter>ext4</Filter>
     </ClCompile>
+    <ClCompile Include="ext4\FreedBlocks.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
+    <ClCompile Include="ext4\MetadataMap.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
     <ClCompile Include="ext4\HtreeInsert.c">
       <Filter>ext4</Filter>
     </ClCompile>
@@ -502,6 +508,9 @@
     </ClInclude>
     <ClInclude Include="volume\vcb_internal.h">
       <Filter>volume</Filter>
+    </ClInclude>
+    <ClInclude Include="ext4\BlockSearch.h">
+      <Filter>ext4</Filter>
     </ClInclude>
     <ClInclude Include="ext4\extents_internal.h">
       <Filter>ext4</Filter>

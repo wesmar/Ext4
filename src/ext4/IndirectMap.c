@@ -51,7 +51,9 @@ Ext2ExpandLast(
                  *Hint,
                  &NewBlock,
                  Number,
-                 1ULL << 32 /* indirect pointers on disk are exactly 32 bits */
+                 EXT2_INDIRECT_BLOCK_LIMIT,
+                 /* indirect and directory blocks go through the journal */
+                 (Layer > 0 || IsMcbDirectory(Mcb)) ? EXT2_ALLOC_JOURNALED : 0
              );
     *Block = (ULONG)NewBlock;
 
@@ -87,9 +89,6 @@ Ext2ExpandLast(
                 Status = STATUS_UNEXPECTED_IO_ERROR;
                 goto errorout;
             }
-            /* add block to meta extents */
-            /* on failure the block maps are dropped and rebuilt later */
-            Ext2AddMcbMetaExts(Vcb, Mcb, *Block + i, 1);
         }
     }
 
@@ -112,8 +111,9 @@ errorout:
             DEC_MEM_COUNT(PS_BLOCK_DATA, pData, BLOCK_SIZE);
         }
         if (*Block) {
-            Ext2FreeBlock(IrpContext, Vcb, *Block, *Number);
-            Mcb->Inode->i_blocks -= (*Number << (BLOCK_BITS - 9));
+            /* a failed release stops the journal by itself; the error
+               reported is the one that came first */
+            (void)Ext2ReleaseInodeBlocks(IrpContext, Mcb->Inode, *Block, *Number);
             *Block = 0;
         }
     }
@@ -173,8 +173,11 @@ Ext2GetBlock(
         }
 
         *Block = BlockArray[0];
+        /* contiguous in 64 bits: after the last 32-bit block, 0xFFFFFFFF,
+           a hole (0) compared as its successor and was mapped to block 2^32 */
         for (i=1; i < SizeArray; i++) {
-            if (BlockArray[i] == BlockArray[i-1] + 1) {
+            if (BlockArray[i] != 0 &&
+                (ULONGLONG)BlockArray[i] == (ULONGLONG)BlockArray[i-1] + 1) {
                 *Number = *Number + 1;
             } else {
                 break;
@@ -182,17 +185,23 @@ Ext2GetBlock(
         }
         *Hint = BlockArray[*Number - 1];
 
-    } else if (Layer <= 3) {
-
-        /* check the block is valid or not */
-        if (BlockArray[0] == 0 || BlockArray[0] >= TOTAL_BLOCKS) {
+        /* the run lies inside the volume and outside its metadata (Linux:
+           check_block_validity): written as file data, a block of the
+           inode table would take inodes with it */
+        if (*Block != 0 && ((ULONGLONG)*Block + *Number > TOTAL_BLOCKS ||
+                            Ext2MetadataOverlaps(Vcb, *Block, *Number))) {
             Status = STATUS_DISK_CORRUPT_ERROR;
             goto errorout;
         }
 
-        /* add block to meta extents */
-        /* on failure the block maps are dropped and rebuilt later */
-        Ext2AddMcbMetaExts(Vcb, Mcb, BlockArray[0], 1);
+    } else if (Layer <= 3) {
+
+        /* an indirect block inside the volume, not among its metadata */
+        if (BlockArray[0] == 0 || BlockArray[0] >= TOTAL_BLOCKS ||
+            Ext2MetadataOverlaps(Vcb, BlockArray[0], 1)) {
+            Status = STATUS_DISK_CORRUPT_ERROR;
+            goto errorout;
+        }
 
         /* the index block goes through the bh layer so that changes to
            it are journaled */
@@ -203,7 +212,7 @@ Ext2GetBlock(
         if (!bh) {
             DEBUG(DL_ERR, ( "Ext2GetBlock: Failed to load block: %xh ...\n",
                             BlockArray[0] ));
-            Status = STATUS_CANT_WAIT;
+            Status = STATUS_UNEXPECTED_IO_ERROR;   /* not CANT_WAIT: that is retried */
             goto errorout;
         }
         pData = (__u32 *)bh->b_data;
@@ -257,6 +266,11 @@ Ext2GetBlock(
 
                 *Number = 1;
 
+                /* the hole: the rest of the subtree the slot would hold
+                   (a run of empty slots for data blocks). It used to be one
+                   block's worth of slots under a triple indirect block too,
+                   past the subtree's end when Start was near it: the data
+                   that follows was skipped as a hole, read as zeros. */
                 if (Layer == 1) {
                     for (i = Slot + 1; i < BLOCK_SIZE/4; i++) {
                         if (pData[i] == 0) {
@@ -265,10 +279,8 @@ Ext2GetBlock(
                             break;
                         }
                     }
-                } else if (Layer == 2) {
-                    *Number = BLOCK_SIZE/4 - Start;
                 } else {
-                    *Number = BLOCK_SIZE/4;
+                    *Number = Unit - Start;
                 }
 
                 goto errorout;
@@ -344,7 +356,11 @@ Ext2ExpandBlock(
          * try to make all leaf block continuous to avoid fragments
          */
 
-        Number = min(SizeArray, ((*Extra + (Start & (BLOCK_SIZE/4 - 1))) * 4 / BLOCK_SIZE));
+        /* indirect blocks for the data to come, rounded up, in 64 bits:
+           the product overflowed 32 for a 4 TiB extension */
+        Number = (ULONG)min((ULONGLONG)SizeArray,
+                            ((ULONGLONG)*Extra + (Start & (BLOCK_SIZE/4 - 1)) + BLOCK_SIZE/4 - 1) /
+                            (BLOCK_SIZE/4));
         Wanted = 0;
         DEBUG(DL_BLK, ("Ext2ExpandBlock: SizeArray=%xh Extra=%xh Start=%xh %xh\n",
                        SizeArray, *Extra, Start, Number ));
@@ -413,6 +429,10 @@ Ext2ExpandBlock(
 
             if (Wanted == 0) {
 
+                if (Ext2MetadataOverlaps(Vcb, BlockArray[i], 1)) {
+                    Status = STATUS_DISK_CORRUPT_ERROR;
+                    goto errorout;
+                }
                 /* add block extent into Mcb */
                 ASSERT(BlockArray[i] != 0);
                 if (!Ext2AddBlockExtent(Vcb, Mcb, Base + i, BlockArray[i], 1)) {
@@ -483,6 +503,10 @@ Ext2ExpandBlock(
 
             } else {
 
+                if (Ext2MetadataOverlaps(Vcb, BlockArray[i], 1)) {
+                    Status = STATUS_DISK_CORRUPT_ERROR;
+                    goto errorout;
+                }
                 bh = sb_getblk(&Vcb->sb, (sector_t)BlockArray[i]);
                 if (bh && !buffer_uptodate(bh) && bh_submit_read(bh) < 0) {
                     fini_bh(&bh);
@@ -490,14 +514,10 @@ Ext2ExpandBlock(
                 if (!bh) {
                     DEBUG(DL_ERR, ( "Ext2ExpandInode: failed to load block %xh...\n",
                                     BlockArray[i]));
-                    Status = STATUS_CANT_WAIT;
+                    Status = STATUS_UNEXPECTED_IO_ERROR;   /* not CANT_WAIT: that is retried */
                     goto errorout;
                 }
                 pData = (__u32 *)bh->b_data;
-
-                /* add block to meta extents */
-                /* on failure the block maps are dropped and rebuilt later */
-                Ext2AddMcbMetaExts(Vcb, Mcb,  BlockArray[i], 1);
             }
 
             Skip = Vcb->max_blocks_per_layer[Layer] * i;
@@ -530,10 +550,13 @@ Ext2ExpandBlock(
                          Extra
                      );
 
+            /* what the level below took is in pData even after a failure:
+               it is written, and the first error is the one reported */
             if (bh) {
                 mark_buffer_dirty(bh);
             } else {
-                if (!Ext2SaveBlock(IrpContext, Vcb, BlockArray[i], (PVOID)pData))
+                if (!Ext2SaveBlock(IrpContext, Vcb, BlockArray[i], (PVOID)pData) &&
+                    NT_SUCCESS(Status))
                     Status = STATUS_UNEXPECTED_IO_ERROR;
             }
 
@@ -625,7 +648,7 @@ Ext2MapIndirect(
 
                     /* save the inode */
                     if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode)) {
-                        Status = STATUS_UNSUCCESSFUL;
+                        Status = STATUS_UNEXPECTED_IO_ERROR;
                         goto errorout;
                     }
                 }

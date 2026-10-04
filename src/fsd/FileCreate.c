@@ -60,7 +60,7 @@ NTSTATUS Ext2AddDotEntries(struct ext2_icb *icb, struct inode *dir,
     }
     ext4_dirent_csum_set(inode, (struct ext4_dir_entry *)bh->b_data);
     mark_buffer_dirty(bh);
-    ext3_mark_inode_dirty(icb, inode);
+    rc = ext3_mark_inode_dirty(icb, inode);
 
 errorout:
     if (bh)
@@ -143,8 +143,11 @@ Ext2OverwriteEa(
 
                 Node = rb_next(Node);
                 if (Item->name_index == EXT4_XATTR_INDEX_USER) {
-                    ext4_fs_remove_xattr(&xattr_ref, Item->name_index,
-                                         Item->name, Item->name_len);
+                    Status = Ext2WinntError(ext4_fs_remove_xattr(&xattr_ref, Item->name_index,
+                                                                 Item->name, Item->name_len));
+                    if (!NT_SUCCESS(Status)) {
+                        __leave;    /* an old EA would outlive the set that replaces it */
+                    }
                 }
             }
         }
@@ -214,7 +217,7 @@ Ext2OverwriteEa(
         if (XattrRefAcquired) {
             if (!NT_SUCCESS(Status)) {
                 xattr_ref.dirty = FALSE;
-                ext4_fs_put_xattr_ref(&xattr_ref);
+                (void)ext4_fs_put_xattr_ref(&xattr_ref);    /* nothing to write: a release */
 			} else {
 				Status = Ext2WinntError(ext4_fs_put_xattr_ref(&xattr_ref));
 			}
@@ -257,7 +260,7 @@ Ext4InheritSecurityLabel(
     }
     rc = ext4_fs_get_xattr(&Ref, EXT4_XATTR_INDEX_SECURITY, EXT4_SELINUX_NAME,
                            sizeof(EXT4_SELINUX_NAME) - 1, Label, sizeof(Label), &Length);
-    ext4_fs_put_xattr_ref(&Ref);
+    (void)ext4_fs_put_xattr_ref(&Ref);      /* read only: nothing to write */
     if (rc != 0 || Length == 0 || Length > sizeof(Label)) {
         return;
     }
@@ -270,7 +273,7 @@ Ext4InheritSecurityLabel(
     if (rc != 0) {
         Ref.dirty = FALSE;
     }
-    ext4_fs_put_xattr_ref(&Ref);
+    (void)ext4_fs_put_xattr_ref(&Ref);      /* best effort, as said above */
 }
 
 NTSTATUS
@@ -307,7 +310,10 @@ Ext2CreateInode(
     }
 
     KeQuerySystemTime(&SysTime);
-    Ext2ClearInode(IrpContext, Vcb, iNo);
+    if (!Ext2ClearInode(IrpContext, Vcb, iNo)) {
+        Status = STATUS_UNEXPECTED_IO_ERROR;
+        goto freeinode;
+    }
     Inode.i_sb = &Vcb->sb;
     Inode.i_ino = iNo;
     Ext2SetInodeTime(&SysTime, &Inode.i_crtime, &Inode.i_crtime_extra);
@@ -360,14 +366,17 @@ Ext2CreateInode(
     Inode.i_flags = ext4_mask_flags(Inode.i_mode,
                                     (__u32)(Parent->Inode->i_flags & EXT4_FL_INHERITED));
 
-    /* Force using extent */
+    /* extents wherever the volume has them; the empty tree's root is in
+       the inode, which ext4_ext_tree_init writes */
     if (IsFlagOn(SUPER_BLOCK->s_feature_incompat, EXT4_FEATURE_INCOMPAT_EXTENTS)) {
         Inode.i_flags |= EXT2_EXTENTS_FL;
-        ext4_ext_tree_init(IrpContext, NULL, &Inode);
-        /* ext4_ext_tree_init will save inode body */
-    } else {
-        /* save inode body to cache */
-        Ext2SaveInode(IrpContext, Vcb, &Inode);
+        if (ext4_ext_tree_init(IrpContext, NULL, &Inode) != 0) {
+            Status = STATUS_UNEXPECTED_IO_ERROR;
+            goto freeinode;
+        }
+    } else if (!Ext2SaveInode(IrpContext, Vcb, &Inode)) {
+        Status = STATUS_UNEXPECTED_IO_ERROR;
+        goto freeinode;
     }
 
     /* add new entry to its parent */
@@ -381,8 +390,7 @@ Ext2CreateInode(
              );
 
     if (!NT_SUCCESS(Status)) {
-        Ext2FreeInode(IrpContext, Vcb, iNo, Type);
-        goto errorout;
+        goto freeinode;
     }
 
     DEBUG(DL_INF, ("Ext2CreateInode: New Inode = %xh (Type=%xh)\n",
@@ -398,6 +406,12 @@ Ext2CreateInode(
         *NewEntry = Dentry;
         Dentry = NULL;
     }
+    goto errorout;
+
+freeinode:
+    /* the inode never got a name: it goes back. This fails only once the
+       volume has stopped writing, when nothing of it reaches the disk. */
+    (void)Ext2FreeInode(IrpContext, Vcb, iNo, Type);
 
 errorout:
 
@@ -537,8 +551,13 @@ Ext2CreateNewName(
                     ExReleaseResourceLite(&NewDir->EntryResource);
                 }
                 if (!NT_SUCCESS(Status)) {
-                    /* a directory without "." is no directory: it goes */
-                    Ext2DeleteFile(IrpContext, Vcb, NewDcb, *Mcb);
+                    /* a directory without "." is no directory: it goes, or
+                       the transaction that made it must not commit */
+                    NTSTATUS Undo = Ext2DeleteFile(IrpContext, Vcb, NewDcb, *Mcb);
+
+                    if (!NT_SUCCESS(Undo)) {
+                        Ext2JournalAbandon(Vcb, Undo);
+                    }
                 }
                 Ext2ReleaseFcb(NewDcb);
             }

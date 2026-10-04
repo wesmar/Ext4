@@ -1,13 +1,291 @@
 /**
- * InodeAllocator.c - inode allocator.
+ * InodeAllocator.c - inode allocation and release, one group at a time.
  *
  * Copyright (c) 2026 Marek Wesolowski (WESMAR)
  * Derived from Ext2Fsd (Matt Wu), Ext4Fsd (Bo Branten) and Linux ext4/jbd2.
  * SPDX-License-Identifier: GPL-2.0-only
+ *
+ * A group is chosen from the descriptors as they are - another thread may
+ * be allocating meanwhile - and the choice is checked under the group's
+ * InodeLock against the bitmap (core\LockStripes.c). A group found full
+ * there has its count corrected from the bitmap and the choice is made
+ * again; every such round zeroes one group's count, so the search ends.
+ *
+ * The descriptor counts are recounted from the bitmap after every change,
+ * as the block allocator does: a count that had drifted is right again,
+ * and the volume total moves by the exact difference.
+ *
+ * Inodes below s_first_ino (the root, the journal, resize, ...) are never
+ * handed out or given back, whatever a bitmap says.
  */
 
 #include "ext4fs.h"
 #include "linux\ext4.h"
+
+/* ---------------------------------------------------------------- geometry */
+
+/* inodes in Group: a full group, or what the inode count leaves of the last one */
+static __inline ULONG
+Ext2GroupInodes(IN PEXT2_VCB Vcb, IN ULONG Group)
+{
+    ULONGLONG First = (ULONGLONG)Group * INODES_PER_GROUP;
+
+    return (ULONG)min((ULONGLONG)INODES_PER_GROUP, (ULONGLONG)INODES_COUNT - First);
+}
+
+static __inline BOOLEAN
+Ext2GroupHasInodes(IN struct super_block *sb, IN struct ext4_group_desc *gd)
+{
+    return (gd->bg_flags & cpu_to_le16(EXT4_BG_INODE_UNINIT)) ||
+           ext4_free_inodes_count(sb, gd) > 0;
+}
+
+/* ---------------------------------------------------------------- choice */
+
+/*
+ * A directory: the first group from the hint with few directories for its
+ * free inodes (or never used); else an uninitialised group or the first
+ * one with more free inodes than the best so far.
+ */
+static ULONG
+Ext2ChooseDirectoryGroup(IN PEXT2_VCB Vcb, IN ULONG GroupHint)
+{
+    struct super_block     *sb = &Vcb->sb;
+    ULONG                   Count = Vcb->sbi.s_groups_count;
+    ULONG                   Best = MAXULONG, j;
+    ULONG                   BestFree = 0;
+
+    for (j = 0; j < Count; j++) {
+        ULONG                   g = (j + GroupHint) % Count;
+        struct ext4_group_desc *gd = ext4_get_group_desc(sb, g, NULL);
+
+        if (gd == NULL) {
+            return MAXULONG;
+        }
+        if ((gd->bg_flags & cpu_to_le16(EXT4_BG_INODE_UNINIT)) ||
+            ((ULONGLONG)ext4_used_dirs_count(sb, gd) << 8) < ext4_free_inodes_count(sb, gd)) {
+            return g;
+        }
+    }
+
+    for (j = 0; j < Count; j++) {
+        struct ext4_group_desc *gd = ext4_get_group_desc(sb, j, NULL);
+        ULONG                   Free;
+
+        if (gd == NULL) {
+            return MAXULONG;
+        }
+        if (gd->bg_flags & cpu_to_le16(EXT4_BG_INODE_UNINIT)) {
+            return j;
+        }
+        Free = ext4_free_inodes_count(sb, gd);
+        if (Best == MAXULONG) {
+            if (Free > 0) {
+                Best = j;
+                BestFree = Free;
+            }
+        } else if (Free > BestFree) {
+            return j;
+        }
+    }
+    return Best;
+}
+
+/* a file: its directory's group, else a quadratic probe from it, else every group in turn */
+static ULONG
+Ext2ChooseFileGroup(IN PEXT2_VCB Vcb, IN ULONG GroupHint)
+{
+    struct super_block     *sb = &Vcb->sb;
+    ULONG                   Count = Vcb->sbi.s_groups_count;
+    struct ext4_group_desc *gd = ext4_get_group_desc(sb, GroupHint, NULL);
+    ULONG                   g, j;
+
+    if (gd == NULL) {
+        return MAXULONG;
+    }
+    if (Ext2GroupHasInodes(sb, gd)) {
+        return GroupHint;
+    }
+    for (g = GroupHint, j = 1; j < Count; j <<= 1) {
+        g = (g + j) % Count;
+        gd = ext4_get_group_desc(sb, g, NULL);
+        if (gd == NULL) {
+            return MAXULONG;
+        }
+        if (Ext2GroupHasInodes(sb, gd)) {
+            return g;
+        }
+    }
+    for (g = GroupHint, j = 1; j < Count; j++) {
+        g = (g + 1) % Count;
+        gd = ext4_get_group_desc(sb, g, NULL);
+        if (gd == NULL) {
+            return MAXULONG;
+        }
+        if (Ext2GroupHasInodes(sb, gd)) {
+            return g;
+        }
+    }
+    return MAXULONG;
+}
+
+/* ---------------------------------------------------------------- one group */
+
+/* the inode bitmap of Group; one lazy mkfs never wrote is built and published first */
+static NTSTATUS
+Ext2LoadInodeBitmap(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group,
+                    IN struct ext4_group_desc *gd, OUT struct buffer_head **Bh)
+{
+    struct super_block *sb = &Vcb->sb;
+    ext4_fsblk_t        Where = ext4_inode_bitmap(sb, gd);
+
+    if (gd->bg_flags & cpu_to_le16(EXT4_BG_INODE_UNINIT)) {
+        *Bh = sb_getblk_zero(sb, Where);
+        if (*Bh == NULL) {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        ext4_init_inode_bitmap(sb, *Bh, Group, gd);
+        set_buffer_uptodate(*Bh);
+        Ext2ClearGroupFlag(gd, EXT4_BG_INODE_UNINIT);
+        ext4_inode_bitmap_csum_set(sb, Group, gd, *Bh, EXT4_INODES_PER_GROUP(sb) / 8);
+        return Ext2SaveGroup(IrpContext, Vcb, Group) ? STATUS_SUCCESS : STATUS_UNEXPECTED_IO_ERROR;
+    }
+
+    *Bh = sb_getblk(sb, Where);
+    if (*Bh == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    if (!buffer_uptodate(*Bh)) {
+        int err = bh_submit_read(*Bh);
+        if (err < 0) {
+            return Ext2WinntError(err);
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
+/* the descriptor's free count from the bitmap, its checksums, the volume total */
+static NTSTATUS
+Ext2RecountGroupInodes(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group,
+                       IN struct ext4_group_desc *gd, IN struct buffer_head *bh)
+{
+    struct super_block *sb = &Vcb->sb;
+    RTL_BITMAP          Bitmap;
+    LONGLONG            Before = ext4_free_inodes_count(sb, gd);
+    LONGLONG            After;
+
+    RtlInitializeBitMap(&Bitmap, (PULONG)bh->b_data, Ext2GroupInodes(Vcb, Group));
+    After = RtlNumberOfClearBits(&Bitmap);
+    ext4_free_inodes_set(sb, gd, (__u32)After);
+    ext4_inode_bitmap_csum_set(sb, Group, gd, bh, EXT4_INODES_PER_GROUP(sb) / 8);
+    if (!Ext2SaveGroup(IrpContext, Vcb, Group)) {
+        return STATUS_UNEXPECTED_IO_ERROR;
+    }
+    Ext2AdjustVcbStat(IrpContext, Vcb, 0, After - Before);
+    return STATUS_SUCCESS;
+}
+
+/*
+ * With group checksums the descriptor says how much of the inode table is
+ * in use (bg_itable_unused counts the never used inodes at its end); an
+ * inode past that mark moves it.
+ */
+static VOID
+Ext2MarkInodeTableUsed(IN PEXT2_VCB Vcb, IN struct ext4_group_desc *gd, IN ULONG Index)
+{
+    struct super_block *sb = &Vcb->sb;
+    ULONG               Used;
+
+    if (!EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_GDT_CSUM) &&
+        !EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_METADATA_CSUM)) {
+        return;
+    }
+    Used = EXT3_INODES_PER_GROUP(sb) - ext4_itable_unused_count(sb, gd);
+    if (Index + 1 > Used) {
+        ext4_itable_unused_set(sb, gd, EXT3_INODES_PER_GROUP(sb) - 1 - Index);
+    }
+}
+
+/*
+ * Take an inode of Group, its InodeLock held: STATUS_SUCCESS with *Inode,
+ * STATUS_DISK_FULL when the group has none (its count corrected), anything
+ * else stops the allocation.
+ */
+static NTSTATUS
+Ext2TakeInodeInLockedGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group,
+                           IN ULONG Type, OUT PULONG Inode, OUT struct buffer_head **Gb,
+                           OUT struct buffer_head **Bh)
+{
+    struct super_block     *sb = &Vcb->sb;
+    struct ext4_group_desc *gd;
+    RTL_BITMAP              Bitmap;
+    ULONG                   Index;
+    ULONGLONG               Ino;
+    NTSTATUS                Status;
+
+    gd = ext4_get_group_desc(sb, Group, Gb);
+    if (gd == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    Status = Ext2LoadInodeBitmap(IrpContext, Vcb, Group, gd, Bh);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+
+    RtlInitializeBitMap(&Bitmap, (PULONG)(*Bh)->b_data, Ext2GroupInodes(Vcb, Group));
+    Index = RtlFindClearBits(&Bitmap, 1, 0);
+    if (Index == MAXULONG) {
+        /* the descriptor promised a free inode the bitmap does not have */
+        Status = Ext2RecountGroupInodes(IrpContext, Vcb, Group, gd, *Bh);
+        return NT_SUCCESS(Status) ? STATUS_DISK_FULL : Status;
+    }
+    Ino = (ULONGLONG)Group * INODES_PER_GROUP + Index + 1;
+    if (Ino < EXT4_FIRST_INO(sb)) {
+        return STATUS_DISK_CORRUPT_ERROR;       /* a reserved inode marked free */
+    }
+
+    RtlSetBits(&Bitmap, Index, 1);
+    mark_buffer_dirty(*Bh);
+    Ext2MarkInodeTableUsed(Vcb, gd, Index);
+
+    /* the first inode of a group whose block bitmap lazy mkfs never wrote
+       makes that bitmap real; inode before block lock */
+    if (gd->bg_flags & cpu_to_le16(EXT4_BG_BLOCK_UNINIT)) {
+        Status = Ext2MaterializeBlockBitmap(IrpContext, Vcb, Group);
+        if (!NT_SUCCESS(Status)) {
+            return Status;
+        }
+    }
+    if (Type == EXT2_FT_DIR) {
+        ext4_used_dirs_set(sb, gd, ext4_used_dirs_count(sb, gd) + 1);
+    }
+    Status = Ext2RecountGroupInodes(IrpContext, Vcb, Group, gd, *Bh);
+    if (NT_SUCCESS(Status)) {
+        *Inode = (ULONG)Ino;
+    }
+    return Status;
+}
+
+static NTSTATUS
+Ext2TakeInodeInGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group,
+                     IN ULONG Type, OUT PULONG Inode)
+{
+    PERESOURCE          Held = Ext2LockGroupInodes(Vcb, Group);
+    struct buffer_head *gb = NULL, *bh = NULL;
+    NTSTATUS            Status;
+
+    Status = Ext2TakeInodeInLockedGroup(IrpContext, Vcb, Group, Type, Inode, &gb, &bh);
+    if (bh != NULL) {
+        fini_bh(&bh);
+    }
+    if (gb != NULL) {
+        fini_bh(&gb);
+    }
+    Ext2UnlockGroup(Held);
+    return Status;
+}
+
+/* ---------------------------------------------------------------- the interface */
 
 NTSTATUS
 Ext2NewInode(
@@ -18,385 +296,26 @@ Ext2NewInode(
     OUT PULONG              Inode
 )
 {
-    struct super_block     *sb = &Vcb->sb;
-    PEXT2_GROUP_DESC        gd;
-    struct buffer_head     *gb = NULL;
-    struct buffer_head     *bh = NULL;
-    ext4_fsblk_t            bitmap_blk;
+    ULONG       Attempt;
+    NTSTATUS    Status = STATUS_DISK_FULL;
 
-    RTL_BITMAP      InodeBitmap;
-
-    ULONG           Group, i, j;
-    ULONG           Length;
-
-    ULONG           dwInode;
-
-    NTSTATUS        Status = STATUS_DISK_FULL;
-    PERESOURCE      Held = NULL;    /* the lock of the chosen group */
-
-    *Inode = dwInode = 0XFFFFFFFF;
-
-    /* The group is chosen from the descriptors as they are - another
-       thread may be allocating meanwhile - and the choice is checked under
-       the group's lock, against the bitmap: a group found full there sends
-       the search round again. */
+    *Inode = 0;
     Ext2JournalJoin(Vcb);       /* before the lock: see Ext2JournalJoin */
-
-    if (GroupHint >= Vcb->sbi.s_groups_count)
-        GroupHint = GroupHint % Vcb->sbi.s_groups_count;
-
-repeat:
-
-    if (bh)
-        fini_bh(&bh);
-
-    if (gb)
-        fini_bh(&gb);
-
-    if (Held) {
-        Ext2UnlockGroup(Held);
-        Held = NULL;
+    if (IsVcbReadOnly(Vcb)) {
+        return STATUS_MEDIA_WRITE_PROTECTED;
     }
+    GroupHint %= Vcb->sbi.s_groups_count;
 
-    Group = i = 0;
-    gd = NULL;
-
-    if (Type == EXT2_FT_DIR) {
-
-        for (j = 0; j < Vcb->sbi.s_groups_count; j++) {
-
-            i = (j + GroupHint) % (Vcb->sbi.s_groups_count);
-            gd = ext4_get_group_desc(sb, i, &gb);
-            if (!gd) {
-                Status = STATUS_INSUFFICIENT_RESOURCES;
-                goto errorout;
-            }
-
-            if ((gd->bg_flags & cpu_to_le16(EXT4_BG_INODE_UNINIT)) ||
-                (ext4_used_dirs_count(sb, gd) << 8 < 
-                 ext4_free_inodes_count(sb, gd)) ) {
-                Group = i + 1;
-                break;
-            }
-            fini_bh(&gb);
+    /* a round that finds its group full corrects that group's count to
+       what its bitmap says, so the next choice is another group */
+    for (Attempt = 0; Attempt <= Vcb->sbi.s_groups_count && Status == STATUS_DISK_FULL; Attempt++) {
+        ULONG Group = (Type == EXT2_FT_DIR) ? Ext2ChooseDirectoryGroup(Vcb, GroupHint)
+                                            : Ext2ChooseFileGroup(Vcb, GroupHint);
+        if (Group == MAXULONG) {
+            return STATUS_DISK_FULL;
         }
-
-        if (!Group) {
-
-            PEXT2_GROUP_DESC  desc = NULL;
-
-            gd = NULL;
-
-            /* Prefer an uninitialised group or the first improvement
-               over a candidate with free inodes. */
-            for (j = 0; j < Vcb->sbi.s_groups_count; j++) {
-
-                struct buffer_head *gt = NULL;
-                desc = ext4_get_group_desc(sb, j, &gt);
-                if (!desc) {
-                    Status = STATUS_INSUFFICIENT_RESOURCES;
-                    goto errorout;
-                }
-
-                /* return the group if it's not initialized yet */
-                if (desc->bg_flags & cpu_to_le16(EXT4_BG_INODE_UNINIT)) {
-                    Group = j + 1;
-                    gd = desc;
-
-                    if (gb)
-                        fini_bh(&gb);
-                    gb = gt;
-                    gt = NULL;
-                    break;
-                }
-
-                if (!gd) {
-                    if (ext4_free_inodes_count(sb, desc) > 0) {
-                        Group = j + 1;
-                        gd = desc;
-                        if (gb)
-                            fini_bh(&gb);
-                        gb = gt;
-                        gt = NULL;
-                    }
-                } else {
-                    if (ext4_free_inodes_count(sb, desc) >
-                        ext4_free_inodes_count(sb, gd)) {
-                        Group = j + 1;
-                        gd = desc;
-                        if (gb)
-                            fini_bh(&gb);
-                        gb = gt;
-                        gt = NULL;
-                        break;
-                    }
-                }
-                if (gt)
-                    fini_bh(&gt);
-            }
-        }
-
-    } else {
-
-        /*
-         * Try to place the inode in its parent directory (GroupHint)
-         */
-
-        gd = ext4_get_group_desc(sb, GroupHint, &gb);
-        if (!gb) {
-            Status = STATUS_INSUFFICIENT_RESOURCES;
-            goto errorout;
-        }
-
-        if (gd->bg_flags & cpu_to_le16(EXT4_BG_INODE_UNINIT) ||
-            ext4_free_inodes_count(sb, gd)) {
-
-            Group = GroupHint + 1;
-
-        } else {
-
-            /* this group is 100% cocucpied */
-            fini_bh(&gb);
- 
-            i = GroupHint;
-
-            /*
-             * Use a quadratic hash to find a group with a free inode
-             */
-
-            for (j = 1; j < Vcb->sbi.s_groups_count; j <<= 1) {
-
-                i = (i + j) % Vcb->sbi.s_groups_count;
-                gd = ext4_get_group_desc(sb, i, &gb);
-                if (!gd) {
-                    Status = STATUS_INSUFFICIENT_RESOURCES;
-                    goto errorout;
-                }
-
-                if (gd->bg_flags & cpu_to_le16(EXT4_BG_INODE_UNINIT) ||
-                    ext4_free_inodes_count(sb, gd)) {
-                    Group = i + 1;
-                    break;
-                }
-
-                fini_bh(&gb);                
-            }
-        }
-
-        if (!Group) {
-            /*
-             * That failed: try linear search for a free inode
-             */
-            i = GroupHint;
-            for (j = 1; j < Vcb->sbi.s_groups_count; j++) {
-
-                i = (i + 1) % Vcb->sbi.s_groups_count;
-                gd = ext4_get_group_desc(sb, i, &gb);
-                if (!gd) {
-                    Status = STATUS_INSUFFICIENT_RESOURCES;
-                    goto errorout;
-                }
-
-                if (gd->bg_flags & cpu_to_le16(EXT4_BG_INODE_UNINIT) ||
-                    ext4_free_inodes_count(sb, gd)) {
-                    Group = i + 1;
-                    break;
-                }
-
-                fini_bh(&gb);
-            }
-        }
+        Status = Ext2TakeInodeInGroup(IrpContext, Vcb, Group, Type, Inode);
     }
-
-    if (gd == NULL || Group == 0) {
-        goto errorout;
-    }
-
-    /* finally we got the group, but is it valid ? */
-    if (Group > Vcb->sbi.s_groups_count) {
-        goto errorout;
-    }
-
-    /* valid group number starts from 1, not 0 */
-    Group -= 1;
-    Held = Ext2LockGroupInodes(Vcb, Group);
-
-    ASSERT(gd);
-    bitmap_blk = ext4_inode_bitmap(sb, gd);
-    /* check the block is valid or not */
-    if (bitmap_blk == 0 || bitmap_blk >= TOTAL_BLOCKS) {
-        Status = STATUS_DISK_CORRUPT_ERROR;
-        goto errorout;
-    }
-
-    if (gd->bg_flags & cpu_to_le16(EXT4_BG_INODE_UNINIT)) {
-        bh = sb_getblk_zero(sb, bitmap_blk);
-        if (!bh) {
-            Status = STATUS_INSUFFICIENT_RESOURCES;
-            goto errorout;
-        }
-        ext4_init_inode_bitmap(sb, bh, Group, gd);
-        set_buffer_uptodate(bh);
-        Ext2ClearGroupFlag(gd, EXT4_BG_INODE_UNINIT);
-        ext4_inode_bitmap_csum_set(sb, Group, gd, bh, EXT4_INODES_PER_GROUP(sb) / 8);
-        Ext2SaveGroup(IrpContext, Vcb, Group);
-    } else {
-        bh = sb_getblk(sb, bitmap_blk);
-        if (!bh) {
-            Status = STATUS_INSUFFICIENT_RESOURCES;
-            goto errorout;
-        }
-    }
-
-    if (!buffer_uptodate(bh)) {
-	    int err = bh_submit_read(bh);
-	    if (err < 0) {
-		    DbgPrint("bh_submit_read error! err: %d\n", err);
-		    Status = Ext2WinntError(err);
-		    goto errorout;
-	    }
-    }
-
-    if (Vcb->sbi.s_groups_count == 1) {
-        Length = INODES_COUNT;
-    } else {
-        if (Group + 1 == Vcb->sbi.s_groups_count) {
-            Length = INODES_COUNT % INODES_PER_GROUP;
-            if (!Length) {
-                /* INODES_COUNT is integer multiple of INODES_PER_GROUP */
-                Length = INODES_PER_GROUP;
-            }
-        } else  {
-            Length = INODES_PER_GROUP;
-        }
-    }
-
-    RtlInitializeBitMap(&InodeBitmap, (PULONG)bh->b_data, Length);
-    dwInode = RtlFindClearBits(&InodeBitmap, 1, 0);
-
-    if (dwInode == 0xFFFFFFFF || dwInode >= Length) {
-
-        RtlZeroMemory(&InodeBitmap, sizeof(RTL_BITMAP));
-        if (ext4_free_inodes_count(sb, gd) > 0) {
-            /* the descriptor overstated this group: the bitmap wins, and
-               the phantom inodes leave the volume total too */
-            LONGLONG Stale = ext4_free_inodes_count(sb, gd);
-
-            ext4_free_inodes_set(sb, gd, 0);
-            ext4_inode_bitmap_csum_set(sb, Group, gd, bh, EXT4_INODES_PER_GROUP(sb) / 8);
-            Ext2SaveGroup(IrpContext, Vcb, Group);
-            Ext2AdjustVcbStat(IrpContext, Vcb, 0, -Stale);
-        }
-        goto repeat;
-
-    } else {
-
-        __u32 count = 0;
-
-        /* update unused inodes count */
-        count = ext4_free_inodes_count(sb, gd) - 1;
-        ext4_free_inodes_set(sb, gd, count);
-
-        RtlSetBits(&InodeBitmap, dwInode, 1);
-
-        /* set block bitmap dirty in cache */
-        mark_buffer_dirty(bh);
-
-        /* If we didn't allocate from within the initialized part of the inode
-         * table then we need to initialize up to this inode. */
-        if (EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_GDT_CSUM) ||
-            EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_METADATA_CSUM)) {
-
-            __u32 free;
-
-            if (gd->bg_flags & cpu_to_le16(EXT4_BG_INODE_UNINIT)) {
-                Ext2ClearGroupFlag(gd, EXT4_BG_INODE_UNINIT);
-                /* When marking the block group with
-                 * ~EXT4_BG_INODE_UNINIT we don't want to depend
-                 * on the value of bg_itable_unused even though
-                 * mke2fs could have initialized the same for us.
-                 * Instead we calculated the value below
-                 */
-
-                free = 0;
-            } else {
-                free = EXT3_INODES_PER_GROUP(sb) - ext4_itable_unused_count(sb, gd);
-            }
-
-            /*
-             * Check the relative inode number against the last used
-             * relative inode number in this group. if it is greater
-             * we need to  update the bg_itable_unused count
-             *
-             */
-            if (dwInode + 1 > free) {
-                ext4_itable_unused_set(sb, gd,
-                                       (EXT3_INODES_PER_GROUP(sb) - 1 - dwInode));
-            }
-
-            /* The first inode of a group whose block bitmap was never
-               written (BLOCK_UNINIT, lazy mkfs) materialises that bitmap:
-               once the flag is gone, readers trust the block on disk.
-               Ext2NewBlock may be initialising the same bitmap for a block
-               allocation right now, so the flag is tested again under the
-               group's BlockLock (inode lock before block lock; the block
-               allocator never takes an inode lock). */
-            if (gd->bg_flags & cpu_to_le16(EXT4_BG_BLOCK_UNINIT)) {
-                PERESOURCE          Blocks = Ext2LockGroupBlocks(Vcb, Group);
-                struct buffer_head *block_bitmap_bh = NULL;
-
-                if (gd->bg_flags & cpu_to_le16(EXT4_BG_BLOCK_UNINIT)) {
-                    block_bitmap_bh = sb_getblk_zero(sb, ext4_block_bitmap(sb, gd));
-                }
-                if (block_bitmap_bh) {
-                    /* the descriptor of an uninitialised group already
-                       counts its free blocks; should the bitmap built
-                       here disagree, the bitmap wins and the volume
-                       total moves by the difference */
-                    LONGLONG Before = ext4_free_blks_count(sb, gd);
-
-                    free =ext4_init_block_bitmap(sb, block_bitmap_bh, Group, gd);
-                    ext4_block_bitmap_csum_set(sb, Group, gd, block_bitmap_bh);
-                    set_buffer_uptodate(block_bitmap_bh);
-                    /* journaled like any other bitmap change: without
-                       it the flag below would be cleared on disk while
-                       the bitmap block kept whatever mkfs left there */
-                    mark_buffer_dirty(block_bitmap_bh);
-                    brelse(block_bitmap_bh);
-                    Ext2ClearGroupFlag(gd, EXT4_BG_BLOCK_UNINIT);
-                    ext4_free_blks_set(sb, gd, free);
-                    Ext2SaveGroup(IrpContext, Vcb, Group);
-                    Ext2AdjustVcbStat(IrpContext, Vcb, (LONGLONG)free - Before, 0);
-                }
-                Ext2UnlockGroup(Blocks);
-            }
-        }
-
-        *Inode = dwInode + 1 + Group * INODES_PER_GROUP;
-
-        /* update group_desc / super_block */
-        if (Type == EXT2_FT_DIR) {
-            ext4_used_dirs_set(sb, gd, ext4_used_dirs_count(sb, gd) + 1);
-        }
-        ext4_inode_bitmap_csum_set(sb, Group, gd, bh, EXT4_INODES_PER_GROUP(sb) / 8);
-        Ext2SaveGroup(IrpContext, Vcb, Group);
-        /* one inode taken */
-        Ext2AdjustVcbStat(IrpContext, Vcb, 0, -1);
-        Status = STATUS_SUCCESS;
-    }
-
-errorout:
-
-    if (Held) {
-        Ext2UnlockGroup(Held);
-    }
-
-    if (bh)
-        fini_bh(&bh);
-
-    if (gb)
-        fini_bh(&gb);
-
     return Status;
 }
 
@@ -408,36 +327,33 @@ Ext2UpdateGroupDirStat(
     )
 {
     struct super_block     *sb = &Vcb->sb;
-    PEXT2_GROUP_DESC        gd;
+    struct ext4_group_desc *gd;
     struct buffer_head     *gb = NULL;
-    NTSTATUS                status;
+    NTSTATUS                Status = STATUS_SUCCESS;
     PERESOURCE              Held;
 
     Ext2JournalJoin(Vcb);       /* before the lock: see Ext2JournalJoin */
     Held = Ext2LockGroupInodes(Vcb, group);
 
-    /* get group desc */
-    gd = ext4_get_group_desc(sb, group, &gb);
-    if (!gd) {
-        status = STATUS_INSUFFICIENT_RESOURCES;
-        goto errorout;
-    }
-
-    /* update group_desc and super_block */
     /* the directory count lives only in the descriptor: the superblock
        has nothing to follow */
-    ext4_used_dirs_set(sb, gd, ext4_used_dirs_count(sb, gd) - 1);
-    Ext2SaveGroup(IrpContext, Vcb, group);
-    status = STATUS_SUCCESS;
-
-errorout:
+    gd = ext4_get_group_desc(sb, group, &gb);
+    if (gd == NULL) {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+    } else if (ext4_used_dirs_count(sb, gd) == 0) {
+        Status = STATUS_DISK_CORRUPT_ERROR;     /* one more directory gone than counted */
+    } else {
+        ext4_used_dirs_set(sb, gd, ext4_used_dirs_count(sb, gd) - 1);
+        if (!Ext2SaveGroup(IrpContext, Vcb, group)) {
+            Status = STATUS_UNEXPECTED_IO_ERROR;
+        }
+    }
 
     Ext2UnlockGroup(Held);
-
-    if (gb)
+    if (gb != NULL) {
         fini_bh(&gb);
-
-    return status;
+    }
+    return Status;
 }
 
 NTSTATUS
@@ -449,109 +365,58 @@ Ext2FreeInode(
 )
 {
     struct super_block     *sb = &Vcb->sb;
-    PEXT2_GROUP_DESC        gd;
+    struct ext4_group_desc *gd;
     struct buffer_head     *gb = NULL;
     struct buffer_head     *bh = NULL;
-    ext4_fsblk_t            bitmap_blk;
+    RTL_BITMAP              Bitmap;
+    ULONG                   Group, Index;
+    NTSTATUS                Status;
+    PERESOURCE              Held;
 
-    RTL_BITMAP      InodeBitmap;
-    ULONG           Group;
-    ULONG           Length;
+    DEBUG(DL_INF, ("Ext2FreeInode: inode %xh\n", Inode));
 
-    ULONG           dwIno;
-    BOOLEAN         bModified = FALSE;
-    LONGLONG        InodeDelta = 0;
-
-    NTSTATUS        Status = STATUS_UNSUCCESSFUL;
-    PERESOURCE      Held = NULL;
-
-    Group = (Inode - 1) / INODES_PER_GROUP;
-    dwIno = (Inode - 1) % INODES_PER_GROUP;
-
-    DEBUG(DL_INF, ( "Ext2FreeInode: Inode: %xh (Group/Off = %xh/%xh)\n",
-                    Inode, Group, dwIno));
-
-    if (Group >= Vcb->sbi.s_groups_count)  {
-        goto errorout;
+    /* reserved inodes are never freed, nonexistent ones cannot be */
+    if (Inode < EXT4_FIRST_INO(sb) || Inode > INODES_COUNT) {
+        return STATUS_DISK_CORRUPT_ERROR;
     }
+    Group = (Inode - 1) / INODES_PER_GROUP;
+    Index = (Inode - 1) % INODES_PER_GROUP;
 
     Ext2JournalJoin(Vcb);       /* before the lock: see Ext2JournalJoin */
+    if (IsVcbReadOnly(Vcb)) {
+        return STATUS_MEDIA_WRITE_PROTECTED;
+    }
     Held = Ext2LockGroupInodes(Vcb, Group);
 
     gd = ext4_get_group_desc(sb, Group, &gb);
-    if (!gd) {
+    if (gd == NULL) {
         Status = STATUS_INSUFFICIENT_RESOURCES;
-        goto errorout;
-    }
-
-    bitmap_blk = ext4_inode_bitmap(sb, gd);
-    bh = sb_getblk(sb, bitmap_blk);
-    if (!bh) {
-        Status = STATUS_INSUFFICIENT_RESOURCES;
-        goto errorout;
-    }
-    if (!buffer_uptodate(bh)) {
-        int err = bh_submit_read(bh);
-        if (err < 0) {
-            DbgPrint("bh_submit_read error! err: %d\n", err);
-            Status = Ext2WinntError(err);
-            goto errorout;
-        }
-    }
-
-    if (Group == Vcb->sbi.s_groups_count - 1) {
-
-        Length = INODES_COUNT % INODES_PER_GROUP;
-        if (!Length) {
-            /* s_inodes_count is integer multiple of s_inodes_per_group */
-            Length = INODES_PER_GROUP;
-        }
+    } else if (gd->bg_flags & cpu_to_le16(EXT4_BG_INODE_UNINIT)) {
+        Status = STATUS_DISK_CORRUPT_ERROR;     /* nothing was ever allocated there */
     } else {
-        Length = INODES_PER_GROUP;
+        Status = Ext2LoadInodeBitmap(IrpContext, Vcb, Group, gd, &bh);
     }
 
-    RtlInitializeBitMap(&InodeBitmap, (PULONG)bh->b_data, Length);
-
-    if (RtlCheckBit(&InodeBitmap, dwIno) == 0) {
-        Status = STATUS_SUCCESS;
-    } else {
-        RtlClearBits(&InodeBitmap, dwIno, 1);
-        bModified = TRUE;
-    }
-
-    if (bModified) {
-        LONGLONG Before = ext4_free_inodes_count(sb, gd);
-        LONGLONG After = RtlNumberOfClearBits(&InodeBitmap);
-
-        /* update group free inodes */
-        ext4_free_inodes_set(sb, gd, (__u32)After);
-        InodeDelta = After - Before;
-
-        /* set inode block dirty and add to vcb dirty range */
-        mark_buffer_dirty(bh);
-
-        /* update group_desc and super_block */
-        if (Type == EXT2_FT_DIR) {
-            ext4_used_dirs_set(sb, gd,
-                               ext4_used_dirs_count(sb, gd) - 1);
+    if (NT_SUCCESS(Status)) {
+        RtlInitializeBitMap(&Bitmap, (PULONG)bh->b_data, Ext2GroupInodes(Vcb, Group));
+        if (!RtlCheckBit(&Bitmap, Index)) {
+            Status = STATUS_DISK_CORRUPT_ERROR; /* freed already */
+        } else {
+            RtlClearBits(&Bitmap, Index, 1);
+            mark_buffer_dirty(bh);
+            if (Type == EXT2_FT_DIR && ext4_used_dirs_count(sb, gd) > 0) {
+                ext4_used_dirs_set(sb, gd, ext4_used_dirs_count(sb, gd) - 1);
+            }
+            Status = Ext2RecountGroupInodes(IrpContext, Vcb, Group, gd, bh);
         }
-        ext4_inode_bitmap_csum_set(sb, Group, gd, bh, EXT4_INODES_PER_GROUP(sb) / 8);
-        Ext2SaveGroup(IrpContext, Vcb, Group);
-        Ext2AdjustVcbStat(IrpContext, Vcb, 0, InodeDelta);
-        Status = STATUS_SUCCESS;
     }
 
-errorout:
-
-    if (Held) {
-        Ext2UnlockGroup(Held);
-    }
-
-    if (bh)
+    Ext2UnlockGroup(Held);
+    if (bh != NULL) {
         fini_bh(&bh);
-
-    if (gb)
+    }
+    if (gb != NULL) {
         fini_bh(&gb);
-
+    }
     return Status;
 }

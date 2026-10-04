@@ -79,6 +79,7 @@ static PEXT2_EXTENT Ext2AllocateExtent(void) { PEXT2_EXTENT e;if(fail_extent)ret
 static void Ext2DestroyExtentChain(PEXT2_EXTENT e) { while(e) { PEXT2_EXTENT n=e->Next;free(e);live_extents--;e=n; } }
 static NTSTATUS Ext2ReadWriteBlocks(PEXT2_IRP_CONTEXT c,PEXT2_VCB v,PEXT2_EXTENT e,ULONG n) { (void)c;(void)v;(void)e;(void)n;return raw_status; }
 static BOOLEAN Ext2SaveBuffer(PEXT2_IRP_CONTEXT c,PEXT2_VCB v,LONGLONG p,ULONG n,PVOID b) { (void)c;(void)v;(void)p;save_calls++;if(fail_save==save_calls)return FALSE;check(n<=sizeof(saved),"save capacity");memcpy(saved,b,n);return TRUE; }
+static BOOLEAN Ext2InodeHoldsNoData(INODE *i) { return i->i_blocks==0; }   /* no xattr block in the model */
 static BOOLEAN Ext2SaveInode(PEXT2_IRP_CONTEXT c,PEXT2_VCB v,INODE *i) { (void)c;(void)v;(void)i;inode_calls++;return fail_inode!=inode_calls; }
 static NTSTATUS Ext2TruncateFile(PEXT2_IRP_CONTEXT c,PEXT2_VCB v,PEXT2_MCB m,LARGE_INTEGER *n) { (void)c;(void)v;truncate_calls++;m->Inode->i_size=n->QuadPart;m->Inode->i_blocks=0;memset(map,0,sizeof(map));return STATUS_SUCCESS; }
 NTSTATUS Ext2BuildExtents(PEXT2_IRP_CONTEXT,PEXT2_VCB,PEXT2_MCB,ULONGLONG,ULONG,BOOLEAN,PEXT2_EXTENT*);

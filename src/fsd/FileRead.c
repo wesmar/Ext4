@@ -333,7 +333,7 @@ Ext2ReadInode (
 
 
         /* handle fast symlinks */
-        if (S_ISLNK(Mcb->Inode->i_mode) && 0 == Mcb->Inode->i_blocks) {
+        if (ext4_inode_is_fast_symlink(Mcb->Inode)) {
 
             PUCHAR Data = (PUCHAR) (&Mcb->Inode->i_block[0]);
             if (!Buffer) {

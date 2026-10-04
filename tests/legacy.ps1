@@ -55,9 +55,23 @@ foreach ($volume in $volumes) {
         finally { $file.Dispose() }
         [LegacyProof]::Write((Join-Path $proof 'deleted.bin'),$payload)
         [IO.File]::Delete((Join-Path $proof 'deleted.bin'))
+        # cut inside the single and the double indirect range: the indirect
+        # blocks left keep their head, the rest of the map goes
+        foreach ($cut in @(@('cut-ind.bin',102407), @('cut-dind.bin',6291461))) {
+            $path=Join-Path $proof $cut[0]
+            [LegacyProof]::Write($path,$payload)
+            $file=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+            try { $file.SetLength($cut[1]); $file.Flush($true) }
+            finally { $file.Dispose() }
+        }
     }
     [LegacyProof]::Check((Join-Path $proof 'payload.bin'),$payload)
     [LegacyProof]::Check((Join-Path $proof 'regrown.bin'),$regrown)
+    foreach ($cut in @(@('cut-ind.bin',102407), @('cut-dind.bin',6291461))) {
+        $head=New-Object byte[] ($cut[1])
+        [Array]::Copy($payload,$head,$cut[1])
+        [LegacyProof]::Check((Join-Path $proof $cut[0]),$head)
+    }
     if (Test-Path -LiteralPath (Join-Path $proof 'deleted.bin')) { throw 'Deleted file exists' }
     if (Test-Path -LiteralPath (Join-Path $proof 'original.bin')) { throw 'Old rename target exists' }
     "LEGACY-WIN: $expected $Phase passed"

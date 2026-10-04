@@ -370,7 +370,7 @@ Ext2QueryEa (
 		if (XattrRefAcquired) {
 			if (!NT_SUCCESS(Status)) {
 				xattr_ref.dirty = FALSE;
-				ext4_fs_put_xattr_ref(&xattr_ref);
+				(void)ext4_fs_put_xattr_ref(&xattr_ref);	/* a release: nothing written */
 			}
 			else
 				Status = Ext2WinntError(ext4_fs_put_xattr_ref(&xattr_ref));
@@ -584,7 +584,7 @@ Ext2SetEa (
 		if (XattrRefAcquired) {
 			if (!NT_SUCCESS(Status)) {
 				xattr_ref.dirty = FALSE;
-				ext4_fs_put_xattr_ref(&xattr_ref);
+				(void)ext4_fs_put_xattr_ref(&xattr_ref);	/* a release: nothing written */
 			} else
 				Status = Ext2WinntError(ext4_fs_put_xattr_ref(&xattr_ref));
 		}

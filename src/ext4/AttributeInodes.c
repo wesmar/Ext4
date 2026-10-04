@@ -189,7 +189,10 @@ int ext4_xattr_inode_create(struct ext4_xattr_ref *ref, const void *data,
 		return Ext2LinuxError(Status);
 
 	KeQuerySystemTime(&SysTime);
-	Ext2ClearInode(IrpContext, Vcb, iNo);
+	if (!Ext2ClearInode(IrpContext, Vcb, iNo)) {
+		ret = -EIO;
+		goto free_inode;
+	}
 	ei.i_sb = &Vcb->sb;
 	ei.i_ino = iNo;
 	ei.i_mode = S_IFREG | S_IRUSR | S_IWUSR;
@@ -202,7 +205,9 @@ int ext4_xattr_inode_create(struct ext4_xattr_ref *ref, const void *data,
 	if (Vcb->InodeSize > EXT2_GOOD_OLD_INODE_SIZE && le16_to_cpu(es->s_want_extra_isize))
 		ei.i_extra_isize = le16_to_cpu(es->s_want_extra_isize);
 	ei.i_flags = EXT4_EA_INODE_FL | EXT4_EXTENTS_FL;
-	ext4_ext_tree_init(IrpContext, NULL, &ei);
+	ret = ext4_ext_tree_init(IrpContext, NULL, &ei);
+	if (ret)
+		goto fail;	/* the empty tree is in memory: the truncate below holds */
 
 	while (done < size) {
 		ext4_fsblk_t pblk;
@@ -244,8 +249,16 @@ int ext4_xattr_inode_create(struct ext4_xattr_ref *ref, const void *data,
 	return 0;
 
 fail:
-	ext4_ext_truncate(IrpContext, &ei, 0);
-	Ext2FreeInode(IrpContext, Vcb, iNo, EXT2_FT_REG_FILE);
+	/* nothing points at the inode yet: its blocks and it go back, or the
+	   transaction holding them must not commit */
+	if (ext4_ext_truncate(IrpContext, &ei, 0) != 0) {
+		Ext2JournalAbandon(Vcb, STATUS_UNEXPECTED_IO_ERROR);
+		return ret;
+	}
+free_inode:
+	Status = Ext2FreeInode(IrpContext, Vcb, iNo, EXT2_FT_REG_FILE);
+	if (!NT_SUCCESS(Status))
+		Ext2JournalAbandon(Vcb, Status);
 	return ret;
 }
 
@@ -311,6 +324,5 @@ int ext4_xattr_inode_dec_ref(struct ext4_xattr_ref *ref, __u32 ino)
 	ret = ext4_xattr_inode_store(IrpContext, Vcb, &ei, 0);
 	if (ret)
 		return ret;
-	Ext2FreeInode(IrpContext, Vcb, ino, EXT2_FT_REG_FILE);
-	return 0;
+	return Ext2LinuxError(Ext2FreeInode(IrpContext, Vcb, ino, EXT2_FT_REG_FILE));
 }

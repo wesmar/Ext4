@@ -211,9 +211,8 @@ Ext2PrepareToUnload (IN PEXT2_IRP_CONTEXT IrpContext)
                 FsRtlNotifyCleanup(Vcb->NotifySync, &Vcb->NotifyList, NULL);
             }
 
-            Ext2FlushFiles(IrpContext, Vcb, FALSE);
-            Ext2FlushVolume(IrpContext, Vcb, FALSE);
-
+            (void)Ext2FlushFiles(IrpContext, Vcb, FALSE);
+            (void)Ext2FlushVolume(IrpContext, Vcb, FALSE);
             ExReleaseResourceLite(&Vcb->MainResource);
 
             Ext2PurgeVolume(Vcb, TRUE);

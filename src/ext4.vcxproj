@@ -100,6 +100,8 @@
     <ClCompile Include="ext4\ExtentTree.c" />
     <ClCompile Include="ext4\GroupCache.c" />
     <ClCompile Include="ext4\GroupDescriptors.c" />
+    <ClCompile Include="ext4\FreedBlocks.c" />
+    <ClCompile Include="ext4\MetadataMap.c" />
     <ClCompile Include="ext4\HtreeInsert.c" />
     <ClCompile Include="ext4\HtreeRead.c" />
     <ClCompile Include="ext4\InodeAllocator.c" />
@@ -225,6 +227,7 @@
     <ClInclude Include="core\core_internal.h" />
     <ClInclude Include="volume\crypt_internal.h" />
     <ClInclude Include="volume\vcb_internal.h" />
+    <ClInclude Include="ext4\BlockSearch.h" />
     <ClInclude Include="ext4\extents_internal.h" />
     <ClInclude Include="ext4\htree_internal.h" />
     <ClInclude Include="ext4\xattr_internal.h" />

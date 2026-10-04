@@ -581,6 +581,11 @@ Ext2InitializeSbInfo(IN PEXT2_VCB Vcb, IN PEXT2_SUPER_BLOCK sb)
         Vcb->sbi.s_hash_seed[i] = sb->s_hash_seed[i];
     }
     Vcb->sbi.s_def_hash_version = sb->s_def_hash_version;
+    /* Names with bytes above 0x7f hash by the signedness of char where
+       the volume was made: unsigned on an ARM board, which mkfs records.
+       Unrecorded, it is signed, as on x86 and here (Linux: ext4_fill_super). */
+    Vcb->sbi.s_hash_unsigned = (le32_to_cpu(sb->s_flags) & EXT2_FLAGS_UNSIGNED_HASH) ?
+                               DX_HASH_UNSIGNED_DELTA : 0;
 
     if (le32_to_cpu(sb->s_rev_level) == EXT3_GOOD_OLD_REV &&
             (EXT3_HAS_COMPAT_FEATURE(&Vcb->sb, ~0U) ||
@@ -654,7 +659,9 @@ Ext2LoadGroups(IN PEXT2_VCB Vcb, IN OUT PEXT2_MOUNT_STATE State)
         return STATUS_UNSUCCESSFUL;
     }
     State->GroupLoaded = TRUE;
-    return STATUS_SUCCESS;
+
+    /* where all the metadata is, for the allocator; freed with the groups */
+    return Ext2BuildMetadataMap(Vcb);
 }
 
 /* ---------------------------------------------------------------- 7. journal */
@@ -730,7 +737,7 @@ Ext2LoadRoot(IN PEXT2_VCB Vcb)
     Icb = Vcb->McbTree->Icb;
     Inode = Vcb->McbTree->Inode;
     if (!Ext2LoadInode(Vcb, Inode)) {
-        return STATUS_CANT_WAIT;
+        return STATUS_DISK_CORRUPT_ERROR;   /* no root, no volume */
     }
     SetLongFlag(Icb->Flags, ICB_INODE_LOADED);
 

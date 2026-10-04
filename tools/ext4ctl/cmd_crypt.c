@@ -8,14 +8,110 @@
 #include "ext4ctl.h"
 
 #define EXT4CTL_MAX_PASSPHRASE  (8 * 1024 * 1024)   /* cryptsetup's keyfile limit */
-#define EXT4CTL_MAX_VOLUMES     256                 /* HarddiskVolume1 .. N scanned by list */
 #define EXT4CTL_WS_MIN_EXTRA    (4 * 1024 * 1024)   /* working set above the passphrase buffer */
 #define EXT4CTL_WS_MAX_EXTRA    (16 * 1024 * 1024)
+#define EXT4CTL_LINKS_START     (64 * 1024)         /* characters for the DOS device names, doubled as needed */
+#define EXT4CTL_LINKS_MAX       (16 * 1024 * 1024)
 
 static void
 VolumeDevice(ULONG n, WCHAR *Out, size_t OutChars)
 {
     swprintf_s(Out, OutChars, L"\\Device\\HarddiskVolume%lu", n);
+}
+
+static int __cdecl
+CompareVolumeNumbers(const void *a, const void *b)
+{
+    ULONG x = *(const ULONG *)a, y = *(const ULONG *)b;
+
+    return x < y ? -1 : x > y;
+}
+
+/* Text is Prefix and a decimal number, nothing else: the number in *Number,
+   *Rest past it (may be NULL to ask for the end of Text) */
+static BOOL
+PrefixedNumber(const WCHAR *Text, const WCHAR *Prefix, ULONG *Number, const WCHAR **Rest)
+{
+    size_t  Length = wcslen(Prefix);
+    WCHAR  *End;
+
+    if (wcsncmp(Text, Prefix, Length) != 0 || !iswdigit(Text[Length])) {
+        return FALSE;
+    }
+    *Number = wcstoul(Text + Length, &End, 10);
+    if (Rest) {
+        *Rest = End;
+        return TRUE;
+    }
+    return *End == 0;
+}
+
+/*
+ * The numbers N of every partition volume, \Device\HarddiskVolumeN, in
+ * ascending order; the caller frees *Numbers (HeapFree). The DOS device
+ * links HarddiskDPartitionP, P > 0, name each partition of every basic
+ * disk, of any partition type. A scan of HarddiskVolume1..256 stood for
+ * this: the numbers grow with every disk that comes and goes in one boot,
+ * and past 256 no volume was found.
+ */
+static ULONG
+VolumeNumbers(ULONG **Numbers)
+{
+    HANDLE          Heap = GetProcessHeap();
+    WCHAR          *Links = NULL;
+    ULONG          *List = NULL, *Grown;
+    ULONG           Count = 0, Room = 0;
+    DWORD           Chars;
+    const WCHAR    *p;
+
+    *Numbers = NULL;
+    for (Chars = EXT4CTL_LINKS_START; ; Chars *= 2) {
+        Links = (WCHAR *)HeapAlloc(Heap, 0, Chars * sizeof(WCHAR));
+        if (Links == NULL) {
+            return 0;
+        }
+        if (QueryDosDeviceW(NULL, Links, Chars) != 0) {
+            break;
+        }
+        HeapFree(Heap, 0, Links);
+        Links = NULL;
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || Chars >= EXT4CTL_LINKS_MAX) {
+            return 0;
+        }
+    }
+
+    for (p = Links; *p; p += wcslen(p) + 1) {
+        WCHAR           Target[64];
+        const WCHAR    *Rest;
+        ULONG           Disk, Partition, Number;
+
+        /* exactly HarddiskDPartitionP, P > 0 (partition 0 is the disk) */
+        if (!PrefixedNumber(p, L"Harddisk", &Disk, &Rest) ||
+            !PrefixedNumber(Rest, L"Partition", &Partition, NULL) || Partition == 0) {
+            continue;
+        }
+        if (QueryDosDeviceW(p, Target, ARRAYSIZE(Target)) == 0 ||
+            !PrefixedNumber(Target, L"\\Device\\HarddiskVolume", &Number, NULL)) {
+            continue;
+        }
+        if (Count == Room) {
+            Room = Room ? Room * 2 : 64;
+            Grown = (ULONG *)(List ? HeapReAlloc(Heap, 0, List, Room * sizeof(ULONG))
+                                   : HeapAlloc(Heap, 0, Room * sizeof(ULONG)));
+            if (Grown == NULL) {
+                break;      /* the volumes found so far */
+            }
+            List = Grown;
+        }
+        List[Count++] = Number;
+    }
+    HeapFree(Heap, 0, Links);
+
+    if (Count > 1) {
+        qsort(List, Count, sizeof(ULONG), CompareVolumeNumbers);
+    }
+    *Numbers = List;
+    return Count;
 }
 
 static void
@@ -32,29 +128,34 @@ static BOOL
 VolumeByUuid(const WCHAR *Uuid, WCHAR *Out, size_t OutChars)
 {
     char    Want[EXT4_CRYPT_UUID_CHARS];
-    ULONG   n;
+    ULONG  *Numbers;
+    ULONG   Count, i;
+    BOOL    Found = FALSE;
 
     if (WideCharToMultiByte(CP_ACP, 0, Uuid, -1, Want, sizeof(Want), NULL, NULL) <= 0) {
         return FALSE;
     }
-    for (n = 1; n <= EXT4CTL_MAX_VOLUMES; n++) {
+    Count = VolumeNumbers(&Numbers);
+    for (i = 0; i < Count && !Found; i++) {
         WCHAR       Name[64];
         LUKS_DEVICE Dev;
         LUKS_VOLUME V;
-        BOOL        Match;
 
-        VolumeDevice(n, Name, ARRAYSIZE(Name));
+        VolumeDevice(Numbers[i], Name, ARRAYSIZE(Name));
         if (!LuksOpenDevice(&Dev, Name)) {
             continue;
         }
-        Match = LuksProbe(&Dev, &V) == 1 && _stricmp(V.Uuid, Want) == 0;
+        Found = LuksProbe(&Dev, &V) == 1 && _stricmp(V.Uuid, Want) == 0 &&
+                wcscpy_s(Out, OutChars, Name) == 0;
         LuksCloseDevice(&Dev);
-        if (Match) {
-            return wcscpy_s(Out, OutChars, Name) == 0;
-        }
     }
-    Fail("no LUKS volume with UUID %ls", Uuid);
-    return FALSE;
+    if (Numbers) {
+        HeapFree(GetProcessHeap(), 0, Numbers);
+    }
+    if (!Found) {
+        Fail("no LUKS volume with UUID %ls", Uuid);
+    }
+    return Found;
 }
 
 /* "5", "HarddiskVolume5", "\Device\...", "UUID=..." to an NT device name */
@@ -86,16 +187,18 @@ VolumeName(const WCHAR *Arg, WCHAR *Out, size_t OutChars)
 int
 CmdList(void)
 {
-    ULONG   n, Found = 0;
+    ULONG  *Numbers;
+    ULONG   Count, i, Found = 0;
 
     Say("%-28s %10s  %s", "volume", "size", "contents");
-    for (n = 1; n <= EXT4CTL_MAX_VOLUMES; n++) {
+    Count = VolumeNumbers(&Numbers);
+    for (i = 0; i < Count; i++) {
         WCHAR       Name[64];
         LUKS_DEVICE Dev;
         LUKS_VOLUME V;
         UINT8       Super[2];
 
-        VolumeDevice(n, Name, ARRAYSIZE(Name));
+        VolumeDevice(Numbers[i], Name, ARRAYSIZE(Name));
         if (!LuksOpenDevice(&Dev, Name)) {
             continue;
         }
@@ -112,6 +215,9 @@ CmdList(void)
             printf("%-28ls %8.1f G  ext2/3/4\n", Name, Dev.Size / EXT4CTL_GIB);
         }
         LuksCloseDevice(&Dev);
+    }
+    if (Numbers) {
+        HeapFree(GetProcessHeap(), 0, Numbers);
     }
     if (Found == 0) {
         Fail("no volume could be opened (run elevated)");

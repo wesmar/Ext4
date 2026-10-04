@@ -67,19 +67,22 @@ Ext2ShutDown (IN PEXT2_IRP_CONTEXT IrpContext)
                         Vcb->SuperBlock->s_mnt_count++;
                     }
 
-                    Ext2SaveSuper(IrpContext, Vcb);
+                    /* A shutdown has no one to report to: what fails to
+                       reach the disk here is replayed from the journal at
+                       the next mount, or found by e2fsck without one. */
+                    (void)Ext2SaveSuper(IrpContext, Vcb);
 
                     /* flush dirty cache for all files */
-                    Ext2FlushFiles(IrpContext, Vcb, TRUE);
+                    (void)Ext2FlushFiles(IrpContext, Vcb, TRUE);
 
                     /* flush volume stream's cache to disk */
-                    Ext2FlushVolume(IrpContext, Vcb, TRUE);
+                    (void)Ext2FlushVolume(IrpContext, Vcb, TRUE);
 
                     /* commit, checkpoint, empty the journal and mark the
                        fs cleanly unmounted; the engine stays up and would
                        re-mark the fs if anything else got written */
                     if (Vcb->Journal) {
-                        Ext2JournalMarkClean(Vcb);
+                        (void)Ext2JournalMarkClean(Vcb);
                     }
                     /* the volume is free for other nodes again */
                     Ext4MmpStop(Vcb, !IsFlagOn(Vcb->Flags, VCB_DEVICE_REMOVED));

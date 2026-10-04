@@ -83,8 +83,8 @@ Ext2FollowLink (
             __leave;
         }
 
-        /* read the symlink target path */
-        if (!Mcb->Inode->i_blocks) {
+        /* read the symlink target path: kept in i_block, or in a block */
+        if (ext4_inode_is_fast_symlink(Mcb->Inode)) {
 
             OemName.Buffer = (PCHAR)&Mcb->Inode->i_block[0];
             OemName.Length = (USHORT)Mcb->Inode->i_size;
@@ -337,7 +337,9 @@ Ext2InsertName (
 
         if (!Loaded) {
             Ext2FreeMcb(Vcb, Mcb);
-            return STATUS_CANT_WAIT;
+            /* unreadable or failing its checksum: CANT_WAIT would post the
+               request to be retried, again and again */
+            return STATUS_UNEXPECTED_IO_ERROR;
         }
     }
 

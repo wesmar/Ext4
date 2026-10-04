@@ -155,49 +155,65 @@ void Ext2EncodeInode(struct ext4_inode *dst,  struct inode *src)
     }
 }
 
+/*
+ * Inode Ino where it lives: the buffer of its inode table block, referenced
+ * (*Bh), and the inode inside it. An inode never spans two blocks - the
+ * inode size divides the block size - so it is read and written in place,
+ * with no copy and no allocation.
+ */
+static struct ext4_inode *
+Ext2MapRawInode(IN PEXT2_VCB Vcb, IN ULONG Ino, OUT struct buffer_head **Bh)
+{
+    LONGLONG Offset;
+
+    *Bh = NULL;
+    if (!Ext2GetInodeLba(Vcb, Ino, &Offset)) {
+        return NULL;
+    }
+    *Bh = sb_getblk(&Vcb->sb, (sector_t)(Offset >> BLOCK_BITS));
+    if (*Bh == NULL) {
+        return NULL;
+    }
+    if (!buffer_uptodate(*Bh) && bh_submit_read(*Bh) < 0) {
+        fini_bh(Bh);
+        return NULL;
+    }
+    return (struct ext4_inode *)((*Bh)->b_data + (Offset & (BLOCK_SIZE - 1)));
+}
+
 BOOLEAN
 Ext2LoadInode (IN PEXT2_VCB Vcb,
                IN struct inode *Inode)
 {
-    struct ext4_inode*      ext4i;
     struct ext4_inode_info  unused = {0};
-    LONGLONG                offset;
+    struct buffer_head     *bh;
+    struct ext4_inode      *raw = Ext2MapRawInode(Vcb, Inode->i_ino, &bh);
+    ULONG                   extra;
+    BOOLEAN                 Valid;
 
-    if (!Ext2GetInodeLba(Vcb, Inode->i_ino, &offset))  {
+    if (raw == NULL) {
         DEBUG(DL_ERR, ("Ext2LoadInode: failed inode %u.\n", Inode->i_ino));
-        return FALSE;
-    }
-
-    ext4i = (struct ext4_inode*) Ext2AllocatePool(NonPagedPool, EXT4_INODE_SIZE(Inode->i_sb), EXT2_INODE_MAGIC);
-    if (!ext4i) {
-        return FALSE;
-    }
-
-    if (!Ext2LoadBuffer(NULL, Vcb, offset, EXT4_INODE_SIZE(Inode->i_sb), ext4i)) {
-        Ext2FreePool(ext4i, EXT2_INODE_MAGIC);
         return FALSE;
     }
 
     /* an inode whose extended part does not fit itself is corrupt (Linux
        refuses it the same way) */
-    {
-        ULONG extra;
-
-        if (!Ext2ExtraIsize(Inode->i_sb, ext4i, &extra)) {
-            DbgPrint("ext4: inode %u: bad i_extra_isize %u\n", Inode->i_ino,
-                     (ULONG)le16_to_cpu(ext4i->i_extra_isize));
-            Ext2FreePool(ext4i, EXT2_INODE_MAGIC);
-            return FALSE;
+    Valid = Ext2ExtraIsize(Inode->i_sb, raw, &extra);
+    if (Valid) {
+        Ext2DecodeInode(Inode, raw);
+        /* A checksum that does not match is a corrupt inode, refused as
+           Linux refuses it (EFSBADCRC). It used to be loaded: written back
+           under a fresh checksum, the damage was then hidden from e2fsck. */
+        if (!ext4_inode_csum_verify(Inode, raw, &unused)) {
+            DbgPrint("ext4: inode %u: checksum does not match, refused\n", Inode->i_ino);
+            Valid = FALSE;
         }
+    } else {
+        DbgPrint("ext4: inode %u: bad i_extra_isize %u\n", Inode->i_ino,
+                 (ULONG)le16_to_cpu(raw->i_extra_isize));
     }
-
-    Ext2DecodeInode(Inode, ext4i);
-
-    ext4_inode_csum_verify(Inode, ext4i, &unused);
-
-    Ext2FreePool(ext4i, EXT2_INODE_MAGIC);
-
-    return TRUE;
+    fini_bh(&bh);
+    return Valid;
 }
 
 BOOLEAN
@@ -222,48 +238,77 @@ errorout:
     return rc;
 }
 
+/*
+ * The inode encoded in place, in its inode table block, and that block
+ * filed with the journal. Fields the encoding does not own - the rest of a
+ * large inode, extended attributes in its body - stay as they are.
+ */
 BOOLEAN
 Ext2SaveInode ( IN PEXT2_IRP_CONTEXT IrpContext,
                 IN PEXT2_VCB Vcb,
                 IN struct inode *Inode)
 {
-    struct ext4_inode*      ext4i;
     struct ext4_inode_info  unused = {0};
-    LONGLONG                offset;
-    BOOLEAN                 rc = 0;
+    struct buffer_head     *bh;
+    struct ext4_inode      *raw;
 
-    DEBUG(DL_INF, ( "Ext2SaveInode: Saving Inode %xh: Mode=%xh Size=%xh\n",
+    UNREFERENCED_PARAMETER(IrpContext);
+    DEBUG(DL_INF, ( "Ext2SaveInode: Saving Inode %xh: Mode=%xh Size=%I64xh\n",
                     Inode->i_ino, Inode->i_mode, Inode->i_size));
-    rc = Ext2GetInodeLba(Vcb,  Inode->i_ino, &offset);
-    if (!rc)  {
+
+    if (IsVcbReadOnly(Vcb)) {
+        return FALSE;
+    }
+    raw = Ext2MapRawInode(Vcb, Inode->i_ino, &bh);
+    if (raw == NULL) {
         DEBUG(DL_ERR, ( "Ext2SaveInode: failed inode %u.\n", Inode->i_ino));
-        goto errorout;
+        return FALSE;
     }
+    Ext2EncodeInode(raw, Inode);
+    ext4_inode_csum_set(Inode, raw, &unused);
+    mark_buffer_dirty(bh);
+    fini_bh(&bh);
 
-    ext4i = (struct ext4_inode*) Ext2AllocatePool(NonPagedPool, EXT4_INODE_SIZE(Inode->i_sb), EXT2_INODE_MAGIC);
-    if (!ext4i) {
-        rc = FALSE;
-        goto errorout;
+    /* filing the block may have stopped the journal (no memory for a record) */
+    return !IsVcbReadOnly(Vcb);
+}
+
+/*
+ * A symlink whose target is kept in i_block, not in a block: one without
+ * blocks of its own - an external xattr block (SELinux labels on a small
+ * inode) is counted in i_blocks too. Linux decides the same way
+ * (ext4_inode_is_fast_symlink); the length alone would not do, a 60 byte
+ * target is in a block.
+ */
+int ext4_inode_is_fast_symlink(struct inode *inode)
+{
+    if (!S_ISLNK(inode->i_mode) || Ext4IsInline(inode)) {
+        return 0;
     }
-
-    rc = Ext2LoadBuffer(NULL, Vcb, offset, EXT4_INODE_SIZE(Inode->i_sb), ext4i);
-    if (!rc) {
-        DEBUG(DL_ERR, ( "Ext2SaveInode: failed reading inode %u.\n", Inode->i_ino));
-        Ext2FreePool(ext4i, EXT2_INODE_MAGIC);
-        goto errorout;
+    if (inode->i_flags & EXT4_EA_INODE_FL) {
+        return inode->i_size != 0 && inode->i_size < EXT2_LINKLEN_IN_INODE;
     }
+    return Ext2InodeHoldsNoData(inode);
+}
 
-    Ext2EncodeInode(ext4i, Inode);
+/* no block of data, nor of its map: i_blocks counts the external xattr
+   block at most */
+BOOLEAN Ext2InodeHoldsNoData(struct inode *inode)
+{
+    PEXT2_VCB   Vcb = inode->i_sb->s_priv;
 
-    ext4_inode_csum_set(Inode, ext4i, &unused);
+    return inode->i_blocks == (inode->i_file_acl ? (BLOCK_SIZE >> EXT4_SECTOR_SHIFT) : 0);
+}
 
-    rc = Ext2SaveBuffer(IrpContext, Vcb, offset, EXT4_INODE_SIZE(Inode->i_sb), ext4i);
-
-
-    Ext2FreePool(ext4i, EXT2_INODE_MAGIC);
-
-errorout:
-    return rc;
+/* Inode written; a failure becomes *Status unless that already reports one
+   (the first error is the one an operation returns) */
+VOID
+Ext2SaveInodeStatus(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb,
+                    IN struct inode *Inode, IN OUT PNTSTATUS Status)
+{
+    if (!Ext2SaveInode(IrpContext, Vcb, Inode) && NT_SUCCESS(*Status)) {
+        *Status = STATUS_UNEXPECTED_IO_ERROR;
+    }
 }
 
 BOOLEAN

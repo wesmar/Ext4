@@ -29,10 +29,20 @@ typedef struct _EXT2_VCB {
     ULONG                       GroupLockMask;
     ERESOURCE                   SuperLock;
 
+    /* Every block of metadata of the volume as sorted, disjoint ranges:
+       read-only after mount, so read without a lock (ext4\MetadataMap.c) */
+    struct _EXT2_META_MAP      *MetaMap;
+
     /* Free block and inode totals, kept here and written to the superblock
        on flush (Ext2AdjustVcbStat, Ext2SyncSuperTotals) */
     volatile LONG64             FreeBlocks;
     volatile LONG64             FreeInodes;
+
+    /* Blocks free on disk that the allocator must not reuse before the
+       transaction that freed them commits, and the last transaction for
+       which a commit was asked on their account (ext4\FreedBlocks.c) */
+    volatile LONG64             FreedPending;
+    volatile LONG               FreedCommitAsked;
 
     /* Symlink targets of the name cache: Mcb->Target and the link type
        bits change under it exclusively and are followed under it shared.
@@ -333,9 +343,6 @@ struct _EXT2_ICB {
     /* Extents zone */
     EXT4_RUN_MAP                       Extents;
 
-    /* Metablocks */
-    EXT4_RUN_MAP                       MetaExts;
-
     /* Time stamps */
     LARGE_INTEGER                   CreationTime;
     LARGE_INTEGER                   LastWriteTime;
@@ -464,7 +471,9 @@ struct _EXT2_MCB {
 #define IsMcbDirectory(Mcb)     IsFlagOn((Mcb)->FileAttr, FILE_ATTRIBUTE_DIRECTORY)
 #define IsFileDeleted(Mcb)      IsFlagOn((Mcb)->Flags, MCB_FILE_DELETED)
 
-#define IsLinkInvalid(Mcb)      (IsMcbSymLink(Mcb) && IsFileDeleted(Mcb->Target))
+/* a symlink whose target is gone: deleted, or dropped (Target NULL) - read
+   under LinkLock, which a demotion of the link takes to drop it */
+#define IsLinkInvalid(Vcb, Mcb) (IsMcbSymLink(Mcb) && Ext2IsLinkDangling((Vcb), (Mcb)))
 
 /* removing this name removes the file: directories have no hard links */
 #define Ext2IsLastLink(Mcb)     (IsMcbDirectory(Mcb) || (Mcb)->Inode->i_nlink <= 1)

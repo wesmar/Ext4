@@ -1274,6 +1274,7 @@ struct ext4_sb_info {
 
     __u32 s_hash_seed[4];
     int s_def_hash_version;
+    int s_hash_unsigned;    /* 0, or DX_HASH_UNSIGNED_DELTA: see dx_hash_setup */
     __le32	s_csum_seed;	/* crc32c(uuid) if csum_seed set */
 };
 
@@ -1762,6 +1763,8 @@ static inline __le16 ext4_rec_len_to_disk(unsigned len, unsigned blocksize)
 #define DX_HASH_LEGACY_UNSIGNED		3
 #define DX_HASH_HALF_MD4_UNSIGNED	4
 #define DX_HASH_TEA_UNSIGNED		5
+/* from a signed hash version to its unsigned variant */
+#define DX_HASH_UNSIGNED_DELTA		(DX_HASH_LEGACY_UNSIGNED - DX_HASH_LEGACY)
 
 /* hash info structure used by the directory hash */
 struct dx_hash_info

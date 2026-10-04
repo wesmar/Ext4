@@ -345,6 +345,30 @@ static int ext4_group_used_meta_blocks(struct super_block *sb,
     return used_blocks;
 }
 
+/*
+ * The blocks at the start of a group that hold the superblock, the group
+ * descriptor table and the blocks reserved for its growth - primary or
+ * backup copies, as sparse_super and meta_bg place them. Zero for a group
+ * without them.
+ */
+ULONG Ext2GroupReservedBlocks(struct super_block *sb, ext4_group_t block_group)
+{
+    struct ext4_sb_info *sbi = EXT4_SB(sb);
+    ULONG                reserved = (ULONG)ext3_bg_has_super(sb, block_group);
+
+    if (!EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_META_BG) ||
+            (ULONGLONG)block_group < (ULONGLONG)le32_to_cpu(sbi->s_es->s_first_meta_bg) *
+            sbi->s_desc_per_block) {
+        if (reserved) {
+            reserved += (ULONG)ext4_bg_num_gdb(sb, block_group);
+            reserved += le16_to_cpu(sbi->s_es->s_reserved_gdt_blocks);
+        }
+    } else { /* For META_BG_BLOCK_GROUPS */
+        reserved += (ULONG)ext4_bg_num_gdb(sb, block_group);
+    }
+    return reserved;
+}
+
 /* Initializes an uninitialized block bitmap if given, and returns the
  * number of blocks free in the group. */
 unsigned ext4_init_block_bitmap(struct super_block *sb, struct buffer_head *bh,
@@ -360,20 +384,8 @@ unsigned ext4_init_block_bitmap(struct super_block *sb, struct buffer_head *bh,
         memset(bh->b_data, 0, sb->s_blocksize);
     }
 
-    /* Check for superblock and gdt backups in this group */
-    bit_max = ext3_bg_has_super(sb, block_group);
-
-    if (!EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_META_BG) ||
-            block_group < le32_to_cpu(sbi->s_es->s_first_meta_bg) *
-            sbi->s_desc_per_block) {
-        if (bit_max) {
-            bit_max += ext4_bg_num_gdb(sb, block_group);
-            bit_max +=
-                le16_to_cpu(sbi->s_es->s_reserved_gdt_blocks);
-        }
-    } else { /* For META_BG_BLOCK_GROUPS */
-        bit_max += ext4_bg_num_gdb(sb, block_group);
-    }
+    /* the superblock and descriptor table copies at the start of the group */
+    bit_max = (int)Ext2GroupReservedBlocks(sb, block_group);
 
     if (block_group == sbi->s_groups_count - 1) {
         /*

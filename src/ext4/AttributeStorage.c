@@ -333,6 +333,13 @@ static int ext4_xattr_block_fetch(struct ext4_xattr_ref *xattr_ref)
 	if (EXT4_XATTR_BHDR(xattr_ref->block_bh)->h_magic != cpu_to_le32(EXT4_XATTR_MAGIC) ||
 	    EXT4_XATTR_BHDR(xattr_ref->block_bh)->h_blocks != cpu_to_le32(1))
 		return -EFSCORRUPTED;
+	/* nor one whose checksum does not match (Linux: EFSBADCRC): changed
+	   and written back, its damage would be hidden under a fresh one */
+	if (!ext4_xattr_block_csum_verify(xattr_ref->inode_ref->Inode, xattr_ref->block_bh)) {
+		DbgPrint("ext4: inode %u: xattr block %I64u: checksum does not match\n",
+			 (ULONG)xattr_ref->inode_ref->Inode->i_ino, (ULONGLONG)xattr_ref->block_bh->b_blocknr);
+		return -EFSBADCRC;
+	}
 	return ext4_xattr_fetch_entries(xattr_ref, EXT4_XATTR_BFIRST(xattr_ref->block_bh),
 					xattr_ref->block_bh->b_data, xattr_ref->fs->BlockSize,
 					FALSE);

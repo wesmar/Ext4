@@ -54,78 +54,80 @@ Ext2OplockComplete (
 }
 
 /*
- *  Ext2LockIrp
- *
- *    performs buffer locking if we need pend the process of the Irp
- *
- *  Arguments:
- *    Context: the irp context
- *    Irp:     the I/O request packet.
- *
- *  Return Value:
- *    N/A
+ * The user's buffer of a request that goes on in another context - a
+ * worker, or after an oplock break - locked to an MDL: from there the
+ * buffer's address would be one of another process.
  */
+static NTSTATUS
+Ext2LockRequestBuffer(IN PEXT2_IRP_CONTEXT IrpContext, IN PIRP Irp)
+{
+    PEXTENDED_IO_STACK_LOCATION IrpSp = (PEXTENDED_IO_STACK_LOCATION)IoGetCurrentIrpStackLocation(Irp);
+    ULONG Code;
 
+    switch (IrpContext->MajorFunction) {
+
+    case IRP_MJ_READ:
+    case IRP_MJ_WRITE:
+        if (IsFlagOn(IrpContext->MinorFunction, IRP_MN_MDL)) {
+            return STATUS_SUCCESS;      /* the cache manager's MDL, no user buffer */
+        }
+        return Ext2LockUserBuffer(Irp, IrpSp->Parameters.Write.Length,
+                                  IrpContext->MajorFunction == IRP_MJ_READ ?
+                                  IoWriteAccess : IoReadAccess);
+
+    case IRP_MJ_DIRECTORY_CONTROL:
+        if (IrpContext->MinorFunction != IRP_MN_QUERY_DIRECTORY) {
+            return STATUS_SUCCESS;
+        }
+        return Ext2LockUserBuffer(Irp, IrpSp->Parameters.QueryDirectory.Length, IoWriteAccess);
+
+    case IRP_MJ_QUERY_EA:
+        return Ext2LockUserBuffer(Irp, IrpSp->Parameters.QueryEa.Length, IoWriteAccess);
+
+    case IRP_MJ_SET_EA:
+        return Ext2LockUserBuffer(Irp, IrpSp->Parameters.SetEa.Length, IoReadAccess);
+
+    case IRP_MJ_FILE_SYSTEM_CONTROL:
+        if (IrpContext->MinorFunction != IRP_MN_USER_FS_REQUEST) {
+            return STATUS_SUCCESS;
+        }
+        Code = IrpSp->Parameters.FileSystemControl.FsControlCode;
+        if (Code == FSCTL_GET_VOLUME_BITMAP || Code == FSCTL_GET_RETRIEVAL_POINTERS ||
+            Code == FSCTL_GET_RETRIEVAL_POINTER_BASE) {
+            return Ext2LockUserBuffer(Irp, IrpSp->Parameters.FileSystemControl.OutputBufferLength,
+                                      IoWriteAccess);
+        }
+        return STATUS_SUCCESS;
+
+    default:
+        return STATUS_SUCCESS;
+    }
+}
+
+/*
+ * The oplock package's pre-post routine: the request waits for a break
+ * and goes on in another context. A buffer that cannot be locked fails the
+ * request where it stands, raised as FastFat raises it.
+ */
 VOID
 Ext2LockIrp (
     IN PVOID Context,
     IN PIRP Irp
 )
 {
-    PIO_STACK_LOCATION IrpSp;
-    PEXT2_IRP_CONTEXT IrpContext;
+    PEXT2_IRP_CONTEXT IrpContext = (PEXT2_IRP_CONTEXT) Context;
+    NTSTATUS          Status;
 
     if (Irp == NULL) {
         return;
     }
 
-    IrpSp = IoGetCurrentIrpStackLocation(Irp);
-
-    IrpContext = (PEXT2_IRP_CONTEXT) Context;
-
-    if ( IrpContext->MajorFunction == IRP_MJ_READ ||
-            IrpContext->MajorFunction == IRP_MJ_WRITE ) {
-
-        /* lock the user's buffer to MDL, if the I/O is bufferred */
-
-        if (!IsFlagOn(IrpContext->MinorFunction, IRP_MN_MDL)) {
-
-            Ext2LockUserBuffer( Irp, IrpSp->Parameters.Write.Length,
-                                (IrpContext->MajorFunction == IRP_MJ_READ) ?
-                                IoWriteAccess : IoReadAccess );
-        }
-
-    } else if (IrpContext->MajorFunction == IRP_MJ_DIRECTORY_CONTROL
-               && IrpContext->MinorFunction == IRP_MN_QUERY_DIRECTORY) {
-
-        ULONG Length = ((PEXTENDED_IO_STACK_LOCATION) IrpSp)->Parameters.QueryDirectory.Length;
-        Ext2LockUserBuffer(Irp, Length, IoWriteAccess);
-
-    } else if (IrpContext->MajorFunction == IRP_MJ_QUERY_EA) {
-
-        ULONG Length = ((PEXTENDED_IO_STACK_LOCATION) IrpSp)->Parameters.QueryEa.Length;
-        Ext2LockUserBuffer(Irp, Length, IoWriteAccess);
-
-    } else if (IrpContext->MajorFunction == IRP_MJ_SET_EA) {
-        ULONG Length = ((PEXTENDED_IO_STACK_LOCATION) IrpSp)->Parameters.SetEa.Length;
-        Ext2LockUserBuffer(Irp, Length, IoReadAccess);
-
-    } else if ( (IrpContext->MajorFunction == IRP_MJ_FILE_SYSTEM_CONTROL) &&
-                (IrpContext->MinorFunction == IRP_MN_USER_FS_REQUEST) ) {
-        PEXTENDED_IO_STACK_LOCATION EIrpSp = (PEXTENDED_IO_STACK_LOCATION)IrpSp;
-        if ( (EIrpSp->Parameters.FileSystemControl.FsControlCode == FSCTL_GET_VOLUME_BITMAP) ||
-                (EIrpSp->Parameters.FileSystemControl.FsControlCode == FSCTL_GET_RETRIEVAL_POINTERS) ||
-                (EIrpSp->Parameters.FileSystemControl.FsControlCode == FSCTL_GET_RETRIEVAL_POINTER_BASE) ) {
-            ULONG Length = EIrpSp->Parameters.FileSystemControl.OutputBufferLength;
-            Ext2LockUserBuffer(Irp, Length, IoWriteAccess);
-        }
+    Status = Ext2LockRequestBuffer(IrpContext, Irp);
+    if (!NT_SUCCESS(Status)) {
+        Ext2RaiseStatus(IrpContext, Status);
     }
 
-    /* Mark the request as pending status */
-
     IoMarkIrpPending( Irp );
-
-    return;
 }
 
 NTSTATUS
@@ -140,8 +142,18 @@ Ext2QueueRequest (IN PEXT2_IRP_CONTEXT IrpContext)
     SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
     SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_REQUEUED);
 
-    /* make sure the buffer is kept valid in system context */
-    Ext2LockIrp(IrpContext, IrpContext->Irp);
+    /* The buffer must stay reachable from the worker. One that cannot be
+       locked fails the request here: completed, and still reported
+       pending, as it is marked - callers own nothing of it after this. */
+    if (IrpContext->Irp != NULL) {
+        NTSTATUS Status = Ext2LockRequestBuffer(IrpContext, IrpContext->Irp);
+
+        IoMarkIrpPending(IrpContext->Irp);
+        if (!NT_SUCCESS(Status)) {
+            Ext2CompleteIrpContext(IrpContext, Status);
+            return STATUS_PENDING;
+        }
+    }
 
     /* An I/O work item references the device object, and through it the
        driver: a queued request keeps the image loaded until it has run,

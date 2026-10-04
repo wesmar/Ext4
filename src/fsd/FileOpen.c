@@ -1055,15 +1055,24 @@ Openit:
                     LARGE_INTEGER Size;
                     ExAcquireResourceExclusiveLite(&Fcb->PagingIoResource, TRUE);
                     __try {
+                        /* the allocation of a create that failed; what stays
+                           past the end is legal and freed with the file */
                         Size.QuadPart = 0;
-                        Ext2TruncateFile(IrpContext, Vcb, Fcb->Mcb, &Size);
+                        (void)Ext2TruncateFile(IrpContext, Vcb, Fcb->Mcb, &Size);
                     } __finally {
                         ExReleaseResourceLite(&Fcb->PagingIoResource);
                     }
                 }
 
                 if (bCreated) {
-                    Ext2DeleteFile(IrpContext, Vcb, Fcb, Mcb);
+                    /* a file the failed create leaves behind is whole, only
+                       unwanted: said, not hidden */
+                    NTSTATUS Undo = Ext2DeleteFile(IrpContext, Vcb, Fcb, Mcb);
+
+                    if (!NT_SUCCESS(Undo)) {
+                        DbgPrint("ext4: a failed create left %wZ behind (%08x)\n",
+                                 &Mcb->FullName, Undo);
+                    }
                 }
             }
         }

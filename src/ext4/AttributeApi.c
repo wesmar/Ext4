@@ -237,8 +237,6 @@ int ext4_fs_put_xattr_ref(struct ext4_xattr_ref *ref)
 	sector_t orig_file_acl = ref->inode_ref->Inode->i_file_acl;
 	ret = ext4_xattr_write_to_disk(ref);
 	if (ref->IsOnDiskInodeDirty) {
-		ASSERT(ref->fs->InodeSize > EXT4_GOOD_OLD_INODE_SIZE);
-
 		/* As we may do block allocation in ext4_xattr_write_to_disk */
 		if (ret)
 			ref->inode_ref->Inode->i_file_acl = orig_file_acl;
@@ -248,17 +246,21 @@ int ext4_fs_put_xattr_ref(struct ext4_xattr_ref *ref)
 		 * included, and Ext2SaveInode computes it over what is in the
 		 * buffer at that moment. The other order left every inode with
 		 * in-inode xattrs changed from Windows with a stale checksum -
-		 * Linux refused its xattrs (EBADMSG) and e2fsck the inode. */
-		if (!ret) {
+		 * Linux refused its xattrs (EBADMSG) and e2fsck the inode.
+		 * An inode of 128 bytes has no such area: only the inode
+		 * changed (i_file_acl). Its save used to be asked for anyway
+		 * and to fail, so every removal of an xattr block there
+		 * reported EIO, and a delete kept the inode. */
+		if (!ret && ref->fs->InodeSize > EXT4_GOOD_OLD_INODE_SIZE) {
 			ret = Ext2SaveInodeXattr(ref->IrpContext,
 					ref->fs,
 					ref->inode_ref->Inode,
 					ref->OnDiskInode)
 				? 0 : -EIO;
-			if (!ret) {
-				ret = Ext2SaveInode(ref->IrpContext, ref->fs, ref->inode_ref->Inode)
-					? 0 : -EIO;
-			}
+		}
+		if (!ret) {
+			ret = Ext2SaveInode(ref->IrpContext, ref->fs, ref->inode_ref->Inode)
+				? 0 : -EIO;
 		}
 		ref->IsOnDiskInodeDirty = FALSE;
 	}
@@ -289,8 +291,10 @@ int ext4_fs_put_xattr_ref(struct ext4_xattr_ref *ref)
 		struct ext4_xattr_item *item;
 
 		list_for_each_entry(item, &ref->ordered_list, struct ext4_xattr_item, list_node) {
+			/* one that stays is only unattached, which e2fsck
+			   collects: nothing points at it */
 			if (item->ea_new && item->ea_ino)
-				ext4_xattr_inode_dec_ref(ref, item->ea_ino);
+				(void)ext4_xattr_inode_dec_ref(ref, item->ea_ino);
 		}
 	}
 	if (ref->ea_drop) {

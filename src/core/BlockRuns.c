@@ -169,17 +169,16 @@ Ext2ClearAllExtents(PEXT4_RUN_MAP  Zone)
 }
 
 /*
- * The block maps of an inode (Extents, MetaExts) cache what is on disk and
- * Ext2InitializeZone rebuilds them. The fast truncate frees exactly the
- * blocks they list, so a map that missed an update must not be trusted:
- * both are dropped and rebuilt from disk when next needed.
+ * The block map of an inode caches what is on disk, and
+ * Ext2InitializeZone rebuilds it. A map that missed an update must not be
+ * trusted - it would send I/O to a block the file no longer owns: it is
+ * dropped and rebuilt from disk when next needed.
  */
 VOID
 Ext2InvalidateZone(IN PEXT2_MCB Mcb)
 {
     ClearLongFlag(Mcb->Icb->Flags, ICB_ZONE_INITED);
     Ext2ClearAllExtents(&Mcb->Icb->Extents);
-    Ext2ClearAllExtents(&Mcb->Icb->MetaExts);
 }
 
 /*
@@ -402,59 +401,6 @@ Ext2LookupMcbExtent (
 }
 
 BOOLEAN
-Ext2AddMcbMetaExts (
-    IN PEXT2_VCB Vcb,
-    IN PEXT2_MCB Mcb,
-    IN ULONGLONG Block,
-    IN ULONG     Length
-)
-{
-    LONGLONG    Lbn = (LONGLONG)Block + 1;
-    BOOLEAN     rc;
-
-    UNREFERENCED_PARAMETER(Vcb);
-
-    rc = Ext4RunMapAdd(&Mcb->Icb->MetaExts, Lbn, Lbn, Length);
-
-    DEBUG(DL_EXT, ("Ext2AddMcbMetaExts: Block: %I64xh-%xh rc=%d Runs=%u\n", Block,
-                   Length, rc, Ext4RunMapCount(&Mcb->Icb->MetaExts)));
-
-    if (rc) {
-        Ext2CheckExtent(&Mcb->Icb->MetaExts, Lbn, Lbn, Length, TRUE);
-    } else {
-        Ext2InvalidateZone(Mcb);
-    }
-
-    return rc;
-}
-
-BOOLEAN
-Ext2RemoveMcbMetaExts (
-    IN PEXT2_VCB Vcb,
-    IN PEXT2_MCB Mcb,
-    IN ULONGLONG Block,
-    IN ULONG     Length
-)
-{
-    LONGLONG    Lbn = (LONGLONG)Block + 1;
-    BOOLEAN     rc;
-
-    UNREFERENCED_PARAMETER(Vcb);
-
-    rc = Ext4RunMapRemove(&Mcb->Icb->MetaExts, Lbn, Length);
-
-    DEBUG(DL_EXT, ("Ext2RemoveMcbMetaExts: Block: %I64xh-%xh Runs=%u\n", Block,
-                    Length, Ext4RunMapCount(&Mcb->Icb->MetaExts)));
-    if (rc) {
-        Ext2CheckExtent(&Mcb->Icb->MetaExts, Lbn, 0, Length, FALSE);
-    } else {
-        Ext2InvalidateZone(Mcb);
-    }
-
-    return rc;
-}
-
-BOOLEAN
 Ext2AddBlockExtent(
     IN PEXT2_VCB    Vcb,
     IN PEXT2_MCB    Mcb,
@@ -554,7 +500,6 @@ Ext2InitializeZone(
     ULONG       Mapped;
 
     Ext2ClearAllExtents(&Mcb->Icb->Extents);
-    Ext2ClearAllExtents(&Mcb->Icb->MetaExts);
 
     ASSERT(Mcb != NULL);
     End = (ULONG)((Mcb->Inode->i_size + BLOCK_SIZE - 1) >> BLOCK_BITS);
@@ -618,7 +563,6 @@ errorout:
 
     if (!IsZoneInited(Mcb)) {
         Ext2ClearAllExtents(&Mcb->Icb->Extents);
-        Ext2ClearAllExtents(&Mcb->Icb->MetaExts);
     }
 
     return Status;

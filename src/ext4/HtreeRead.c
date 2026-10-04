@@ -244,10 +244,14 @@ struct dx_frame *
         *err = ERR_BAD_DX_DIR;
         goto fail;
     }
-    hinfo->hash_version = root->info.hash_version;
-    hinfo->seed = EXT3_SB(dir->i_sb)->s_hash_seed;
-    if (dentry)
-        ext4_dir_hash(dir, dentry->d_name.name, dentry->d_name.len, hinfo);
+    dx_hash_setup(dir, root->info.hash_version, hinfo);
+    if (dentry) {
+        *err = ext4_dir_hash(dir, dentry->d_name.name, dentry->d_name.len, hinfo);
+        if (*err) {
+            __brelse(bh);
+            goto fail;
+        }
+    }
     hash = hinfo->hash;
 
     if (root->info.unused_flags & 1) {
@@ -472,7 +476,11 @@ int htree_dirblock_to_tree(struct ext2_icb *icb, struct file *dir_file,
             brelse (bh);
             return count;
         }
-        ext4_dir_hash(dir, de->name, de->name_len, hinfo);
+        err = ext4_dir_hash(dir, de->name, de->name_len, hinfo);
+        if (err) {
+            brelse(bh);
+            return err;     /* placed by a wrong hash, the listing would skip or repeat it */
+        }
         if ((hinfo->hash < start_hash) ||
                 ((hinfo->hash == start_hash) &&
                  (hinfo->minor_hash < start_minor_hash)))
@@ -515,8 +523,7 @@ int ext3_htree_fill_tree(struct ext2_icb *icb, struct file *dir_file,
                    start_minor_hash));
     dir = dir_file->f_dentry->d_inode;
     if (!(EXT3_I(dir)->i_flags & EXT3_INDEX_FL)) {
-        hinfo.hash_version = EXT3_SB(dir->i_sb)->s_def_hash_version;
-        hinfo.seed = EXT3_SB(dir->i_sb)->s_hash_seed;
+        dx_hash_setup(dir, EXT3_SB(dir->i_sb)->s_def_hash_version, &hinfo);
         count = htree_dirblock_to_tree(icb, dir_file, dir, 0, &hinfo,
                                        start_hash, start_minor_hash);
         *next_hash = ~0U;

@@ -93,8 +93,8 @@ Ext2CreateVolume(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb)
         !IsFlagOn(ShareAccess, FILE_SHARE_WRITE) ){
 
         if (!IsVcbReadOnly(Vcb)) {
-            Ext2FlushFiles(IrpContext, Vcb, FALSE);
-            Ext2FlushVolume(IrpContext, Vcb, FALSE);
+            (void)Ext2FlushFiles(IrpContext, Vcb, FALSE);
+            (void)Ext2FlushVolume(IrpContext, Vcb, FALSE);
         }
 
         SetLongFlag(Vcb->Flags, VCB_VOLUME_LOCKED);
@@ -104,8 +104,8 @@ Ext2CreateVolume(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb)
         if (FlagOn(IrpSp->FileObject->Flags, FO_NO_INTERMEDIATE_BUFFERING) &&
             FlagOn(DesiredAccess, FILE_READ_DATA | FILE_WRITE_DATA) ) {
             if (!IsVcbReadOnly(Vcb)) {
-                Ext2FlushFiles(IrpContext, Vcb, FALSE);
-                Ext2FlushVolume(IrpContext, Vcb, FALSE);
+                (void)Ext2FlushFiles(IrpContext, Vcb, FALSE);
+                (void)Ext2FlushVolume(IrpContext, Vcb, FALSE);
             }
         }
     }
@@ -265,6 +265,7 @@ Ext2SupersedeOrOverWriteFile(
 {
     LARGE_INTEGER   CurrentTime;
     LARGE_INTEGER   Size;
+    NTSTATUS        Status;
 
     KeQuerySystemTime(&CurrentTime);
 
@@ -281,14 +282,28 @@ Ext2SupersedeOrOverWriteFile(
     CcSetFileSizes(FileObject,
                    (PCC_FILE_SIZES)&Fcb->Header.AllocationSize);
 
-    Size.QuadPart = CEILING_ALIGNED(ULONGLONG,
-                                    (ULONGLONG)AllocationSize->QuadPart,
-                                    (ULONGLONG)BLOCK_SIZE);
+    /* All the old data goes, then the allocation asked for comes anew. It
+       used to be cut to the allocation size, or extended past the old end:
+       either way the old blocks stayed, mapped, with the old bytes in the
+       new file's allocation. */
+    Status = Ext2TruncateFile(IrpContext, Vcb, Fcb->Mcb, &Size);
+    if (NT_SUCCESS(Status)) {
+        Size.QuadPart = CEILING_ALIGNED(ULONGLONG,
+                                        (ULONGLONG)AllocationSize->QuadPart,
+                                        (ULONGLONG)BLOCK_SIZE);
+        if (Size.QuadPart > 0) {
+            Status = Ext2ExpandFile(IrpContext, Vcb, Fcb->Mcb, &Size);
+            if (!NT_SUCCESS(Status)) {
+                LARGE_INTEGER Zero = {0};
 
-    if ((loff_t)Size.QuadPart > Fcb->Inode->i_size) {
-        Ext2ExpandFile(IrpContext, Vcb, Fcb->Mcb, &Size);
-    } else {
-        Ext2TruncateFile(IrpContext, Vcb, Fcb->Mcb, &Size);
+                /* the part allocated goes again; failing, the volume has
+                   stopped writing and nothing of it reaches the disk */
+                (void)Ext2TruncateFile(IrpContext, Vcb, Fcb->Mcb, &Zero);
+            }
+        }
+    }
+    if (!NT_SUCCESS(Status)) {
+        return Status;
     }
 
     Fcb->Header.AllocationSize = Size;
@@ -308,7 +323,9 @@ Ext2SupersedeOrOverWriteFile(
     }
     Ext2SetInodeTime(&CurrentTime, &Fcb->Inode->i_mtime, &Fcb->Inode->i_mtime_extra);
     Ext2SetInodeTime(&CurrentTime, &Fcb->Inode->i_atime, &Fcb->Inode->i_atime_extra);
-    Ext2SaveInode(IrpContext, Vcb, Fcb->Inode);
+    if (!Ext2SaveInode(IrpContext, Vcb, Fcb->Inode)) {
+        return STATUS_UNEXPECTED_IO_ERROR;
+    }
 
     /* See if we need to overwrite EA of the file */
     return Ext2OverwriteEa(IrpContext, Vcb, Fcb, &IrpContext->Irp->IoStatus);

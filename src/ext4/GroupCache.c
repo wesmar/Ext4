@@ -32,6 +32,7 @@ VOID
 Ext2PutGroup(IN PEXT2_VCB Vcb)
 {
 
+    Ext2FreeMetadataMap(Vcb);
     if (NULL == Vcb->sbi.s_gd) {
         return;
     }

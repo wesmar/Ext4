@@ -26,6 +26,8 @@ int ext4_xattr_inode_read(struct ext4_xattr_ref *ref, __u32 ino, void *buf,
 typedef struct {
     MODEL_FS fs;
     MODEL_INODE inode;
+    MODEL_RUNTIME_INODE runtime_inode;
+    MODEL_MCB mcb;
     char block[4096];
     struct buffer_head bh;
     struct ext4_xattr_ref ref;
@@ -37,11 +39,17 @@ static void Init(FIXTURE *f, BOOL in_inode)
     memset(f, 0, sizeof(*f));
     PoolCalls = FailAt = EaReads = 0;
     EaReadError = 0;
+    ChecksumCalls = DiagnosticCalls = 0;
+    ChecksumValid = TRUE;
     LargestAllocation = 0;
     f->fs.InodeSize = sizeof(f->inode);
     f->fs.BlockSize = sizeof(f->block);
     f->inode.i_extra_isize = 32;
     f->bh.b_data = f->block;
+    f->bh.b_blocknr = 123;
+    f->runtime_inode.i_ino = 42;
+    f->mcb.Inode = &f->runtime_inode;
+    f->ref.inode_ref = &f->mcb;
     f->ref.fs = &f->fs;
     f->ref.OnDiskInode = &f->inode;
     f->ref.block_bh = &f->bh;
@@ -210,6 +218,30 @@ static void TestComparator(void)
     a.name_len = 0;
     Check(ext4_xattr_item_cmp(&a.node, &b.node) < 0);
 }
+static void TestChecksumGate(void)
+{
+    FIXTURE f;
+    Init(&f, FALSE);
+    Put(Entry(&f, FALSE), 4, sizeof(f.block) - 4, 0);
+    ChecksumValid = FALSE;
+    Check(ext4_xattr_fetch(&f.ref) == -EFSBADCRC);
+    Check(ChecksumCalls == 1 && DiagnosticCalls == 1);
+    Check(PoolCalls == 0 && PoolLive == 0 && EaReads == 0);
+    Check(!f.ref.root.rb_node && f.ref.ordered_list.next == &f.ref.ordered_list);
+
+    Init(&f, FALSE);
+    Put(Entry(&f, FALSE), 4, sizeof(f.block) - 4, 0);
+    memcpy(f.block + sizeof(f.block) - 4, "data", 4);
+    Check(ext4_xattr_fetch(&f.ref) == 0);
+    Check(ChecksumCalls == 1 && DiagnosticCalls == 0);
+    Cleanup(&f);
+
+    Init(&f, TRUE);
+    ChecksumValid = FALSE;
+    Check(ext4_xattr_fetch(&f.ref) == 0);
+    Check(ChecksumCalls == 0 && DiagnosticCalls == 0);
+    Cleanup(&f); /* In-body xattrs rely on the inode checksum, not a block verifier. */
+}
 static void TestRanges(void)
 {
     char buffer[1024];
@@ -236,7 +268,7 @@ int main(void)
     static_assert(offsetof(MODEL_INODE, i_extra_isize) == EXT4_GOOD_OLD_INODE_SIZE);
     TestLocal(TRUE); TestLocal(FALSE);
     TestEa(TRUE); TestEa(FALSE);
-    TestComparator(); TestRanges();
+    TestComparator(); TestRanges(); TestChecksumGate();
     FIXTURE f;
     Init(&f, TRUE);
     f.inode.i_extra_isize = UINT16_MAX;

@@ -69,6 +69,8 @@ typedef struct DECLSPEC_CACHEALIGN _EXT2_GROUP_STRIPE {
     ERESOURCE   BlockLock;
     ERESOURCE   InodeLock;
     EX_PUSH_LOCK DescLock;      /* not a spin lock: the descriptor is in a pageable cache view */
+    LIST_ENTRY  FreedGroups;    /* the stripe's groups with blocks freed by transactions
+                                   not yet committed, under BlockLock (ext4\FreedBlocks.c) */
 } EXT2_GROUP_STRIPE, *PEXT2_GROUP_STRIPE;
 
 /* buckets of the per-volume inode node hash (EXT2_VCB.IcbTable): as many

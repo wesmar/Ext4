@@ -129,6 +129,68 @@ int ext3_bg_has_super(struct super_block *sb, ext3_group_t group);
 
 unsigned long ext4_bg_num_gdb(struct super_block *sb, ext4_group_t group);
 
+ULONG Ext2GroupReservedBlocks(struct super_block *sb, ext4_group_t block_group);
+
+/* Inode written; a failure becomes *Status unless that already reports one */
+VOID Ext2SaveInodeStatus(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb,
+                         IN struct inode *Inode, IN OUT PNTSTATUS Status);
+
+/* no data block, nor block of its map: at most the external xattr block */
+BOOLEAN Ext2InodeHoldsNoData(struct inode *inode);
+
+/* the metadata of the whole volume as sorted block ranges (MetadataMap.c):
+   superblock and descriptor copies, bitmaps and inode tables of every
+   group, wherever flex_bg placed them; built once at mount */
+NTSTATUS Ext2BuildMetadataMap(IN PEXT2_VCB Vcb);
+VOID     Ext2FreeMetadataMap(IN PEXT2_VCB Vcb);
+BOOLEAN  Ext2MetadataOverlaps(IN PEXT2_VCB Vcb, IN ULONGLONG Block, IN ULONGLONG Count);
+
+/* the reach of an on-disk block pointer: an allocation never goes past it */
+#define EXT2_EXTENT_BLOCK_LIMIT     (1ULL << 48)    /* ext4 extent: 32 + 16 bits */
+#define EXT2_INDIRECT_BLOCK_LIMIT   (1ULL << 32)    /* ext2/ext3 block map: 32 bits */
+
+/* Ext2NewBlock: the new blocks' contents go through the journal (directory,
+   index, xattr and indirect blocks). Such a block may be one a transaction
+   not yet committed freed: its new contents reach it only through a
+   checkpoint after the commit, so a crash before leaves the old owner's
+   data in place. File data is written in place and must wait. */
+#define EXT2_ALLOC_JOURNALED        0x00000001
+
+/* the block bitmap of a lazily initialised group written out (BlockAllocator.c) */
+NTSTATUS
+Ext2MaterializeBlockBitmap(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group);
+
+/* blocks for Inode, counted in its i_blocks; and given back */
+NTSTATUS
+Ext2AllocateInodeBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN struct inode *Inode,
+                        IN ULONGLONG Goal, IN ULONG Flags, OUT PULONGLONG Block,
+                        IN OUT PULONG Count);
+NTSTATUS
+Ext2ReleaseInodeBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN struct inode *Inode,
+                       IN ULONGLONG Block, IN ULONG Count);
+
+/* blocks freed by transactions not yet committed (FreedBlocks.c), all under
+   the BlockLock of the group's stripe: at most two transactions are
+   uncommitted at a time, one slot each */
+#define EXT2_FREED_SLOTS        2
+#define EXT2_FREED_COMMIT_SHARE 8       /* ask for a commit at once when more than
+                                           1/8 of the free space waits for one */
+
+/* the overlay of Group for the allocator (NULL slots: none), committed slots
+   of the stripe emptied first */
+VOID    Ext2FreedBlocksOf(IN PEXT2_VCB Vcb, IN ULONG Group, OUT const ULONG64 *Busy[EXT2_FREED_SLOTS]);
+
+/* bits [Index, Index + Count) of Group freed, after the bitmap change was
+   filed in the journal; FALSE: no memory for the overlay, reusable at once */
+BOOLEAN Ext2DeferFreedBlocks(IN PEXT2_VCB Vcb, IN ULONG Group, IN ULONG Index, IN ULONG Count);
+
+VOID    Ext2DestroyFreedBlocks(IN PEXT2_VCB Vcb);
+
+/* at the top of a request that will grow file data from Allocated to Wanted
+   bytes, before it takes any lock: commit first when only blocks still
+   waiting for a commit could cover it */
+VOID    Ext2WaitForFreedBlocks(IN PEXT2_VCB Vcb, IN LONGLONG Allocated, IN LONGLONG Wanted);
+
 unsigned ext4_init_inode_bitmap(struct super_block *sb, struct buffer_head *bh,
                                 ext4_group_t block_group,
                                 struct ext4_group_desc *gdp);
@@ -345,7 +407,8 @@ Ext2NewBlock(
     IN ULONGLONG            BlockHint,
     OUT PULONGLONG          Block,
     IN OUT PULONG           Number,
-    IN ULONGLONG            BlockLimit
+    IN ULONGLONG            BlockLimit,
+    IN ULONG                Flags           /* EXT2_ALLOC_* */
 );
 
 NTSTATUS
@@ -416,18 +479,6 @@ Ext2SetParentEntry (
     IN ULONG               OldParent,
     IN ULONG               NewParent );
 
-NTSTATUS
-Ext2TruncateBlock(
-    IN PEXT2_IRP_CONTEXT IrpContext,
-    IN PEXT2_VCB         Vcb,
-    IN PEXT2_MCB         Mcb,
-    IN ULONG             Base,
-    IN ULONG             Start,
-    IN ULONG             Layer,
-    IN ULONG             SizeArray,
-    IN __u32 *            BlockArray,
-    IN PULONG            Extra
-);
 
 struct ext3_dir_entry_2 *ext3_next_entry(struct ext3_dir_entry_2 *p);
 

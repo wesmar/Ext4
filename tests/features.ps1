@@ -306,5 +306,32 @@ if ($iv) {
     Check 'a non-empty inline directory refused' (Refused { [IO.Directory]::Delete("$iv\nonempty") })
 }
 
+"-- a volume made where char is unsigned; symlinks with an xattr block, or a 60-byte target"
+$uv = Volume 'uhtest' 30
+Check 'unsigned-hash volume mounted' ($uv -ne $null)
+if ($uv) {
+    # names with bytes above 0x7f hash otherwise when char is unsigned: hashed
+    # as signed, they are looked for in the wrong leaf
+    $idx = "$uv\idx"
+    $miss = 0
+    for ($i = 1; $i -le 600; $i++) {
+        try { if ([IO.File]::ReadAllText("$idx\Żółć-ąę-$i-ŚŃ.txt") -ne "u$i`n") { $miss++ } } catch { $miss++ }
+    }
+    Check 'Linux names found through the unsigned index' ($miss -eq 0) "($miss of 600 missing)"
+    for ($i = 1; $i -le 500; $i++) { [IO.File]::WriteAllText("$idx\Nowy-Źdźbło-$i-ĘĄ.txt", "w$i`n") }
+    $miss = 0
+    for ($i = 1; $i -le 500; $i++) { if (-not [IO.File]::Exists("$idx\Nowy-Źdźbło-$i-ĘĄ.txt")) { $miss++ } }
+    Check '500 names written into it, found again' ($miss -eq 0) "($miss missing)"
+    # a fast symlink keeps its target in i_block even when an xattr block
+    # makes i_blocks non-zero; a 60-byte target is in a block
+    Check 'a fast symlink with an xattr block, read through' ($(try { [IO.File]::ReadAllText("$uv\fast-xattr") } catch { $_ }) -eq "target`n")
+    Check 'a symlink with a 60-byte target, read through' ($(try { [IO.File]::ReadAllText("$uv\slow-60") } catch { $_ }) -eq "sixty`n")
+    Check 'a plain fast symlink, read through' ($(try { [IO.File]::ReadAllText("$uv\fast-plain") } catch { $_ }) -eq "target`n")
+    [IO.File]::Delete("$uv\fast-xattr")
+    [IO.File]::Delete("$uv\slow-60")
+    Check 'both deleted, their targets kept' (-not (Test-Path -LiteralPath "$uv\fast-xattr") -and -not (Test-Path -LiteralPath "$uv\slow-60") -and
+                                             [IO.File]::Exists("$uv\target.txt") -and (Get-ChildItem -LiteralPath $uv -Filter 'tttt*').Count -eq 1)
+}
+
 "FEATURES-WIN: $fail failed"
 exit $fail

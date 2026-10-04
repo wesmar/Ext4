@@ -81,7 +81,8 @@ Ext2LockUserBuffer (IN PIRP     Irp,
     NTSTATUS Status;
     ASSERT(Irp != NULL);
 
-    if (Irp->MdlAddress != NULL) {
+    /* nothing to lock: no MDL describes an empty buffer */
+    if (Irp->MdlAddress != NULL || Length == 0) {
         return STATUS_SUCCESS;
     }
 

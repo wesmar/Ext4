@@ -302,6 +302,49 @@ Ext2JournalIsActive(IN PEXT2_VCB Vcb)
 }
 
 /*
+ * Read after the change was filed (mark_buffer_dirty): the running
+ * transaction switches only once it is sealed, and it seals only when no
+ * handle is active in it - so the transaction holding the change is this
+ * one or an older one. Waiting for this one to commit is never too early.
+ */
+BOOLEAN
+Ext2JournalFreeingTid(IN PEXT2_VCB Vcb, OUT PULONG Tid)
+{
+    PEXT2_JOURNAL   J = Vcb->Journal;
+    KIRQL           irql;
+    BOOLEAN         Logging;
+
+    if (J == NULL) {
+        return FALSE;
+    }
+    JnlLock(J, irql);
+    Logging = (J->Flags & JF_ACTIVE) && !(J->Flags & JF_ABORTED);
+    if (Logging) {
+        *Tid = J->Running->Tid;
+    }
+    JnlUnlock(J, irql);
+    return Logging;
+}
+
+/* an engine no longer logging has committed all it ever will: a clean stop
+   commits everything, an abort leaves the volume read-only */
+BOOLEAN
+Ext2JournalCommitted(IN PEXT2_VCB Vcb, IN ULONG Tid)
+{
+    PEXT2_JOURNAL   J = Vcb->Journal;
+    KIRQL           irql;
+    BOOLEAN         Done;
+
+    if (J == NULL) {
+        return TRUE;
+    }
+    JnlLock(J, irql);
+    Done = !(J->Flags & JF_ACTIVE) || tid_geq(J->CommitSequence, (tid_t)Tid);
+    JnlUnlock(J, irql);
+    return Done;
+}
+
+/*
  * mark_buffer_dirty() hook: file the buffer into the running transaction.
  * Returns TRUE when the engine owns the operation, including an abort.
  * Only an inactive engine permits the legacy dirty-buffer path.
@@ -388,12 +431,44 @@ Ext2JournalDirtyBuffer(IN PEXT2_VCB Vcb, IN struct buffer_head *bh)
  * live log window must be revoked so that replay does not resurrect old
  * metadata into a block that may be reused for data (invariant I3).
  */
+/*
+ * The cached buffer with the lowest block number in [First, End), referenced,
+ * or NULL. The tree is ordered by block number: the walk goes left whenever
+ * a node is a candidate, so it ends at the lower bound - O(log n) per
+ * buffer found, whatever the size of the range.
+ */
+static struct buffer_head *
+JnlFirstBufferIn(IN struct block_device *bdev, IN ULONGLONG First, IN ULONGLONG End)
+{
+    struct rb_node     *node;
+    struct buffer_head *found = NULL;
+
+    ExAcquireResourceSharedLite(&bdev->bd_bh_lock, TRUE);
+    node = bdev->bd_bh_root.rb_node;
+    while (node) {
+        struct buffer_head *b = container_of(node, struct buffer_head, b_rb_node);
+        if (b->b_blocknr >= First) {
+            found = b;
+            node = node->rb_left;
+        } else {
+            node = node->rb_right;
+        }
+    }
+    if (found != NULL && found->b_blocknr < End) {
+        get_bh(found);
+    } else {
+        found = NULL;
+    }
+    ExReleaseResourceLite(&bdev->bd_bh_lock);
+    return found;
+}
+
 BOOLEAN
 Ext2JournalRevokeBlocks(IN PEXT2_VCB Vcb, IN ULONGLONG Block, IN ULONG Count)
 {
     PEXT2_JOURNAL        J = Vcb->Journal;
     struct block_device *bdev = &Vcb->bd;
-    ULONG                i;
+    ULONGLONG            Next = Block, End = Block + Count;
 
     if (!J || !(J->Flags & JF_ACTIVE))
         return TRUE;
@@ -403,57 +478,20 @@ Ext2JournalRevokeBlocks(IN PEXT2_VCB Vcb, IN ULONGLONG Block, IN ULONG Count)
     if (JnlActivate(J) == NULL)
         return FALSE;
 
-    for (i = 0; i < Count; i++) {
+    /* only blocks with a buffer can have a copy in the live log window:
+       a block never journaled while it is there has no buffer to find */
+    while (Next < End) {
 
-        struct buffer_head *bh = NULL;
+        struct buffer_head *bh = JnlFirstBufferIn(bdev, Next, End);
         PEXT2_JREC          r;
         PEXT2_JTXN          t;
         KIRQL               irql;
-        struct rb_node     *node;
-        ULONGLONG           blk = Block + i;
+        ULONGLONG           blk;
 
-        /* look the block up in the bh tree; a large range (a big file
-           being freed) walks the tree once instead of probing per block */
-        ExAcquireResourceSharedLite(&bdev->bd_bh_lock, TRUE);
-        if (Count > 256) {
-            node = rb_first(&bdev->bd_bh_root);
-            while (node) {
-                struct buffer_head *b = container_of(node, struct buffer_head, b_rb_node);
-                if (b->b_blocknr >= blk) {
-                    if (b->b_blocknr < Block + Count) {
-                        bh = b;
-                        i = (ULONG)(b->b_blocknr - Block);
-                    } else {
-                        i = Count;      /* nothing left in range */
-                    }
-                    break;
-                }
-                node = rb_next(node);
-            }
-            if (!node)
-                i = Count;
-        } else {
-            node = bdev->bd_bh_root.rb_node;
-            while (node) {
-                struct buffer_head *b = container_of(node, struct buffer_head, b_rb_node);
-                if (blk < b->b_blocknr)
-                    node = node->rb_left;
-                else if (blk > b->b_blocknr)
-                    node = node->rb_right;
-                else {
-                    bh = b;
-                    break;
-                }
-            }
-        }
-        if (bh)
-            get_bh(bh);
-        ExReleaseResourceLite(&bdev->bd_bh_lock);
-
-        if (!bh)
-            continue;       /* never journaled while in the live window */
-
+        if (bh == NULL)
+            break;
         blk = bh->b_blocknr;
+        Next = blk + 1;
         r = ExAllocateFromNPagedLookasideList(&J->RecLookaside);
 
         JnlLock(J, irql);

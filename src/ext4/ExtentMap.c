@@ -47,7 +47,9 @@ Ext2MapExtent(
     if (eh->eh_magic != EXT4_EXT_MAGIC) {
         if (Alloc) {
             /* now initialize inode extent root node */
-            ext4_ext_tree_init(IrpContext, NULL, Mcb->Inode);
+            rc = ext4_ext_tree_init(IrpContext, NULL, Mcb->Inode);
+            if (rc != 0)
+                return Ext2WinntError(rc);
         } else {
             /* return empty-mapping when inode extent isn't initialized */
             if (Block)
@@ -141,7 +143,9 @@ Ext2DoExtentExpand(
     eh = get_ext4_header(Mcb->Inode);
 
     if (eh->eh_magic != EXT4_EXT_MAGIC) {
-        ext4_ext_tree_init(IrpContext, NULL, Mcb->Inode);
+        rc = ext4_ext_tree_init(IrpContext, NULL, Mcb->Inode);
+        if (rc != 0)
+            return Ext2WinntError(rc);
     }
 
     if ((rc = ext4_ext_get_blocks( IrpContext, NULL, Mcb->Inode, Index,
@@ -221,32 +225,24 @@ Ext2TruncateExtent(
     )
 {
     NTSTATUS Status = STATUS_SUCCESS;
-
-    ULONG    Extra = 0;
-    ULONG    Wanted = 0;
-    ULONG    End;
+    ULONG    Wanted;
     int      err;
 
-    /* translate file size to block */
-    End = MAXULONG; /* extents use logical indexes, not indirect-file capacity */
+    /* the first logical block that goes; extents index blocks by 32 bits */
     Wanted = (ULONG)((Size->QuadPart + BLOCK_SIZE - 1) >> BLOCK_BITS);
 
-    /* calculate blocks to be freed */
-    Extra = End - Wanted;
-
+    /* Failing part way, the tree has lost some of the blocks past Wanted
+       and nobody knows which: every cached run goes, not only those past
+       Wanted - a run left behind would map a freed block. Size stays as
+       asked: an allocation reported short only makes a later extension
+       find blocks that are already there. */
     err = ext4_ext_truncate(IrpContext, Mcb->Inode, Wanted);
-    if (err == 0) {
-        if (!Ext2RemoveBlockExtent(Vcb, Mcb, Wanted, Extra)) {
-            ClearLongFlag(Mcb->Icb->Flags, ICB_ZONE_INITED);
-            Ext2ClearAllExtents(&Mcb->Icb->Extents);
-        }
-        Extra = 0;
-    } else {
-        Status = STATUS_INSUFFICIENT_RESOURCES;
+    if (err != 0) {
+        Status = Ext2WinntError(err);
     }
-
-    if (!NT_SUCCESS(Status)) {
-        Size->QuadPart += ((ULONGLONG)Extra << BLOCK_BITS);
+    if (err != 0 || !Ext2RemoveBlockExtent(Vcb, Mcb, Wanted, MAXULONG - Wanted)) {
+        ClearLongFlag(Mcb->Icb->Flags, ICB_ZONE_INITED);
+        Ext2ClearAllExtents(&Mcb->Icb->Extents);
     }
 
     if (Mcb->Inode->i_size > (loff_t)(Size->QuadPart))
@@ -421,8 +417,7 @@ int ext4_ext_get_blocks(void *icb, handle_t *handle, struct inode *inode, ext4_l
 	/* allocate new block */
 	goal = ext4_ext_find_goal(inode, path, iblock);
 
-	newblock = ext4_new_meta_blocks(icb, handle, inode, goal, 0,
-			&allocated, &err);
+	newblock = ext4_new_data_blocks(icb, inode, goal, &allocated, &err);
 	if (!newblock)
 		goto out2;
 
@@ -439,13 +434,17 @@ int ext4_ext_get_blocks(void *icb, handle_t *handle, struct inode *inode, ext4_l
 
 	if (err) {
 		/* Roll back exactly this allocation. ee_len also carries the
-		 * unwritten flag (0x8000), which is not part of the block count. */
-		ext4_free_blocks(icb, handle, inode, NULL, newblock,
+		 * unwritten flag (0x8000), which is not part of the block count.
+		 * Blocks that cannot go back stop the journal. */
+		(void)ext4_free_blocks(icb, handle, inode, NULL, newblock,
 				(int)allocated, get_default_free_blocks_flags(inode));
 		goto out2;
 	}
-	
-	ext4_mark_inode_dirty(icb, handle, inode);
+
+	/* the tree's root, and i_blocks, live in the inode */
+	err = ext4_mark_inode_dirty(icb, handle, inode);
+	if (err)
+		goto out2;
 
 	/* previous routine could use block we allocated */
 	if (ext4_ext_is_unwritten(&newex))

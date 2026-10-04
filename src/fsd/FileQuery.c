@@ -248,7 +248,7 @@ Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
             FileBasicInformation->ChangeTime = Mcb->Icb->ChangeTime;
 
             FileBasicInformation->FileAttributes = Mcb->FileAttr;
-            if (IsLinkInvalid(Mcb)) {
+            if (IsLinkInvalid(Vcb, Mcb)) {
                 ClearFlag(FileBasicInformation->FileAttributes, FILE_ATTRIBUTE_DIRECTORY);
             }
             if (FileBasicInformation->FileAttributes == 0) {
@@ -278,7 +278,7 @@ Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
             else
                 FSI->DeletePending = IsFlagOn(Fcb->Flags, FCB_DELETE_PENDING);
 
-            if (IsLinkInvalid(Mcb)) {
+            if (IsLinkInvalid(Vcb, Mcb)) {
                 FSI->Directory = FALSE;
                 FSI->AllocationSize.QuadPart = 0;
                 FSI->EndOfFile.QuadPart = 0;
@@ -336,7 +336,7 @@ Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 
             xattr_ref.iter_arg = &FileEaInformation->EaSize;
             ext4_fs_xattr_iterate(&xattr_ref, Ext2IterateAllEa);
-            ext4_fs_put_xattr_ref(&xattr_ref);
+            (void)ext4_fs_put_xattr_ref(&xattr_ref);    /* read only: nothing written */
 
             if (FileEaInformation->EaSize)
                 FileEaInformation->EaSize += 4;
@@ -456,7 +456,7 @@ Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
             else
                 FSI->DeletePending = IsFlagOn(Fcb->Flags, FCB_DELETE_PENDING);
 
-            if (IsLinkInvalid(Mcb)) {
+            if (IsLinkInvalid(Vcb, Mcb)) {
                 FSI->Directory = FALSE;
                 FSI->AllocationSize.QuadPart = 0;
                 FSI->EndOfFile.QuadPart = 0;
@@ -519,7 +519,7 @@ Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
             PFNOI = (PFILE_NETWORK_OPEN_INFORMATION) Buffer;
 
             PFNOI->FileAttributes = Mcb->FileAttr;
-            if (IsLinkInvalid(Mcb)) {
+            if (IsLinkInvalid(Vcb, Mcb)) {
                 ClearFlag(PFNOI->FileAttributes, FILE_ATTRIBUTE_DIRECTORY);
                 PFNOI->AllocationSize.QuadPart = 0;
                 PFNOI->EndOfFile.QuadPart = 0;
@@ -559,7 +559,7 @@ Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 
             FATI = (PFILE_ATTRIBUTE_TAG_INFORMATION) Buffer;
             FATI->FileAttributes = Mcb->FileAttr;
-            if (IsLinkInvalid(Mcb)) {
+            if (IsLinkInvalid(Vcb, Mcb)) {
                 ClearFlag(FATI->FileAttributes, FILE_ATTRIBUTE_DIRECTORY);
             }
             /* the tag goes with the attribute, as on NTFS. DeleteFileW reads
@@ -606,7 +606,7 @@ Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
             FSLI->TotalNumberOfLinks = Mcb->Inode->i_nlink;
             FSLI->DeletePending = IsFlagOn(Fcb->Flags, FCB_DELETE_PENDING) ||
                                   IsFlagOn(Mcb->Flags, MCB_DELETE_PENDING);
-            FSLI->Directory = IsMcbDirectory(Mcb) && !IsLinkInvalid(Mcb);
+            FSLI->Directory = IsMcbDirectory(Mcb) && !IsLinkInvalid(Vcb, Mcb);
             Irp->IoStatus.Information = sizeof(FILE_STANDARD_LINK_INFORMATION);
             Status = STATUS_SUCCESS;
         }

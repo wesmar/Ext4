@@ -437,7 +437,8 @@ void ext4_ext_try_to_merge_up(void *icb, handle_t *handle,
 	path[0].p_hdr->eh_max = cpu_to_le16(max_root);
 
 	extents_brelse(path[1].p_bh);
-	ext4_free_blocks(icb, handle, inode, NULL, blk, 1,
+	/* a block that cannot go back stops the journal (Ext2ReleaseInodeBlocks) */
+	(void)ext4_free_blocks(icb, handle, inode, NULL, blk, 1,
 			EXT4_FREE_BLOCKS_METADATA | EXT4_FREE_BLOCKS_FORGET);
 }
 

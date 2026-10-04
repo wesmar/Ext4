@@ -313,7 +313,8 @@ cleanup:
 		for (i = 0; i < depth; i++) {
 			if (!ablocks[i])
 				continue;
-			ext4_free_blocks(icb, handle, inode, NULL, ablocks[i], 1,
+			/* one that cannot go back stops the journal */
+			(void)ext4_free_blocks(icb, handle, inode, NULL, ablocks[i], 1,
 					EXT4_FREE_BLOCKS_METADATA);
 		}
 	}
@@ -391,7 +392,7 @@ static int ext4_ext_grow_indepth(void *icb, handle_t *handle, struct inode *inod
 			ext4_idx_pblock(EXT_FIRST_INDEX(neh)));
 
 	le16_add_cpu(&neh->eh_depth, 1);
-	ext4_mark_inode_dirty(icb, handle, inode);
+	err = ext4_mark_inode_dirty(icb, handle, inode);
 out:
 	extents_brelse(bh);
 

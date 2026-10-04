@@ -11,11 +11,13 @@
 typedef uint8_t __u8;
 typedef uint16_t __u16, __le16;
 typedef uint32_t __u32, __le32, ULONG;
-typedef uint64_t __u64;
+typedef uint64_t __u64, ULONGLONG;
 typedef int32_t __s32;
 typedef uintptr_t ULONG_PTR;
 typedef int BOOL;
-typedef void *PEXT2_IRP_CONTEXT, *PEXT2_MCB;
+typedef void *PEXT2_IRP_CONTEXT;
+typedef struct { __u32 i_ino; } MODEL_RUNTIME_INODE;
+typedef struct { MODEL_RUNTIME_INODE *Inode; } MODEL_MCB, *PEXT2_MCB;
 typedef struct {
     unsigned char legacy[128];
     __le16 i_extra_isize;
@@ -23,11 +25,12 @@ typedef struct {
 } MODEL_INODE, *PEXT2_INODE;
 typedef struct { BOOL ea_inode; } MODEL_SUPER;
 typedef struct { ULONG InodeSize, BlockSize; MODEL_SUPER sb; } MODEL_FS, *PEXT2_VCB;
-struct buffer_head { char *b_data; };
+struct buffer_head { char *b_data; __u64 b_blocknr; };
 #define TRUE 1
 #define FALSE 0
 #define ASSERT assert
 #define EFSCORRUPTED 990
+#define EFSBADCRC 991
 #define GFP_NOFS 0
 #define EXT4_GOOD_OLD_INODE_SIZE 128
 #define __attribute__(x)
@@ -40,6 +43,21 @@ struct buffer_head { char *b_data; };
 #define cpu_to_le16(x) ((__le16)(x))
 #define cpu_to_le32(x) ((__le32)(x))
 static unsigned PoolCalls, PoolLive, FailAt;
+static unsigned ChecksumCalls, DiagnosticCalls;
+static BOOL ChecksumValid;
+/* The parser model injects the verifier result; it does not model CRC32C. */
+static BOOL ext4_xattr_block_csum_verify(const MODEL_RUNTIME_INODE *inode,
+    const struct buffer_head *bh)
+{
+    assert(inode && inode->i_ino == 42 && bh && bh->b_blocknr == 123);
+    ChecksumCalls++;
+    return ChecksumValid;
+}
+static void DbgPrint(const char *format, ...)
+{
+    assert(format);
+    DiagnosticCalls++;
+}
 static size_t LargestAllocation;
 static void *ModelAllocate(size_t size)
 {

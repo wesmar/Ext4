@@ -61,11 +61,6 @@ Ext2FreeIcb(IN PEXT2_VCB Vcb, IN PEXT2_ICB Icb)
         Ext2ListExtents(&Icb->Extents);
     }
     Ext4RunMapDestroy(&Icb->Extents);
-    if (Ext4RunMapCount(&Icb->MetaExts)) {
-        DEBUG(DL_EXT, ("List meta extents for inode %xh\n", Icb->Inode.i_ino));
-        Ext2ListExtents(&Icb->MetaExts);
-    }
-    Ext4RunMapDestroy(&Icb->MetaExts);
     Ext4DirNamesFree(Icb);
     ExDeleteResourceLite(&Icb->DirResource);
     ExDeleteResourceLite(&Icb->EntryResource);
@@ -109,7 +104,6 @@ Ext2AttachIcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN ULONG Ino)
         Fresh->Inode.i_sb = &Vcb->sb;
 
         Ext4RunMapInitialize(&Fresh->Extents);
-        Ext4RunMapInitialize(&Fresh->MetaExts);
         ExInitializeResourceLite(&Fresh->DirResource);
         ExInitializeResourceLite(&Fresh->EntryResource);
         INC_MEM_COUNT(PS_ICB, Fresh, sizeof(EXT2_ICB));

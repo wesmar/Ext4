@@ -333,9 +333,10 @@ Ext2WriteVolume (IN PEXT2_IRP_CONTEXT IrpContext)
                                              Length );
                 Irp = IrpContext->Irp;
 
+                /* a range left registered is only written again, unchanged */
                 if (NT_SUCCESS(Status)) {
                     for (Extent = Chain; Extent != NULL; Extent = Extent->Next) {
-                        Ext2RemoveVcbExtent(Vcb, Extent->Lba, Extent->Length);
+                        (void)Ext2RemoveVcbExtent(Vcb, Extent->Lba, Extent->Length);
                     }
                 }
 

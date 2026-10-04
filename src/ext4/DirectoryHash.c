@@ -254,7 +254,8 @@ int ext3_dirhash(const char *name, int len, struct dx_hash_info *hinfo)
 		break;
 	default:
 		hinfo->hash = 0;
-		return -1;
+		hinfo->minor_hash = 0;
+		return -EINVAL;     /* a version this driver does not know (Linux: the same) */
 	}
 	hash = hash & ~1;
 	if (hash == (EXT4_HTREE_EOF_32BIT << 1))

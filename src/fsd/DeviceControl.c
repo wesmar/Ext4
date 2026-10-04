@@ -341,8 +341,8 @@ Ext2ProcessVolumeProperty(
 
             if (Property->bReadonly) {
                 if (IsFlagOn(Vcb->Flags, VCB_INITIALIZED)) {
-                    Ext2FlushFiles(NULL, Vcb, FALSE);
-                    Ext2FlushVolume(NULL, Vcb, FALSE);
+                    (void)Ext2FlushFiles(NULL, Vcb, FALSE);
+                    (void)Ext2FlushVolume(NULL, Vcb, FALSE);
                     /* going read-only: leave the fs clean, like unmount */
                     if (Vcb->Journal) {
                         Ext2JournalStop(Vcb, TRUE);

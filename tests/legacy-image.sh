@@ -46,6 +46,8 @@ pattern = lambda count: bytes((i * 17 + 13) % 251 for i in range(count))
 assert root.joinpath('linux-seed.bin').read_bytes() == pattern(655373), 'Linux seed changed'
 assert root.joinpath('legacy-proof/payload.bin').read_bytes() == pattern(8 * 1024 * 1024 + 123), 'Payload mismatch'
 assert root.joinpath('legacy-proof/regrown.bin').read_bytes() == pattern(4097) + bytes(1024 * 1024 - 4097), 'Regrowth mismatch'
+assert root.joinpath('legacy-proof/cut-ind.bin').read_bytes() == pattern(102407), 'Cut inside IND mismatch'
+assert root.joinpath('legacy-proof/cut-dind.bin').read_bytes() == pattern(6291461), 'Cut inside DIND mismatch'
 assert not root.joinpath('legacy-proof/deleted.bin').exists(), 'Deletion did not persist'
 assert not root.joinpath('legacy-proof/original.bin').exists(), 'Rename did not persist'
 print('Linux independent content verification passed')

@@ -186,6 +186,22 @@ Ext2SetFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
             Fcb->Header.IsFastIoPossible = Ext2IsFastIoPossible(Fcb);
         }
 
+        /* Growth of the allocation needs blocks; any that only a commit can
+           free are waited for here, before any lock (ext4\FreedBlocks.c).
+           The lazy writer's EOF updates are not top level and never grow. */
+        if (!IsDirectory(Fcb) && IrpContext->IsTopLevel &&
+            IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT)) {
+            if (FileInformationClass == FileEndOfFileInformation &&
+                Length >= sizeof(FILE_END_OF_FILE_INFORMATION)) {
+                Ext2WaitForFreedBlocks(Vcb, Fcb->Header.AllocationSize.QuadPart,
+                                       ((PFILE_END_OF_FILE_INFORMATION)Buffer)->EndOfFile.QuadPart);
+            } else if (FileInformationClass == FileAllocationInformation &&
+                       Length >= sizeof(FILE_ALLOCATION_INFORMATION)) {
+                Ext2WaitForFreedBlocks(Vcb, Fcb->Header.AllocationSize.QuadPart,
+                                       ((PFILE_ALLOCATION_INFORMATION)Buffer)->AllocationSize.QuadPart);
+            }
+        }
+
         /* A rename or a new hard link changes the namespace: directory
            entries, the name cache tree and the name buffers of the node
            that moves (Ext2BuildName reallocates them). Every namespace
@@ -388,7 +404,7 @@ Ext2SetFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 
                 SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
                 SetLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
-                Ext2SaveInode(IrpContext, Vcb, Mcb->Inode);
+                Ext2SaveInodeStatus(IrpContext, Vcb, Mcb->Inode, &Status);
                 if (CcIsFileCached(FileObject)) {
                     CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
                 }
@@ -836,19 +852,10 @@ Ext2ExpandFile(
     if (INODE_HAS_EXTENT(Mcb->Inode)) {
 
         status = Ext2ExpandExtent(IrpContext, Vcb, Mcb, Start, End, Size);
-
     } else {
-
-        BOOLEAN do_expand;
-
-        do_expand = TRUE;
-        if (!do_expand)
-            goto errorout;
-
         status = Ext2ExpandIndirect(IrpContext, Vcb, Mcb, Start, End, Size);
     }
 
-errorout:
     return status;
 }
 
@@ -861,6 +868,11 @@ Ext2TruncateFile(
 )
 {
     NTSTATUS status = STATUS_SUCCESS;
+
+    /* a fast symlink's i_block holds its target, not a map: nothing to free */
+    if (ext4_inode_is_fast_symlink(Mcb->Inode)) {
+        return STATUS_SUCCESS;
+    }
 
     /* inline data: to nothing is only leaving inline; else to a block first */
     if (Ext4IsInline(Mcb->Inode)) {
@@ -876,13 +888,9 @@ Ext2TruncateFile(
 		status = Ext2TruncateIndirect(IrpContext, Vcb, Mcb, Size);
 	}
 
-    /* check and clear data/meta mcb extents */
+    /* nothing left mapped: every cached run goes */
     if (Size->QuadPart == 0) {
-
-        /* nothing left mapped: drop every cached run, data and meta */
-        Ext2ClearAllExtents(&Mcb->Icb->Extents);
-        Ext2ClearAllExtents(&Mcb->Icb->MetaExts);
-        ClearLongFlag(Mcb->Icb->Flags, ICB_ZONE_INITED);
+        Ext2InvalidateZone(Mcb);
     }
 
     return status;

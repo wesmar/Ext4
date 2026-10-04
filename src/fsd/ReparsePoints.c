@@ -384,6 +384,55 @@ Ext2GetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
     return Status;
 }
 
+/*
+ * The inode becomes a symlink to Target: its blocks go (a directory, which
+ * mklink /D makes first, also leaves the directory count and keeps one
+ * link), the target is written, then the type - in the inode and in the
+ * parent's entry. A failure leaves an inode that is neither one nor the
+ * other: the caller stops the journal.
+ */
+static NTSTATUS
+Ext2MakeSymlink(
+    IN PEXT2_IRP_CONTEXT    IrpContext,
+    IN PEXT2_VCB            Vcb,
+    IN PEXT2_FCB            ParentDcb,
+    IN PEXT2_MCB            Mcb,
+    IN PCHAR                Target,
+    IN ULONG                Length
+)
+{
+    LARGE_INTEGER   Zero = {0};
+    ULONG           Written = 0;
+    NTSTATUS        Status;
+
+    Status = Ext2TruncateFile(IrpContext, Vcb, Mcb, &Zero);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+
+    if (S_ISDIR(Mcb->Inode->i_mode)) {
+        Status = Ext2UpdateGroupDirStat(IrpContext, Vcb,
+                                        (Mcb->Inode->i_ino - 1) / INODES_PER_GROUP);
+        if (!NT_SUCCESS(Status)) {
+            return Status;
+        }
+        /* its "." is gone, so exactly one link is left - set it, since
+           ext3_dec_count deliberately never takes a directory below 2. The
+           parent loses the ".." link in Ext2SetFileType below, which sees
+           the mode change - not here, or it is taken twice */
+        Mcb->Inode->i_nlink = 1;
+    }
+    if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode)) {
+        return STATUS_UNEXPECTED_IO_ERROR;
+    }
+
+    Status = Ext2WriteSymlink(IrpContext, Vcb, Mcb, Target, Length, &Written);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+    return Ext2SetFileType(IrpContext, Vcb, ParentDcb, Mcb, S_IFLNK | S_IRWXUGO);
+}
+
 NTSTATUS
 Ext2WriteSymlink (
     IN PEXT2_IRP_CONTEXT    IrpContext,
@@ -417,8 +466,9 @@ Ext2WriteSymlink (
         RtlZeroMemory(BlockData, BLOCK_SIZE);
         RtlCopyMemory(BlockData, Buffer, Size);
 
-        /* initialize inode i_block[] */
-        if (0 == Mcb->Inode->i_blocks) {
+        /* i_block holds no map yet (a short target, or nothing): an empty
+           one, before the block is mapped */
+        if (Ext2InodeHoldsNoData(Mcb->Inode)) {
             memset(Data, 0, EXT2_LINKLEN_IN_INODE);
             ClearFlag(Mcb->Inode->i_flags, EXT4_EXTENTS_FL);
             if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode)) {
@@ -439,8 +489,9 @@ Ext2WriteSymlink (
             Status = STATUS_UNEXPECTED_IO_ERROR;
         if (!NT_SUCCESS(Status)) {
             LARGE_INTEGER Zero = {0};
-            /* Remove a partially allocated target; preserve the write error. */
-            Ext2TruncateFile(IrpContext, Vcb, Mcb, &Zero);
+            /* Remove a partially allocated target; preserve the write error
+               (a release that fails has stopped the volume already). */
+            (void)Ext2TruncateFile(IrpContext, Vcb, Mcb, &Zero);
             if (BytesWritten)
                 *BytesWritten = 0;
             goto out;
@@ -449,7 +500,7 @@ Ext2WriteSymlink (
     } else {
 
         /* free inode blocks before writing in line */
-        if (Mcb->Inode->i_blocks) {
+        if (!Ext2InodeHoldsNoData(Mcb->Inode)) {
             LARGE_INTEGER Zero = {0, 0};
             Status = Ext2TruncateFile(IrpContext, Vcb, Mcb, &Zero);
             if (!NT_SUCCESS(Status))
@@ -493,10 +544,9 @@ Ext2SetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
     PEXT2_MCB           Mcb = NULL;
 
     NTSTATUS            Status = STATUS_UNSUCCESSFUL;
-    
+
     PVOID               InputBuffer;
     ULONG               InputBufferLength;
-    ULONG               BytesWritten = 0;
 
     PEXT2_FCB           ParentDcb = NULL;   /* Dcb of it's current parent */
     PEXT2_MCB           ParentMcb = NULL;
@@ -630,50 +680,26 @@ Ext2SetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
             }
         }
 
-        /* free all data blocks of the inode (to be set as symlink) */
-        {
-            LARGE_INTEGER zero = {0};
-            Status = Ext2TruncateFile(IrpContext, Vcb, Mcb, &zero);
-        }
+        /* From the truncate on the inode is neither what it was nor yet a
+           link: a directory without "." or a file whose i_block holds the
+           link's text (read as a block map) is no valid inode. A failure
+           past this point leaves such a one: the transaction must not
+           commit. */
+        Status = Ext2MakeSymlink(IrpContext, Vcb, ParentDcb, Mcb,
+                                 OemNameBuffer, (ULONG)OemNameLength);
         if (!NT_SUCCESS(Status)) {
-            __leave;
-        }
-
-        /* decrease dir count of group desc and vcb stat */
-        if (S_ISDIR(Mcb->Inode->i_mode)) {
-
-            ULONG group = (Mcb->Inode->i_ino - 1) / INODES_PER_GROUP;
-            Ext2UpdateGroupDirStat(IrpContext, Vcb, group);
-
-            /* a directory (mklink /D creates one first) becomes a symlink:
-               its "." is gone, so exactly one link is left - set it, since
-               ext3_dec_count deliberately never takes a directory below 2.
-               The parent loses the ".." link in Ext2SetFileType below,
-               which sees the mode change - not here, or it is taken twice */
-            Mcb->Inode->i_nlink = 1;
-        }
-
-        /* overwrite inode mode as type SYMLINK */
-        if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode)) {
-            Status = STATUS_UNEXPECTED_IO_ERROR;
+            Ext2JournalAbandon(Vcb, Status);
             __leave;
         }
         ClearFlag(Mcb->FileAttr, FILE_ATTRIBUTE_NORMAL);   /* NORMAL stands alone */
         SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_REPARSE_POINT);
 
-        Status = Ext2WriteSymlink(IrpContext, Vcb, Mcb, OemNameBuffer,
-                                  OemNameLength, &BytesWritten);
-        if (NT_SUCCESS(Status)) {
-            Ext2SetFileType(IrpContext, Vcb, ParentDcb, Mcb,
-                            S_IFLNK | S_IRWXUGO);
-
-            /* the in-memory Mcb was built for a regular file; make it the
-               symlink it now is on disk (resolves the target, or marks it
-               special when dangling), or the next open reads the link
-               text as file data */
-            ClearLongFlag(Mcb->Flags, MCB_TYPE_SPECIAL);
-            Ext2FollowLink(IrpContext, Vcb, ParentMcb, Mcb, 0);
-        }
+        /* the in-memory Mcb was built for a regular file; make it the
+           symlink it now is on disk (resolves the target, or marks it
+           special when dangling), or the next open reads the link text as
+           file data. A target that cannot be resolved leaves it special. */
+        ClearLongFlag(Mcb->Flags, MCB_TYPE_SPECIAL);
+        (void)Ext2FollowLink(IrpContext, Vcb, ParentMcb, Mcb, 0);
 
     } __finally {
 
@@ -727,27 +753,23 @@ Ext2TruncateSymlink(
     ULONG             Size
     )
 {
-    NTSTATUS status = STATUS_SUCCESS;
     PUCHAR   data = (PUCHAR)&Mcb->Inode->i_block;
-    ULONG    len = (ULONG)Mcb->Inode->i_size;
     LARGE_INTEGER NewSize;
-    
-    if (len < EXT2_LINKLEN_IN_INODE && !Mcb->Inode->i_blocks) {
 
-        RtlZeroMemory(data + Size, EXT2_LINKLEN_IN_INODE - Size);
-        Mcb->Inode->i_size = Size;
-        Ext2SaveInode(IrpContext, Vcb, Mcb->Inode);
-
-    } else {
-        NewSize.QuadPart = Size;
-        status = Ext2TruncateFile(IrpContext, Vcb, Mcb, &NewSize);
-        if (!NT_SUCCESS(status)) {
-            goto out;
+    /* the target in i_block: the tail is cleared, nothing is freed */
+    if (ext4_inode_is_fast_symlink(Mcb->Inode)) {
+        if (Size < EXT2_LINKLEN_IN_INODE) {
+            RtlZeroMemory(data + Size, EXT2_LINKLEN_IN_INODE - Size);
         }
+        if (Mcb->Inode->i_size > Size) {
+            Mcb->Inode->i_size = Size;
+        }
+        return Ext2SaveInode(IrpContext, Vcb, Mcb->Inode) ?
+               STATUS_SUCCESS : STATUS_UNEXPECTED_IO_ERROR;
     }
-    
-out:
-    return status;
+
+    NewSize.QuadPart = Size;
+    return Ext2TruncateFile(IrpContext, Vcb, Mcb, &NewSize);
 }
 
 /* A file carries at most one reparse point here: the symlink target, stored as the file data. */

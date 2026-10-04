@@ -91,6 +91,9 @@ ext4_fsblk_t ext4_new_meta_blocks(void *icb, handle_t *handle, struct inode *ino
 		unsigned int flags,
 		unsigned long *count, int *errp);
 
+ext4_fsblk_t ext4_new_data_blocks(void *icb, struct inode *inode, ext4_fsblk_t goal,
+		unsigned long *count, int *errp);
+
 int ext4_free_blocks(void *icb, handle_t *handle, struct inode *inode, void *fake,
 		ext4_fsblk_t block, int count, int flags);
 

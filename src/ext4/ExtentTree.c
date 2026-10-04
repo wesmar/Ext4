@@ -201,7 +201,9 @@ void ext4_ext_drop_refs(struct ext4_ext_path *path)
  * every block they name lies inside the file system, extents are not
  * empty, and the logical ranges go up without overlapping. A node that
  * points past the volume (an index naming block 0xFFFFFFFF) or loops back
- * on itself is corrupt, never followed.
+ * on itself is corrupt, never followed. Nor may a block of the volume's own
+ * metadata belong to a file (Linux: ext4_inode_block_valid and its system
+ * zone): written as the file's data, it would destroy bitmaps or inodes.
  */
 static int ext4_ext_block_valid(struct inode *inode, ext4_fsblk_t start, unsigned int count)
 {
@@ -209,7 +211,8 @@ static int ext4_ext_block_valid(struct inode *inode, ext4_fsblk_t start, unsigne
 	ext4_fsblk_t first = le32_to_cpu(es->s_first_data_block);
 	ext4_fsblk_t total = ext3_blocks_count(es);
 
-	return start >= first && count > 0 && start + count > start && start + count <= total;
+	return start >= first && count > 0 && start + count > start && start + count <= total &&
+	       !Ext2MetadataOverlaps(inode->i_sb->s_priv, start, count);
 }
 
 static int ext4_valid_extent_entries(struct inode *inode,
@@ -265,8 +268,6 @@ static int __ext4_ext_check(const char *function, unsigned int line,
 {
     UNREFERENCED_PARAMETER(function);
     UNREFERENCED_PARAMETER(line);
-    UNREFERENCED_PARAMETER(pblk);
-	struct ext4_extent_tail *tail;
 	const char *error_msg;
 
 	if (eh->eh_magic != EXT4_EXT_MAGIC) {
@@ -295,15 +296,20 @@ static int __ext4_ext_check(const char *function, unsigned int line,
 		goto corrupted;
 	}
 
-	tail = find_ext4_extent_tail(eh);
-	if (!ext4_extent_block_csum_verify(inode, eh)) {
-		ext_debug("Warning: extent checksum damaged?\n");
+	/* A node whose checksum does not match is refused, as Linux refuses it
+	   (EFSBADCRC): followed and changed, it would be written back under a
+	   fresh checksum, its damage hidden. The root is in the inode, under
+	   the inode's checksum: it has no tail. */
+	if (depth != ext_depth(inode) && !ext4_extent_block_csum_verify(inode, eh)) {
+		error_msg = "checksum does not match";
+		goto corrupted;
 	}
 
 	return 0;
 
 corrupted:
-	ext_debug("corrupted! %s\n", error_msg);
+	DbgPrint("ext4: inode %u: extent node (block %I64u, depth %d): %s\n",
+		 (ULONG)inode->i_ino, (ULONGLONG)pblk, depth, error_msg);
 	return -EIO;
 }
 
@@ -491,8 +497,7 @@ int ext4_ext_tree_init(void *icb, handle_t *handle, struct inode *inode)
 	eh->eh_entries = 0;
 	eh->eh_magic = cpu_to_le16(EXT4_EXT_MAGIC);
 	eh->eh_max = cpu_to_le16(ext4_ext_space_root(inode, 0));
-	ext4_mark_inode_dirty(icb, handle, inode);
-	return 0;
+	return ext4_mark_inode_dirty(icb, handle, inode);
 }
 
 /*

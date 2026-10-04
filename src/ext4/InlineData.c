@@ -63,14 +63,18 @@ static int ext4_inline_get(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb,
         } else {
             memcpy(buf, Mcb->Inode->i_block, INLINE_IBLOCK);
             if (xlen)
-                ext4_fs_get_xattr(&ref, EXT4_XATTR_INDEX_SYSTEM, INLINE_NAME,
-                                  INLINE_NAME_LEN, buf + INLINE_IBLOCK, xlen, NULL);
-            *out = buf;
-            *len = INLINE_IBLOCK + xlen;
+                ret = ext4_fs_get_xattr(&ref, EXT4_XATTR_INDEX_SYSTEM, INLINE_NAME,
+                                        INLINE_NAME_LEN, buf + INLINE_IBLOCK, xlen, NULL);
+            if (ret) {
+                kfree(buf);     /* its tail never filled: never handed out */
+            } else {
+                *out = buf;
+                *len = INLINE_IBLOCK + xlen;
+            }
         }
     }
     ref.dirty = FALSE;
-    ext4_fs_put_xattr_ref(&ref);
+    (void)ext4_fs_put_xattr_ref(&ref);      /* read only: nothing to write */
     return ret;
 }
 
@@ -230,11 +234,52 @@ NTSTATUS Ext4InlineRead(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb, PEXT2_MCB M
     return STATUS_SUCCESS;
 }
 
+/* the fields of an inline inode that leaving inline rewrites */
+struct ext4_inline_body {
+    unsigned long   flags;
+    __u64           blocks;
+    __u32           block[EXT4_N_BLOCKS];
+};
+
+static void ext4_inline_keep(const struct inode *inode, struct ext4_inline_body *body)
+{
+    body->flags = inode->i_flags;
+    body->blocks = inode->i_blocks;
+    RtlCopyMemory(body->block, inode->i_block, sizeof(body->block));
+}
+
+/*
+ * Leaving inline failed part way: the inode is inline again, as the disk
+ * still has it once the caller drops its attribute set unwritten. The empty
+ * tree was already written with the inode (ext4_ext_tree_init), so the
+ * inline body is written back too, or the data in i_block were lost. A
+ * block taken for the data goes back first; one that cannot leaves the
+ * transaction half made, and it must not commit.
+ */
+static void ext4_inline_undo(PEXT2_IRP_CONTEXT IrpContext, struct inode *inode,
+                             const struct ext4_inline_body *body)
+{
+    PEXT2_VCB Vcb = inode->i_sb->s_priv;
+
+    if (inode->i_flags == body->flags &&
+        RtlEqualMemory(inode->i_block, body->block, sizeof(body->block))) {
+        return;     /* nothing was changed yet */
+    }
+    if (inode->i_blocks != body->blocks && ext4_ext_truncate(IrpContext, inode, 0) != 0) {
+        Ext2JournalAbandon(Vcb, STATUS_UNEXPECTED_IO_ERROR);
+    }
+    inode->i_flags = body->flags;
+    inode->i_blocks = body->blocks;
+    RtlCopyMemory(inode->i_block, body->block, sizeof(inode->i_block));
+    (void)Ext2SaveInode(IrpContext, Vcb, inode);    /* fails only once the volume stopped writing */
+}
+
 /*
  * The inode leaves inline: system.data goes, the flag goes, an empty
  * extent tree takes i_block. Block 0 is allocated (initialized, not
  * unwritten) when want_block. The attribute set is written back with the
- * inode by the caller's ext4_fs_put_xattr_ref.
+ * inode by the caller's ext4_fs_put_xattr_ref; on a failure, here or after,
+ * the caller puts the inode back with ext4_inline_undo.
  */
 static int ext4_inline_drop(PEXT2_IRP_CONTEXT IrpContext, struct ext4_xattr_ref *ref,
                             struct inode *inode, BOOLEAN want_block, ext4_fsblk_t *pblk)
@@ -251,7 +296,9 @@ static int ext4_inline_drop(PEXT2_IRP_CONTEXT IrpContext, struct ext4_xattr_ref 
     memset(inode->i_block, 0, sizeof(inode->i_block));
     if (EXT3_HAS_INCOMPAT_FEATURE(inode->i_sb, EXT4_FEATURE_INCOMPAT_EXTENTS)) {
         inode->i_flags |= EXT4_EXTENTS_FL;
-        ext4_ext_tree_init(IrpContext, NULL, inode);
+        ret = ext4_ext_tree_init(IrpContext, NULL, inode);
+        if (ret)
+            return ret;
     }
     if (!want_block)
         return 0;
@@ -265,6 +312,25 @@ static int ext4_inline_drop(PEXT2_IRP_CONTEXT IrpContext, struct ext4_xattr_ref 
 }
 
 /*
+ * The inode out of inline for good: the attribute set without system.data,
+ * then the inode (the set writes it only when a change landed in the inode
+ * body). Past this point there is nothing to go back to: a failure leaves
+ * the transaction half made, and it must not commit.
+ */
+static NTSTATUS ext4_inline_commit(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb,
+                                   struct ext4_xattr_ref *ref, struct inode *inode)
+{
+    NTSTATUS Status;
+
+    Status = Ext2WinntError(ext4_fs_put_xattr_ref(ref));
+    if (NT_SUCCESS(Status) && !Ext2SaveInode(IrpContext, Vcb, inode))
+        Status = STATUS_UNEXPECTED_IO_ERROR;
+    if (!NT_SUCCESS(Status))
+        Ext2JournalAbandon(Vcb, Status);
+    return Status;
+}
+
+/*
  * A file leaves inline before anything changes its data or its size. The
  * bytes go straight to their new block, written through, before the inode
  * that points there is journaled (data before metadata, as Linux orders
@@ -275,6 +341,7 @@ NTSTATUS Ext4UninlineFile(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb,
 {
     struct inode         *inode = Mcb->Inode;
     struct ext4_xattr_ref ref;
+    struct ext4_inline_body body;
     char                 *raw = NULL, *blk = NULL;
     size_t                len = 0;
     ext4_fsblk_t          pblk = 0;
@@ -307,6 +374,7 @@ NTSTATUS Ext4UninlineFile(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb,
         Status = Ext2WinntError(ret);
         goto out;
     }
+    ext4_inline_keep(inode, &body);
     ret = ext4_inline_drop(IrpContext, &ref, inode, KeepData, &pblk);
     if (!ret && KeepData) {
         Status = Ext2WriteDiskSync(Vcb, (ULONGLONG)pblk << BLOCK_BITS, BLOCK_SIZE, blk, TRUE);
@@ -315,18 +383,15 @@ NTSTATUS Ext4UninlineFile(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb,
     }
     if (ret) {
         ref.dirty = FALSE;
-        ext4_fs_put_xattr_ref(&ref);
+        (void)ext4_fs_put_xattr_ref(&ref);      /* dropped unwritten */
+        ext4_inline_undo(IrpContext, inode, &body);
         if (NT_SUCCESS(Status))
             Status = Ext2WinntError(ret);
         goto out;
     }
     if (!KeepData)
         inode->i_size = 0;
-    ret = ext4_fs_put_xattr_ref(&ref);
-    if (ret)
-        Status = Ext2WinntError(ret);
-    else if (!Ext2SaveInode(IrpContext, Vcb, inode))
-        Status = STATUS_UNEXPECTED_IO_ERROR;
+    Status = ext4_inline_commit(IrpContext, Vcb, &ref, inode);
 
 out:
     if (blk)
@@ -344,6 +409,8 @@ NTSTATUS Ext4UninlineDir(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb, PEXT2_MCB 
     struct inode         *dir = Mcb->Inode;
     struct super_block   *sb = dir->i_sb;
     struct ext4_xattr_ref ref;
+    struct ext4_inline_body body;
+    NTSTATUS              Status;
     struct buffer_head   *bh;
     char                 *raw = NULL;
     size_t                len = 0;
@@ -366,6 +433,7 @@ NTSTATUS Ext4UninlineDir(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb, PEXT2_MCB 
         kfree(raw);
         return Ext2WinntError(ret);
     }
+    ext4_inline_keep(dir, &body);
     ret = ext4_inline_drop(IrpContext, &ref, dir, TRUE, &pblk);
     if (!ret) {
         bh = extents_bwrite(&Vcb->sb, pblk);
@@ -385,16 +453,15 @@ NTSTATUS Ext4UninlineDir(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb, PEXT2_MCB 
     kfree(raw);
     if (ret) {
         ref.dirty = FALSE;
-        ext4_fs_put_xattr_ref(&ref);
+        (void)ext4_fs_put_xattr_ref(&ref);      /* dropped unwritten */
+        ext4_inline_undo(IrpContext, dir, &body);
         return Ext2WinntError(ret);
     }
 
     dir->i_size = blocksize;
-    ret = ext4_fs_put_xattr_ref(&ref);
-    if (ret)
-        return Ext2WinntError(ret);
-    if (!Ext2SaveInode(IrpContext, Vcb, dir))
-        return STATUS_UNEXPECTED_IO_ERROR;
+    Status = ext4_inline_commit(IrpContext, Vcb, &ref, dir);
+    if (!NT_SUCCESS(Status))
+        return Status;
 
     /* the open directory's sizes follow */
     if (Mcb->Icb && Mcb->Icb->Fcb) {

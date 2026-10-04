@@ -225,22 +225,6 @@ Ext2LookupMcbExtent (
 );
 
 BOOLEAN
-Ext2AddMcbMetaExts (
-    IN PEXT2_VCB Vcb,
-    IN PEXT2_MCB Mcb,
-    IN ULONGLONG Block,
-    IN ULONG     Length
-);
-
-BOOLEAN
-Ext2RemoveMcbMetaExts (
-    IN PEXT2_VCB Vcb,
-    IN PEXT2_MCB Mcb,
-    IN ULONGLONG Block,
-    IN ULONG     Length
-);
-
-BOOLEAN
 Ext2AddBlockExtent(
     IN PEXT2_VCB    Vcb,
     IN PEXT2_MCB    Mcb,

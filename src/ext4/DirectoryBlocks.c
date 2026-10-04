@@ -149,7 +149,10 @@ struct buffer_head *ext3_append(struct ext2_icb *icb, struct inode *inode,
     dcb->Header.AllocationSize = Size;
     dcb->Header.ValidDataLength = dcb->Header.FileSize = Size;
     mcb->Inode->i_size = Size.QuadPart;
-    Ext2SaveInode(icb, dcb->Vcb, inode);
+    if (!Ext2SaveInode(icb, dcb->Vcb, inode)) {
+        *err = -EIO;
+        return NULL;
+    }
 
     return ext3_bread(icb, inode, *block, err);
 }
@@ -196,12 +199,10 @@ void ext3_set_de_type(struct super_block *sb,
  * do not perform it in these functions.  We perform it at the call site,
  * if it is needed.
  */
+/* the inode written: 0, or -EIO when it could not be (the volume stopped writing) */
 int ext3_mark_inode_dirty(struct ext2_icb *icb, struct inode *in)
 {
-    if (Ext2SaveInode(icb, in->i_sb->s_priv, in))
-        return 0;
-
-    return -ENOMEM;
+    return Ext2SaveInode(icb, in->i_sb->s_priv, in) ? 0 : -EIO;
 }
 
 void ext3_update_dx_flag(struct inode *inode)
@@ -296,17 +297,12 @@ int add_dirent_to_buf(struct ext2_icb *icb, struct dentry *dentry,
     ext3_update_dx_flag(dir);
     dir->i_version++;
     ext4_dirent_csum_set(dir, (struct ext4_dir_entry *)bh->b_data);
-    ext3_mark_inode_dirty(icb, dir);
     mark_buffer_dirty(bh);
     __brelse(bh);
-    return 0;
+    return ext3_mark_inode_dirty(icb, dir);
 }
 
 /*
  * Debug
  */
 
-int ext3_save_inode ( struct ext2_icb *icb, struct inode *in)
-{
-    return Ext2SaveInode(icb, in->i_sb->s_priv, in);
-}

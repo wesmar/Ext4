@@ -210,5 +210,25 @@ else
     echo "  inline_data: cannot mount"; fail=1
 fi
 rmdir "$mnt"
+
+# partition 8: the unsigned dirhash. e2fsck checks every index block
+# against the hash the superblock names, and the block bitmap against what
+# the deleted symlinks held (the 60-byte one's block, the other's xattr
+# block); the kernel must find Windows's names through the index
+p8=${dev}8
+if e2fsck -fn "$p8" > /tmp/uh.fsck 2>&1; then echo "  unsigned hash: e2fsck clean"; else echo "  unsigned hash: e2fsck FAILED"; tail -15 /tmp/uh.fsck; fail=1; fi
+mnt=$(mktemp -d)
+if mount -o ro,noload "$p8" "$mnt"; then
+    miss=0
+    for i in $(seq 1 500); do [ "$(cat "$mnt/idx/Nowy-Źdźbło-$i-ĘĄ.txt" 2>/dev/null)" = "w$i" ] || miss=$((miss + 1)); done
+    for i in $(seq 1 600); do [ -e "$mnt/idx/Żółć-ąę-$i-ŚŃ.txt" ] || miss=$((miss + 1)); done
+    [ "$miss" -eq 0 ] && echo "  unsigned hash: every name found by the kernel" || { echo "  unsigned hash: $miss names not found"; fail=1; }
+    for gone in fast-xattr slow-60; do [ -L "$mnt/$gone" ] && { echo "  $gone still there"; fail=1; }; done
+    [ "$(readlink "$mnt/fast-plain")" = "target.txt" ] && echo "  symlinks: the deleted ones gone, the other intact" || { echo "  fast-plain reads '$(readlink "$mnt/fast-plain")'"; fail=1; }
+    umount "$mnt"
+else
+    echo "  unsigned hash: cannot mount"; fail=1
+fi
+rmdir "$mnt"
 rm -rf "$tmp"
 echo "FEATURES-LINUX: $fail"

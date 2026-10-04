@@ -67,10 +67,25 @@ int ext3_dirhash(const char *name, int len, struct dx_hash_info *hinfo);
 /* the hash of a name in dir: folded first in a casefolded directory */
 int ext4_dir_hash(struct inode *dir, const char *name, int len, struct dx_hash_info *hinfo);
 
+/*
+ * The hash dir's names are indexed by: version (the root's, or the volume's
+ * default for a directory without an index), as its unsigned variant on a
+ * volume made where char is unsigned, and the volume's seed. The version
+ * on disk is always the signed one (Linux: dx_probe, make_indexed_dir).
+ */
+static __inline void dx_hash_setup(struct inode *dir, int version, struct dx_hash_info *hinfo)
+{
+    struct ext4_sb_info *sbi = EXT3_SB(dir->i_sb);
+
+    hinfo->hash_version = version;
+    if (version <= DX_HASH_TEA)
+        hinfo->hash_version += sbi->s_hash_unsigned;
+    hinfo->seed = sbi->s_hash_seed;
+}
+
 /* a directory entry has this name: compared folded in a casefolded directory */
 int ext4_match(struct inode *dir, int len, const char *name, struct ext3_dir_entry_2 *de);
 
-int ext3_save_inode ( struct ext2_icb *icb, struct inode *in);
 
 struct dx_frame *
             dx_probe(struct ext2_icb *icb, struct dentry *dentry, struct inode *dir,

@@ -145,9 +145,8 @@ Ext2PnpQueryRemove (
         VcbAcquired = ExAcquireResourceExclusiveLite(
                           &Vcb->MainResource, TRUE );
 
-        Ext2FlushFiles(IrpContext, Vcb, FALSE);
-        Ext2FlushVolume(IrpContext, Vcb, FALSE);
-
+        (void)Ext2FlushFiles(IrpContext, Vcb, FALSE);
+        (void)Ext2FlushVolume(IrpContext, Vcb, FALSE);
         DEBUG(DL_PNP, ("Ext2PnpQueryRemove: Ext2LockVcb: Vcb=%xh FileObject=%xh ...\n",
                        Vcb, IrpContext->FileObject));
         Status = Ext2LockVcb(Vcb, IrpContext->FileObject);

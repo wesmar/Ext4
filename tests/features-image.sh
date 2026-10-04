@@ -11,8 +11,12 @@
 # protection: released cleanly, held by a running e2fsck, and left behind by
 # a node that died (mmp-seq.py stages the last two). Partition 6 carries
 # ea_inode: values too large for an xattr block, kept in inodes of their
-# own by the kernel (two equal ones share one). The disk is found by its
-# size.
+# own by the kernel (two equal ones share one). Partition 7 carries
+# inline_data. Partition 8 was made where char is unsigned (an ARM board:
+# the superblock says so, and names with bytes above 0x7f hash
+# differently), with 128-byte inodes: a symlink's xattr goes to a block of
+# its own, which i_blocks counts though the target stays in i_block. The
+# disk is found by its size.
 size=$1
 dev=/dev/$(lsblk -b -o NAME,SIZE,TYPE -n -d | awk -v s="$size" '$2==s && $3=="disk" {print $1; exit}')
 [ "$dev" = "/dev/" ] && { echo "disk not found"; exit 2; }
@@ -24,6 +28,7 @@ size=16MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4
 size=16MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4
 size=16MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4
 size=24MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4
+size=20MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4
 type=0FC63DAF-8483-4772-8E79-3D69D8477DE4' | sfdisk -q "$dev"
 sleep 1
 p=${dev}1
@@ -156,4 +161,29 @@ for f in small.txt mid.txt dir many; do
     [ "$(inl $f)" = "1" ] || { echo "/$f is not inline"; exit 1; }
 done
 echo "inline_data: files and directories inline (many: $(debugfs -R 'stat /many' "$p7" 2>/dev/null | grep -o 'Size of inline data: [0-9]*'))"
+
+# partition 8: the unsigned dirhash (s_flags 2 instead of 1), set before the
+# kernel mounts it, so its index is built with the unsigned hash
+p8=${dev}8
+mkfs.ext4 -q -F -I 128 -L uhtest "$p8"
+debugfs -w -R "ssv flags 2" "$p8" > /dev/null 2>&1
+mnt=$(mktemp -d)
+mount "$p8" "$mnt"
+mkdir "$mnt/idx"
+for i in $(seq 1 600); do printf "u$i\n" > "$mnt/idx/Żółć-ąę-$i-ŚŃ.txt"; done
+printf 'target\n' > "$mnt/target.txt"
+t60=$(printf 't%.0s' $(seq 1 56)).txt
+printf 'sixty\n' > "$mnt/$t60"
+ln -s target.txt "$mnt/fast-xattr"
+python3 -c "import os, sys; os.setxattr(sys.argv[1], 'trusted.label', b'linux-symlink', follow_symlinks=False)" "$mnt/fast-xattr"
+ln -s "$t60" "$mnt/slow-60"
+ln -s target.txt "$mnt/fast-plain"
+umount "$mnt"; rmdir "$mnt"
+e2fsck -fn "$p8" > /dev/null 2>&1 && echo "unsigned-hash partition clean" || { echo "unsigned-hash partition NOT clean"; exit 1; }
+debugfs -R "stats" "$p8" 2>/dev/null | grep -q 'unsigned_directory_hash' || { echo "partition 8 not marked unsigned"; exit 1; }
+levels=$(debugfs -R "htree /idx" "$p8" 2>/dev/null | grep -c 'Entry #')
+[ "$levels" -gt 2 ] || { echo "/idx has no index"; exit 1; }
+blocks=$(debugfs -R "stat /fast-xattr" "$p8" 2>/dev/null | grep -o 'File ACL: [0-9]*')
+[ "$blocks" != "File ACL: 0" ] && echo "fast symlink with an xattr block ($blocks)" || { echo "the symlink's xattr is not in a block"; exit 1; }
+debugfs -R "stat /slow-60" "$p8" 2>/dev/null | grep -Eq '^(BLOCKS|EXTENTS):' && echo "60-byte symlink in a block" || { echo "the 60-byte symlink has no block"; exit 1; }
 rm -rf "$src" "$cmds"

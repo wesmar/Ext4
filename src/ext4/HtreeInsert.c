@@ -33,28 +33,32 @@ static inline void dx_set_limit (struct dx_entry *entries, unsigned value)
  */
 
 /*
- * Create map of hash values, offsets, and sizes, stored at end of block.
- * Returns number of entries mapped.
+ * The live entries of leaf bh as a map of hash, offset and size. Returns
+ * their number, or an error: an entry that does not lie within the block
+ * (rec_len 0 looped forever), or a name that cannot be hashed - placed by
+ * a wrong hash it would be lost to every lookup.
  */
-static int dx_make_map (struct inode *dir, struct ext3_dir_entry_2 *de, int size,
-                        struct dx_hash_info *hinfo, struct dx_map_entry *map_tail)
+static int dx_make_map (struct inode *dir, struct buffer_head *bh,
+                        struct dx_hash_info *hinfo, struct dx_map_entry *map)
 {
-    int count = 0;
-    char *base = (char *) de;
+    unsigned size = (unsigned)dir->i_sb->s_blocksize;
+    char *base = bh->b_data;
+    struct ext3_dir_entry_2 *de = (struct ext3_dir_entry_2 *) base;
     struct dx_hash_info h = *hinfo;
+    int count = 0, err;
 
-    while ((char *) de < base + size)
-    {
+    while ((char *) de < base + size) {
+        if (!ext3_check_dir_entry("dx_make_map", dir, de, bh, (unsigned long)((char *) de - base)))
+            return -EFSCORRUPTED;
         if (de->name_len && de->inode) {
-            ext4_dir_hash(dir, de->name, de->name_len, &h);
-            map_tail--;
-            map_tail->hash = h.hash;
-            map_tail->offs = (u16) ((char *) de - base);
-            map_tail->size = le16_to_cpu(de->rec_len);
+            err = ext4_dir_hash(dir, de->name, de->name_len, &h);
+            if (err)
+                return err;
+            map[count].hash = h.hash;
+            map[count].offs = (u16) ((char *) de - base);
+            map[count].size = le16_to_cpu(de->rec_len);
             count++;
-            cond_resched();
         }
-        /* XXX: do we need to check rec_len == 0 case? -Chris */
         de = (struct ext3_dir_entry_2 *) ((char *) de + le16_to_cpu(de->rec_len));
     }
     return count;
@@ -319,26 +323,32 @@ struct ext3_dir_entry_2 *
     struct ext3_dir_entry_2 *de = NULL, *de2;
     struct ext4_dir_entry_tail *t;
     int	csum_size = 0;
-    int i;
+    int i, mapped;
 
     if (ext4_has_metadata_csum(dir->i_sb))
         csum_size = sizeof(struct ext4_dir_entry_tail);
 
-    bh2 = ext3_append (icb, dir, &newblock, error);
-    if (!(bh2)) {
-        brelse(*bh);
-        *bh = NULL;
-        goto errout;
+    /* The map first, before the directory changes: an entry that cannot
+       be placed fails the insert while all is as it was. An entry is at
+       least EXT3_DIR_REC_LEN(1) long, so the map fits in a block. */
+    map = kmalloc(blocksize, GFP_NOFS);
+    if (!map) {
+        *error = -ENOMEM;
+        goto failed;
     }
+    mapped = dx_make_map(dir, *bh, hinfo, map);
+    if (mapped <= 0) {
+        *error = mapped ? mapped : -EFSCORRUPTED;   /* a full leaf without one live entry */
+        goto failed;
+    }
+    count = (unsigned)mapped;
+    dx_sort_map (map, count);
+
+    bh2 = ext3_append (icb, dir, &newblock, error);
+    if (!(bh2))
+        goto failed;
 
     data2 = bh2->b_data;
-
-    /* create map in the end of data2 block */
-    map = (struct dx_map_entry *) (data2 + blocksize);
-    count = dx_make_map (dir, (struct ext3_dir_entry_2 *) data1,
-                         blocksize, hinfo, map);
-    map -= count;
-    dx_sort_map (map, count);
     /* Split the existing block in the middle, size-wise */
     size = 0;
     move = 0;
@@ -349,10 +359,13 @@ struct ext3_dir_entry_2 *
         size += map[i].size;
         move++;
     }
-    /* map index at which we will split */
-    split = count - move;
+    /* map index at which we will split: by size, or by count when the
+       live entries do not fill half the block (Linux); one moves at least */
+    split = (i > 0) ? count - move : count / 2;
+    if (split >= count)
+        split = count - 1;
     hash2 = map[split].hash;
-    continued = hash2 == map[split - 1].hash;
+    continued = split > 0 && hash2 == map[split - 1].hash;
     dxtrace(printk("Split block %i at %x, %i/%i\n",
                    dx_get_block(frame->at), hash2, split, count-split));
 
@@ -385,8 +398,15 @@ struct ext3_dir_entry_2 *
 
     brelse (bh2);
     dxtrace(dx_show_index ("frame", frame->entries));
-errout:
+    kfree(map);
     return de;
+
+failed:
+    if (map)
+        kfree(map);
+    brelse(*bh);
+    *bh = NULL;
+    return NULL;
 }
 
 /*
@@ -419,6 +439,15 @@ int make_indexed_dir(struct ext2_icb *icb, struct dentry *dentry,
 
     blocksize =  dir->i_sb->s_blocksize;
     dxtrace(printk("Creating index: inode %lu\n", dir->i_ino));
+
+    /* the new name's hash before anything changes, as dx_probe would take
+       it: the root gets the volume's default version */
+    dx_hash_setup(dir, EXT3_SB(dir->i_sb)->s_def_hash_version, &hinfo);
+    retval = ext4_dir_hash(dir, name, namelen, &hinfo);
+    if (retval) {
+        brelse(bh);
+        return retval;
+    }
 
     root = (struct dx_root *) bh->b_data;
 
@@ -466,10 +495,6 @@ int make_indexed_dir(struct ext2_icb *icb, struct dentry *dentry,
     dx_set_count(entries, 1);
     dx_set_limit(entries, dx_root_limit(dir, sizeof(root->info)));
 
-    /* Initialize as for dx_probe */
-    hinfo.hash_version = root->info.hash_version;
-    hinfo.seed = EXT3_SB(dir->i_sb)->s_hash_seed;
-    ext4_dir_hash(dir, name, namelen, &hinfo);
     frame = frames;
     frame->entries = entries;
     frame->at = entries;

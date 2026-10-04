@@ -327,8 +327,9 @@ VOID JnlThread(PVOID Context)
             break;
 
         KeWaitForSingleObject(&J->CommitLock, Executive, KernelMode, FALSE, NULL);
+        /* a commit that fails aborts the journal itself */
         if (commit && !(J->Flags & JF_ABORTED))
-            JnlCommitTransaction(J);
+            (void)JnlCommitTransaction(J);
         if (!(J->Flags & JF_ABORTED))
             JnlCheckpointPolicy(J);
         KeReleaseMutex(&J->CommitLock, FALSE);

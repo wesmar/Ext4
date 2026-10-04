@@ -101,6 +101,30 @@ Ext2JournalAbortQuiet(IN PEXT2_VCB Vcb)
     KeSetEvent(&J->UnlockedEvent, 0, FALSE);
 }
 
+/*
+ * A change half made can be neither finished nor undone (a rollback
+ * failed): what the running transaction holds must never commit. The
+ * journal stops and the volume turns read-only; the disk keeps the last
+ * committed state, which is whole, so nothing is marked on it. Without a
+ * journal the half change may already be there: e2fsck is asked for.
+ * Callable inside the group locks (the superblock's lock is taken inside
+ * them).
+ */
+VOID
+Ext2JournalAbandon(IN PEXT2_VCB Vcb, IN NTSTATUS Status)
+{
+    if (IsFlagOn(Vcb->Flags, VCB_READ_ONLY)) {
+        return;     /* stopped before (every stop aborts the journal too) */
+    }
+    DbgPrint("ext4: a change could not be completed nor undone (status %08x), "
+             "the volume is read-only from now on\n", Status);
+    if (Vcb->Journal == NULL) {
+        InterlockedOr16((volatile SHORT *)&Vcb->SuperBlock->s_state, EXT4_ERROR_FS);
+        (void)Ext2SaveSuperDirect(Vcb);     /* best effort: the volume stops either way */
+    }
+    Ext2JournalAbortQuiet(Vcb);
+}
+
 VOID JnlAbort(PEXT2_JOURNAL J, NTSTATUS Status)
 {
     KIRQL   irql;
@@ -412,7 +436,7 @@ NTSTATUS JnlCommitTransaction(PEXT2_JOURNAL J)
        best effort here (old transactions pinned by the running one can
        only be retired after this commit), the exact check comes later */
     needed = JnlLogBlocksNeeded(J, normal + J->MaxTxnBlocks / 4, revokes + 64);
-    JnlEnsureLogSpace(J, needed);
+    (void)JnlEnsureLogSpace(J, needed);
 
     next = JnlAllocTxn(J, t->Tid + 1);
     if (!next) {

@@ -22,7 +22,7 @@
 </div>
 > **Engineering status**
 >
-> `ext4.sys` provides native ext2/ext3/ext4 read/write access on bare-metal Windows systems and in virtual machines. Validation includes Windows/Linux media checks, Driver Verifier and repeated unload testing; the latest write-path changes passed targeted regression and fault-injection models. Engineering refinements continue, including the crash-consistency work listed below. Microsoft production signing is pending; loading uses KVC or DrvLoader on systems you administer. Keep a backup of important data.
+> `ext4.sys` provides native ext2/ext3/ext4 read/write access on bare-metal Windows systems and in virtual machines. The current release passed the full Windows/Linux matrix, dedicated ext2/ext3 and 16 TiB boundary tests, and production-code regression models. Validation also includes Driver Verifier and repeated unload testing. Refinements continue in checksum coverage and recovery bookkeeping, as described below. Microsoft production signing is pending; loading uses KVC or DrvLoader on systems you administer. Keep a backup of important data.
 
 > **Repository policy:** the release archive is not password-protected. Git tracks the active source, project files, tests and documentation. Build outputs, symbols, local tooling, virtual disks and test logs stay outside the repository. Test passphrase defaults in two PowerShell scripts are represented by `<TEST_LUKS_PASSPHRASE>`.
 
@@ -218,7 +218,10 @@ Rules the engine keeps, each one learned from a failure it caused:
 5. **A required journal must be usable.** An external, corrupt or unreplayable journal mounts the volume read-only. Ext2, whose format has no journal, remains writable through its non-journaled path.
 6. **Lifetime follows ownership.** Stream teardown stops the journal session. The VCB retains the engine until stream, inode-map, buffer-head and group-cache teardown is complete; entering an IRP scope touches only thread-owned state.
 
-Earlier crash-injection runs during metadata churn finished with clean Linux and driver replay. Those scenarios did not isolate freeing a block and immediately reusing it before the freeing transaction commits; that case remains open in [Known Limitations](#known-limitations).
+7. **Freed file-data blocks wait for commit before reuse.** Per-group transaction overlays keep them unavailable to ordinary data allocation until the freeing transaction is committed on disk. Journaled metadata allocations have a separate path, protected by journal ownership and revoke rules. A space-pressure commit is requested outside active handles and group locks.
+8. **Failure follows the operation.** Required inode, buffer, revoke and device-sync failures propagate to the caller. If a mutation can neither finish nor roll back, the transaction is abandoned and the volume becomes read-only.
+
+The full matrix includes a dedicated free-and-reuse regression. Earlier crash-injection runs during metadata churn finished with clean Linux and driver replay. These checks cover specific scenarios; the remaining checksum and recovery gaps are listed in [Known Limitations](#known-limitations).
 
 ---
 
@@ -250,6 +253,8 @@ The design reduces work per I/O and contention between independent files.
 | Driver-owned 64-bit red-black run map | O(log n) lookup, O(n) sequential traversal and merged contiguous mappings without physical-address truncation |
 | Unwritten preallocation | Growing an extent-mapped file reserves blocks; only the initialized tail needs explicit zeroing |
 | Allocation goals based on the inode's block group | Preserves locality and spreads allocations across the volume |
+| Word-at-a-time block search over the bitmap and pending-free overlays | Finds contiguous runs while excluding file-data blocks whose freeing transaction has not committed |
+| Sorted, merged volume-wide metadata ranges | O(log R) overlap checks protect reserved structures, including relocated `flex_bg` metadata |
 | CPU-scaled lock stripes for names, blocks and inodes | Independent groups and directories can progress concurrently |
 | Shared resources for ordinary opens and lookups | Exclusive ownership is reserved for namespace changes |
 | Interlocked free-space totals, folded into the superblock at commit and flush | Removes a shared superblock update from each allocation |
@@ -400,21 +405,25 @@ Ext4/
 
 The driver and control tool are split by responsibility. LUKS header formats, keyslots, metadata parsing, LVM mappings, passphrase handling and driver control have separate modules; on-disk layouts have compile-time offset checks.
 
+`FreedBlocks.c` owns transaction-bound block-reuse protection. `MetadataMap.c` builds the volume-wide system-zone map, including relocated `flex_bg` bitmaps and inode tables. `BlockSearch.h` contains the word-at-a-time bitmap search shared with its independent host model. Ext2/ext3 truncation is isolated in `IndirectTruncate.c`.
+
 ---
 
 ## Testing and Validation
 
-The current source build is warning-free under `/W4 /WX`. The wide-address build, including the journal-lifetime fix, passed the full Windows/Linux matrix with Driver Verifier enabled for `ext4.sys`. That full matrix completed **18 sections in about five minutes**, including **480 shrink/regrow cases** across plain and LUKS2 volumes. The subsequent write-path fixes passed focused Windows/Linux regression, clean media checks, concurrent-access stop/start cycles and production-code fault models. Fixture preparation, model runs and targeted regressions are measured separately.
+The current Release and Debug builds are warning-free under `/W4 /WX`. The packaged driver passed the full Windows/Linux matrix: **19 sections**, including **480 shrink/regrow cases** across plain and LUKS2 volumes, transaction-bound free/reuse checks, LUKS1/LUKS2, read-only LVM and Linux feature interoperability. Dedicated ext2/ext3 and fresh 16 TiB boundary fixtures also passed independent Linux read-back and clean `e2fsck` checks. Fixture preparation, host models and targeted regressions run separately.
 
-Lifecycle validation then covered **80 consecutive stop/start cycles**, **20 more cycles with concurrent open/read/close workers**, and **10 concurrent-access cycles with the larger-than-16-TiB fixture attached**. Written proof data survived, drive letters returned and no new bugcheck occurred in these runs. **Three clean Windows restarts** with mounted test volumes also preserved their proof data. Verifier remained enabled for these correctness checks.
+The same review also covered **219 malformed-media fixtures**, ENOSPC with and without hole reuse, scaling through **1/2/4/8 threads in one process**, and **10 loaded stop/start cycles**. Those campaigns completed before the last indirect-run boundary correction and control-tool enumeration fix; the full matrix, legacy and wide-address checks above ran on the final binaries. The malformed-media run recorded no crash, hang or harness error; rejected mounts and failed operations remain distinct outcomes.
+
+Earlier lifecycle campaigns covered **80 consecutive stop/start cycles**, **20 more cycles with concurrent open/read/close workers**, and **10 concurrent-access cycles with the larger-than-16-TiB fixture attached**. Written proof data survived, drive letters returned and no new bugcheck occurred in these runs. **Three clean Windows restarts** with mounted test volumes also preserved their proof data. Verifier remained enabled for these correctness checks.
 
 The production run-map model passed **32 reproducible seeds: 1.6 million randomized operations and 32 million fragmented-map lookups**. It checks mapping results against an independent oracle, red-black tree invariants, allocation-failure atomicity and pool ownership. Each fragmentation run builds 100,000 separate ranges. These counts describe operations and lookups, rather than millions of independent end-to-end driver tests.
 
 The full matrix covers functional operations, security boundaries, parallel I/O, namespace races, hot-plug, LUKS1/LUKS2, read-only LVM and Linux feature interoperability. Targeted fixtures check high physical data blocks, extent-tree blocks, external EA blocks, allocation at the legacy-pointer boundary, ENOSPC rollback and rejected logical-size overflow. Linux reported clean metadata and matching contents after Windows writes; the driver-written fixtures were checked without repair.
 
-Real **ext2 with 1 KiB blocks** and **ext3 with 4 KiB blocks** also passed a separate write smoke test: Linux-seeded data, an 8 MiB-plus payload using direct, single- and double-indirect blocks, rename, delete, shrink/regrow with zero-tail checks, service reload and independent Linux read-back. Both finished with clean `e2fsck -fn`. This is targeted compatibility coverage, rather than the complete ext4 feature matrix.
+Real **ext2 with 1 KiB blocks** and **ext3 with 4 KiB blocks** also passed a separate write regression: Linux-seeded data, direct/single/double-indirect growth, truncation in the middle of indirect ranges, rename, delete, shrink/regrow with zero-tail checks, service reload and independent Linux read-back. The wide-address fixture additionally checks sparse indirect mappings at the 32-bit on-disk pointer boundary. Both legacy volumes finished with clean `e2fsck -fn`. This is targeted compatibility coverage, rather than the complete ext4 feature matrix.
 
-The write-path review added fault-injection models that compile the production block builder, symlink writer, journal registration, revoke and device-sync functions. They check sparse-run boundaries, paging writes beyond EOF, failed inode and buffer saves, allocation failures and error propagation through recovery flushes. The xattr parser has a separate malformed-input model. These user-mode models pass on x86 and x64; kernel runtime validation remains x64. Windows-created block-backed symlinks were also checked by Linux on 1 KiB and 4 KiB volumes, including target contents, the trailing terminator, boundary rejection and clean `e2fsck -fn` without repair.
+The write-path review added fault-injection models that compile the production block builder, symlink writer, journal registration, revoke and device-sync functions. They check sparse-run boundaries, paging writes beyond EOF, failed inode and buffer saves, allocation failures and error propagation through recovery flushes. The xattr parser model checks malformed ranges and rejection before allocation when the block checksum verifier fails. These user-mode models pass on x86 and x64; kernel runtime validation remains x64. A separate block-search model compares the production word scan, including pending-free overlays, against a bit-by-bit oracle over 200,000 cases. Windows-created block-backed symlinks were also checked by Linux on 1 KiB and 4 KiB volumes, including target contents, the trailing terminator, boundary rejection and clean `e2fsck -fn` without repair.
 
 I develop this driver as a solo project. The validation combines several hours of iterative builds and targeted diagnosis with repeatable model and cross-platform checks. A short final matrix is the regression checkpoint; the retained build symbols, seeds and logs are what make a failure reproducible.
 
@@ -423,7 +432,10 @@ I develop this driver as a solo project. The validation combines several hours o
 - **Allocation rollback:** extent insertion forced to fail after data allocation must return exactly the allocated block range, including an early-group reuse case. Free space, file length, contents and `e2fsck` are checked.
 - **Object lifetime:** buffer-head release reads reference-protected state before dropping ownership. A model compiles the production VPB reclaimer and exercises busy references, nested swaps, persistent flags and allocation failure.
 - **Journal lifetime:** stream close cannot borrow an engine already freed by stream teardown; the VCB owns the engine until the remaining volume state has drained.
-- **Address width:** high physical mappings survive lookup, allocation, truncation and reload. Legacy indirect allocations stay representable on disk; file-logical bounds are checked before mutation.
+- **Address width:** high physical mappings survive lookup, allocation, truncation and reload. Legacy indirect allocations stay representable on disk; file-logical bounds and run continuity are checked without 32-bit arithmetic wrap.
+- **Reuse ordering:** freed file-data blocks remain excluded from data allocation until the freeing transaction commits; Linux checks allocation counts and metadata after reuse.
+- **Metadata isolation:** extent and indirect data pointers are checked against a volume-wide map of reserved blocks, bitmaps and inode tables, including relocated metadata.
+- **Failure preservation:** inline-data growth at ENOSPC retains the original bytes. Truncation invalidates freed mappings even when a later step fails; incomplete irreversible transactions become read-only.
 - **Run-map atomicity:** conflicting overlaps and failed split allocations leave the original mapping intact. Every deterministic seed checks tree structure and mapping contents.
 - **Resize correctness:** cached and uncached handles shrink and regrow files across sector and block boundaries. Every retained byte must match; every newly exposed byte must be zero.
 - **Unload:** teardown includes outstanding VCB destruction and replacement VPBs. A busy object remains owned until it can be reclaimed.
@@ -448,6 +460,9 @@ pwsh tests\robust.ps1
 
 # Production range-map model, 32 deterministic seeds
 pwsh tests\run-map-model.ps1 -Rounds 32
+
+# Production block search against an independent bit-by-bit oracle
+pwsh tests\block-search-model.ps1
 
 # Production write-path and journal error contracts (runs both models)
 pwsh tests\journal-error-model.ps1 -Architecture x64
@@ -477,7 +492,7 @@ Configure the disposable guest and test-image paths in `tests/testenv.local.psd1
 | Media integrity | Linux `e2fsck` and manifest-based content verification after Windows writes |
 | Wide physical addresses | Sparse GPT volumes crossing 2³² blocks with 1/2/4 KiB blocks; high data, extent-tree and EA blocks; legacy-pointer boundary |
 | Legacy formats | Actual ext2/ext3 media: write, indirect-block growth, shrink/regrow, rename, delete and read-back after reload |
-| Deterministic models | Production run map and VPB reclaimer; independent oracle, tree invariants, ownership and forced allocation failures |
+| Deterministic models | Production run map, bitmap search and VPB reclaimer; independent oracles, tree invariants, pending-free overlays, ownership and forced allocation failures |
 | Lifecycle | Repeated stop/start with concurrent file access, drive-letter restoration and clean guest restarts |
 | Malformed media | Bounded traversal and read-back, attempted writes, dismount and Verifier checks; mount refusal and read-only fallback are recorded separately |
 
@@ -491,10 +506,10 @@ Driver Verifier runs are correctness checks. Throughput measurements use a separ
 |---|---|
 | `extent`, `huge_file`, `large_file`, `sparse_super`, `sparse_super2`, `flex_bg`, `meta_bg`, `64bit` group descriptors | Read / write; wide physical addressing, including blocks above 2³² |
 | `has_journal` (internal jbd2) | Read / write, journaled; replay at mount |
-| `dir_index` (htree), `filetype`, `dir_nlink`, `extra_isize` | Read / write |
+| `dir_index` (htree), `filetype`, `dir_nlink`, `extra_isize` | Read / write; directory lookup and insertion honour signed and unsigned hash variants |
 | `large_dir` (three-level htree, directories past 2 GiB) | Read / write: index blocks split at every level and a level is added under the root when all are full, as in Linux; tested with a three-level index the kernel built and one this driver grew from empty (45 000 names), both checked by `e2fsck` and by the kernel looking every name up through the index |
-| `metadata_csum`, `gdt_csum`, `csum_seed` | Read / write, checksums verified and maintained |
-| `orphan_file` (the `mkfs.ext4` default since e2fsprogs 1.47) | Read / write |
+| `metadata_csum`, `gdt_csum`, `csum_seed` | Read / write; inode, external extent-node and external xattr-block checksums verified before use, with group-descriptor and journal checks. Remaining verification gaps are listed below. |
+| `orphan_file` (the `mkfs.ext4` default since e2fsprogs 1.47) | Read / write on clean volumes; `orphan_present` mounts read-only. Driver-side orphan tracking remains incomplete. |
 | `casefold` (`mkfs -O casefold`, `chattr +F`; SteamOS formats its microSD cards so) | Read / write. Names in a casefolded directory are folded as Linux folds them (NFD and full case folding, Unicode 12.1, with the kernel's own tables): the index is hashed on the folded names, `ŁÓDŹ.TXT` finds `Łódź.txt` and `STRASSE.TXT` finds `straße.txt`, a name that folds to an existing one is refused, strict mode refuses names that are not UTF-8, and directories made inside inherit the flag |
 | Unwritten (preallocated) extents | Read / write |
 | Extended attributes | Read / write, exposed as Windows EAs in the `user.` namespace, names matched without regard to case as Windows expects; other namespaces (POSIX ACLs, security labels, `trusted.`) are neither shown nor touched - replacing a file's EA set replaces its `user.` attributes only |
@@ -521,7 +536,9 @@ The old 16 TiB volume ceiling is removed. Disk-format and per-file bounds are de
 3. **POSIX permissions are mapped, not enforced as ACLs.** Ownership can be overridden per volume (`uid`, `gid` in the registry); Windows security descriptors are not stored.
 4. **LUKS and LVM.** Ciphers other than AES-XTS are not supported. Logical volumes inside LUKS open read-only, linear (one stripe) and thin ones; striped, mirrored and RAID volumes, a volume group spanning several containers, and a partition table inside a volume (the root volumes of Qubes OS qubes) are not handled — the private volumes of Qubes OS qubes hold ext4 directly and open.
 5. **x64 only.** Only x64 is built and tested.
-6. **Crash-consistency work remains.** Revoke failures now stop block freeing, but transaction-bound delayed reuse of freed blocks is still an open allocator task. Passing clean-shutdown and reload tests does not establish correctness for a power loss between freeing and reusing a block. Metadata-range checks during freeing cover the current group descriptor and reserved group prefix; volume-wide protection for relocated `flex_bg` metadata still needs a dedicated system-zone map.
+6. **Checksum verification is not complete.** Block and inode bitmap checksums, directory/htree block checksums and MMP checksums are not yet verified on read. Inode, external extent-node and external xattr-block checksums are checked; a bad checksum is rejected before mutation.
+7. **Recovery bookkeeping remains incomplete.** Most detected corruption is reported to the caller without recording a persistent superblock error. Irrecoverable transactions are abandoned and the volume becomes read-only. There is no complete orphan-list implementation: an inode that cannot be released during deletion stays allocated for `e2fsck` to reclaim.
+8. **Directory listing skips unreadable inodes.** An entry whose inode cannot be loaded, including one with a bad checksum, is currently omitted rather than listed with an error deferred to open.
 
 ---
 

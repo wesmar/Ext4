@@ -154,7 +154,9 @@ int ext3_add_entry(struct ext2_icb *icb, struct dentry *dentry, struct inode *in
             return retval;
         EXT3_I(dir)->i_flags &= ~EXT3_INDEX_FL;
         dx_fallback++;
-        ext3_save_inode(icb, dir);
+        retval = ext3_mark_inode_dirty(icb, dir);
+        if (retval)
+            return retval;
     }
 
     blocks = (ext3_lblk_t)(dir->i_size >> sb->s_blocksize_bits);

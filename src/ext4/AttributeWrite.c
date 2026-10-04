@@ -12,44 +12,25 @@
 #include "xattr_internal.h"
 
 
-static ext4_fsblk_t ext4_new_meta_blocks(void *icb, struct inode *inode,
-	ext4_fsblk_t goal,
-	unsigned int flags,
-	unsigned long *count, int *errp)
+/* the xattr block of an inode: journaled metadata */
+static int ext4_xattr_new_block(PEXT2_IRP_CONTEXT IrpContext, struct inode *inode,
+	ext4_fsblk_t *block)
 {
-    UNREFERENCED_PARAMETER(flags);
-	NTSTATUS status;
-	ULONG blockcnt = (count) ? *count : 1;
-	ULONGLONG block = 0;
+	ULONG		count = 1;
+	ULONGLONG	found = 0;
+	NTSTATUS	status;
 
-	status = Ext2NewBlock((PEXT2_IRP_CONTEXT)icb,
-		inode->i_sb->s_priv,
-		0, goal,
-		&block,
-		&blockcnt, 1ULL << 48);
-	if (count)
-		*count = blockcnt;
-
-	if (!NT_SUCCESS(status)) {
-		*errp = Ext2LinuxError(status);
-		return 0;
-	}
-	inode->i_blocks += (blockcnt * (inode->i_sb->s_blocksize >> 9));
-	return block;
+	status = Ext2AllocateInodeBlocks(IrpContext, inode, ext4_inode_to_goal_block(inode),
+					 EXT2_ALLOC_JOURNALED, &found, &count);
+	*block = found;
+	return NT_SUCCESS(status) ? 0 : Ext2LinuxError(status);
 }
 
-static int ext4_free_blocks(void *icb, struct inode *inode,
-	ext4_fsblk_t block, int count, int flags)
+static int ext4_xattr_free_block(PEXT2_IRP_CONTEXT IrpContext, struct inode *inode,
+	ext4_fsblk_t block)
 {
-    UNREFERENCED_PARAMETER(flags);
-    NTSTATUS status = Ext2FreeBlock((PEXT2_IRP_CONTEXT)icb,
-                                   inode->i_sb->s_priv, block, count);
-    if (!NT_SUCCESS(status)) {
-        Ext2JournalAbortQuiet(inode->i_sb->s_priv);
-        return Ext2LinuxError(status);
-    }
-    inode->i_blocks -= (__u64)count * (inode->i_sb->s_blocksize >> 9);
-    return 0;
+	NTSTATUS status = Ext2ReleaseInodeBlocks(IrpContext, inode, block, 1);
+	return NT_SUCCESS(status) ? 0 : Ext2LinuxError(status);
 }
 
 /*
@@ -394,8 +375,8 @@ static int ext4_xattr_try_free_block(struct ext4_xattr_ref *xattr_ref)
 {
 	ext4_fsblk_t xattr_block;
 	xattr_block = xattr_ref->inode_ref->Inode->i_file_acl;
-    int ret = ext4_free_blocks(xattr_ref->IrpContext, xattr_ref->inode_ref->Inode,
-                              xattr_block, 1, 0);
+    int ret = ext4_xattr_free_block(xattr_ref->IrpContext, xattr_ref->inode_ref->Inode,
+                                    xattr_block);
     if (ret)
         return ret;
     xattr_ref->inode_ref->Inode->i_file_acl = 0;
@@ -485,14 +466,14 @@ int ext4_xattr_write_to_disk(struct ext4_xattr_ref *xattr_ref)
 	if (xattr_ref->block_loaded)
 		shared = le32_to_cpu(EXT4_XATTR_BHDR(xattr_ref->block_bh)->h_refcount) > 1;
 	if (need_block && (!xattr_ref->block_loaded || shared)) {
-		new_block = ext4_new_meta_blocks(xattr_ref->IrpContext, inode,
-						 ext4_inode_to_goal_block(inode),
-						 0, NULL, &ret);
+		ret = ext4_xattr_new_block(xattr_ref->IrpContext, inode, &new_block);
 		if (ret)
 			goto Finish;
 		new_bh = extents_bwrite(&xattr_ref->fs->sb, new_block);
 		if (!new_bh) {
-			ext4_free_blocks(xattr_ref->IrpContext, inode, new_block, 1, 0);
+			/* a failed release stops the journal by itself (Ext2ReleaseInodeBlocks);
+			   the error reported is the one that came first */
+			(void)ext4_xattr_free_block(xattr_ref->IrpContext, inode, new_block);
 			ret = -ENOMEM;
 			goto Finish;
 		}

@@ -47,6 +47,20 @@ Ext2JournalStart(
 VOID
 Ext2JournalAbortQuiet(IN PEXT2_VCB Vcb);
 
+/* a change could be neither finished nor undone: it must never commit */
+VOID
+Ext2JournalAbandon(IN PEXT2_VCB Vcb, IN NTSTATUS Status);
+
+/* The transaction a change made now belongs to, or a later one: blocks
+   freed by it may be reused once it has committed. FALSE: no journal is
+   logging, a change is final when made. */
+BOOLEAN
+Ext2JournalFreeingTid(IN PEXT2_VCB Vcb, OUT PULONG Tid);
+
+/* has transaction Tid committed (or is no journal logging any more)? */
+BOOLEAN
+Ext2JournalCommitted(IN PEXT2_VCB Vcb, IN ULONG Tid);
+
 VOID
 Ext2JournalStop(
     IN PEXT2_VCB        Vcb,

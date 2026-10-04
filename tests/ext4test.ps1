@@ -104,6 +104,15 @@ public static class X4 {
         }
         return back;
     }
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool MoveFileEx(string a, string b, uint flags);
+    // a rename onto the name the file has: the driver's early way out once
+    // released a target directory it never referenced; returns how often
+    // the file was gone afterwards
+    public static int RenameSelf(string p, int n) {
+        int bad = 0;
+        for (int i = 0; i < n; i++) { MoveFileEx(p, p, 1 /* MOVEFILE_REPLACE_EXISTING */); if (!File.Exists(p)) bad++; }
+        return bad;
+    }
     public static bool Eq(byte[] a, byte[] b) { if (a == null || b == null || a.Length != b.Length) return false; for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false; return true; }
     public static bool EqN(byte[] a, byte[] b, int n) { if (a == null || b == null || a.Length < n || b.Length < n) return false; for (int i = 0; i < n; i++) if (a[i] != b[i]) return false; return true; }
     public static bool ZeroFrom(byte[] a, int from) { for (int i = from; i < a.Length; i++) if (a[i] != 0) return false; return true; }
@@ -391,6 +400,11 @@ Check "rename of file open without FILE_SHARE_DELETE refused" ($e -ne $null); $f
 $fo = [IO.File]::Open("$Root\open.txt", [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]'Read,Delete')
 $e = Try-Op { [IO.File]::Move("$Root\open.txt", "$Root\open2.txt") }
 Check "rename of file open with FILE_SHARE_DELETE" ($e -eq $null); $fo.Close()
+New-Item -ItemType Directory "$Root\same" | Out-Null; Set-Content -LiteralPath "$Root\same\s.txt" -Value 'same' -NoNewline
+$bad = [X4]::RenameSelf("$Root\same\s.txt", 300)
+[IO.File]::WriteAllText("$Root\same\t.txt", 'x'); [IO.File]::Delete("$Root\same\t.txt")
+Check "rename onto its own name 300 times, directory intact" ($bad -eq 0 -and (Get-Content -LiteralPath "$Root\same\s.txt" -Raw) -eq 'same' -and @(Get-ChildItem -LiteralPath "$Root\same").Count -eq 1) "($bad)"
+[IO.Directory]::Delete("$Root\same", $true); Check "... and removed" (-not (Test-Path -LiteralPath "$Root\same"))
 
 # ---------------------------------------------------------------- 4. attributes, times, ids
 "-- attributes, timestamps, file ids"

@@ -422,6 +422,14 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                 __leave;
             }
 
+            /* growth past the allocation needs blocks; any that only a
+               commit can free are waited for here, before any lock
+               (ext4\FreedBlocks.c) - the read of the size is a hint */
+            if (IrpContext->IsTopLevel && IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT)) {
+                Ext2WaitForFreedBlocks(Vcb, Fcb->Header.AllocationSize.QuadPart,
+                                       ByteOffset.QuadPart + Length);
+            }
+
             if (!ExAcquireResourceExclusiveLite(&Fcb->MainResource, TRUE)) {
                 Status = STATUS_PENDING;
                 __leave;

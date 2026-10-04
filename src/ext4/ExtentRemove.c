@@ -40,48 +40,57 @@ ext4_ext_more_to_rm(struct ext4_ext_path *path)
 	return 1;
 }
 
+/* the allocation for the Linux extent code: *count blocks wanted (one if
+   none given), fewer may come; the block, or 0 with *errp set */
+static ext4_fsblk_t ext4_new_blocks(void *icb, struct inode *inode, ext4_fsblk_t goal,
+		ULONG Flags, unsigned long *count, int *errp)
+{
+	ULONG		blockcnt = count ? (ULONG)*count : 1;
+	ULONGLONG	block = 0;
+	NTSTATUS	status;
+
+	status = Ext2AllocateInodeBlocks((PEXT2_IRP_CONTEXT)icb, inode, goal, Flags,
+					 &block, &blockcnt);
+	if (!NT_SUCCESS(status)) {
+		*errp = Ext2LinuxError(status);
+		return 0;
+	}
+	if (count)
+		*count = blockcnt;
+	return block;
+}
+
+/* index blocks of the tree: journaled */
 ext4_fsblk_t ext4_new_meta_blocks(void *icb, handle_t *handle, struct inode *inode,
 		ext4_fsblk_t goal,
 		unsigned int flags,
 		unsigned long *count, int *errp)
 {
-    UNREFERENCED_PARAMETER(handle);
-    UNREFERENCED_PARAMETER(flags);
-	NTSTATUS status;
-	ULONG blockcnt = (count)?*count:1;
-	ULONGLONG block = 0;
+	UNREFERENCED_PARAMETER(handle);
+	UNREFERENCED_PARAMETER(flags);
+	return ext4_new_blocks(icb, inode, goal, EXT2_ALLOC_JOURNALED, count, errp);
+}
 
-	status = Ext2NewBlock((PEXT2_IRP_CONTEXT)icb,
-			inode->i_sb->s_priv,
-			0, goal,
-			&block,
-			&blockcnt, 1ULL << 48);
-	if (count)
-		*count = blockcnt;
-
-	if (!NT_SUCCESS(status)) {
-		*errp = Ext2LinuxError(status);
-		return 0;
-	}
-	inode->i_blocks += (blockcnt * (inode->i_sb->s_blocksize >> 9));
-	return block;
+/* the blocks an extent maps: a directory's are journaled, a file's are
+   written in place and wait for blocks freed by an uncommitted release */
+ext4_fsblk_t ext4_new_data_blocks(void *icb, struct inode *inode, ext4_fsblk_t goal,
+		unsigned long *count, int *errp)
+{
+	return ext4_new_blocks(icb, inode, goal,
+			       S_ISDIR(inode->i_mode) ? EXT2_ALLOC_JOURNALED : 0, count, errp);
 }
 
 int ext4_free_blocks(void *icb, handle_t *handle, struct inode *inode, void *fake,
 		ext4_fsblk_t block, int count, int flags)
 {
-    UNREFERENCED_PARAMETER(fake);
-    UNREFERENCED_PARAMETER(handle);
-    UNREFERENCED_PARAMETER(flags);
-    NTSTATUS status = Ext2FreeBlock((PEXT2_IRP_CONTEXT)icb,
-                                   inode->i_sb->s_priv, block, count);
-    if (!NT_SUCCESS(status)) {
-        /* Do not commit an extent removal when its blocks were not freed. */
-        Ext2JournalAbortQuiet(inode->i_sb->s_priv);
-        return Ext2LinuxError(status);
-    }
-    inode->i_blocks -= (__u64)count * (inode->i_sb->s_blocksize >> 9);
-    return 0;
+	NTSTATUS status;
+
+	UNREFERENCED_PARAMETER(fake);
+	UNREFERENCED_PARAMETER(handle);
+	UNREFERENCED_PARAMETER(flags);
+	/* an extent removal does not commit when its blocks were not freed */
+	status = Ext2ReleaseInodeBlocks((PEXT2_IRP_CONTEXT)icb, inode, block, (ULONG)count);
+	return NT_SUCCESS(status) ? 0 : Ext2LinuxError(status);
 }
 
 /*

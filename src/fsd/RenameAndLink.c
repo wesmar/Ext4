@@ -25,9 +25,10 @@ Ext2SetRenameInfo(
 {
     PEXT2_MCB               Mcb = Ext2CcbName(Fcb, Ccb);
 
-    PEXT2_FCB               TargetDcb = NULL;   /* Dcb of target directory */
+    PEXT2_FCB               TargetDcb = NULL;   /* Dcb of target directory, referenced */
     PEXT2_MCB               TargetMcb = NULL;
-    PEXT2_FCB               ParentDcb = NULL;   /* Dcb of it's current parent */
+    PEXT2_MCB               TargetHeld = NULL;  /* TargetMcb when this took a reference to it */
+    PEXT2_FCB               ParentDcb = NULL;   /* Dcb of its current parent, referenced */
     PEXT2_MCB               ParentMcb = NULL;
 
     PEXT2_FCB               ExistingFcb = NULL; /* Target file Fcb if it exists*/
@@ -36,6 +37,7 @@ Ext2SetRenameInfo(
     UNICODE_STRING          FileName;
 
     NTSTATUS                Status;
+    NTSTATUS                Undo;
 
     PIRP                    Irp;
     PIO_STACK_LOCATION      IrpSp;
@@ -89,12 +91,9 @@ Ext2SetRenameInfo(
 
         FileName = NewName;
 
-        TargetMcb = Mcb->Parent;
-        if (IsMcbSymLink(TargetMcb)) {
-            TargetMcb = TargetMcb->Target;
-            ASSERT(!IsMcbSymLink(TargetMcb));
-        }
-
+        /* the directory the name is in, through a symlink to it if that is
+           how it was opened; referenced until the end */
+        TargetMcb = TargetHeld = Ext2ReferDirectory(Vcb, Mcb->Parent);
         if (TargetMcb == NULL || FileName.Length >= EXT2_NAME_LEN*2) {
             Status = STATUS_OBJECT_NAME_INVALID;
             goto errorout;
@@ -102,16 +101,16 @@ Ext2SetRenameInfo(
 
     } else {
 
-        TargetDcb = (PEXT2_FCB)(TargetObject->FsContext);
+        /* only its name: TargetDcb is set where it is referenced, below -
+           released at the end, it must have been taken */
+        PEXT2_FCB Directory = (PEXT2_FCB)(TargetObject->FsContext);
 
-        if (!TargetDcb || TargetDcb->Vcb != Vcb) {
-
-
+        if (!Directory || Directory->Vcb != Vcb) {
             Status = STATUS_INVALID_PARAMETER;
             goto errorout;
         }
 
-        TargetMcb = TargetDcb->Mcb;
+        TargetMcb = Directory->Mcb;
         FileName = TargetObject->FileName;
     }
 
@@ -227,7 +226,13 @@ Ext2SetRenameInfo(
     if (!NT_SUCCESS(Status)) {
         DEBUG(DL_REN, ("Ext2SetRenameInfo: Failed to add entry for %wZ with status: %xh.\n",
                        &FileName, Status));
-        Ext2AddEntry(IrpContext, Vcb, ParentDcb, Mcb->Inode, &Mcb->ShortName, &NewEntry);
+        /* the old name back; failing that, the transaction holds the
+           removal alone - the file would be left without a name - so it
+           must not commit: the journal stops and the disk keeps the old one */
+        Undo = Ext2AddEntry(IrpContext, Vcb, ParentDcb, Mcb->Inode, &Mcb->ShortName, &NewEntry);
+        if (!NT_SUCCESS(Undo)) {
+            Ext2JournalAbandon(Vcb, Undo);
+        }
         goto errorout;
     }
 
@@ -236,7 +241,10 @@ Ext2SetRenameInfo(
        directory ext3_dec_count stops at 2 and the add would leave 3 */
     if (IsMcbDirectory(Mcb) && Mcb->Inode->i_nlink != nlink) {
         Mcb->Inode->i_nlink = nlink;
-        ext3_mark_inode_dirty(IrpContext, Mcb->Inode);
+        Ext2SaveInodeStatus(IrpContext, Vcb, Mcb->Inode, &Status);
+        if (!NT_SUCCESS(Status)) {
+            goto errorout;
+        }
     }
 
     /* correct the inode number in ..  entry */
@@ -353,6 +361,9 @@ errorout:
     if (ExistingMcb)
         Ext2DerefMcb(ExistingMcb);
 
+    if (TargetHeld)
+        Ext2DerefMcb(TargetHeld);
+
     return Status;
 }
 
@@ -366,9 +377,10 @@ Ext2SetLinkInfo(
 {
     PEXT2_MCB               Mcb = Ext2CcbName(Fcb, Ccb);
 
-    PEXT2_FCB               TargetDcb = NULL;   /* Dcb of target directory */
+    PEXT2_FCB               TargetDcb = NULL;   /* Dcb of target directory, referenced */
     PEXT2_MCB               TargetMcb = NULL;
-    PEXT2_FCB               ParentDcb = NULL;   /* Dcb of it's current parent */
+    PEXT2_MCB               TargetHeld = NULL;  /* TargetMcb when this took a reference to it */
+    PEXT2_FCB               ParentDcb = NULL;   /* Dcb of its current parent, referenced */
     PEXT2_MCB               ParentMcb = NULL;
 
     PEXT2_FCB               ExistingFcb = NULL; /* Target file Fcb if it exists*/
@@ -433,12 +445,9 @@ Ext2SetLinkInfo(
 
         FileName = NewName;
 
-        TargetMcb = Mcb->Parent;
-        if (IsMcbSymLink(TargetMcb)) {
-            TargetMcb = TargetMcb->Target;
-            ASSERT(!IsMcbSymLink(TargetMcb));
-        }
-
+        /* the directory the name is in, through a symlink to it if that is
+           how it was opened; referenced until the end */
+        TargetMcb = TargetHeld = Ext2ReferDirectory(Vcb, Mcb->Parent);
         if (TargetMcb == NULL || FileName.Length >= EXT2_NAME_LEN*2) {
             Status = STATUS_OBJECT_NAME_INVALID;
             goto errorout;
@@ -446,13 +455,16 @@ Ext2SetLinkInfo(
 
     } else {
 
-        TargetDcb = (PEXT2_FCB)(TargetObject->FsContext);
-        if (!TargetDcb || TargetDcb->Vcb != Vcb) {
+        /* only its name: TargetDcb is set where it is referenced, below -
+           released at the end, it must have been taken */
+        PEXT2_FCB Directory = (PEXT2_FCB)(TargetObject->FsContext);
+
+        if (!Directory || Directory->Vcb != Vcb) {
             Status = STATUS_INVALID_PARAMETER;
             goto errorout;
         }
 
-        TargetMcb = TargetDcb->Mcb;
+        TargetMcb = Directory->Mcb;
         FileName = TargetObject->FileName;
     }
 
@@ -594,6 +606,9 @@ errorout:
 
     if (LinkMcb)
         Ext2DerefMcb(LinkMcb);
+
+    if (TargetHeld)
+        Ext2DerefMcb(TargetHeld);
 
     return Status;
 }

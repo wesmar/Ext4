@@ -177,7 +177,9 @@ Ext2Cleanup (IN PEXT2_IRP_CONTEXT IrpContext)
                 Ext2SetInodeTime(&SysTime, &Fcb->Inode->i_atime, &Fcb->Inode->i_atime_extra);
                 Fcb->Mcb->Icb->LastAccessTime = Fcb->Mcb->Icb->LastWriteTime = Ext2GetInodeTime(Fcb->Inode->i_atime, Fcb->Inode->i_atime_extra);
 
-                Ext2SaveInode(IrpContext, Vcb, Fcb->Inode);
+                /* fails only once the volume stopped writing, and a cleanup
+                   has no one to report to */
+                (void)Ext2SaveInode(IrpContext, Vcb, Fcb->Inode);
 
                 Ext2NotifyReportChange(
                     IrpContext,
@@ -294,7 +296,9 @@ Ext2Cleanup (IN PEXT2_IRP_CONTEXT IrpContext)
                                                     (ULONGLONG)BLOCK_SIZE);
                     if (!IsFlagOn(Fcb->Flags, FCB_DELETE_PENDING)) {
 
-                        Ext2TruncateFile(IrpContext, Vcb, Fcb->Mcb, &Size);
+                        /* blocks past the end that stay are legal: Size
+                           says how far the release got */
+                        (void)Ext2TruncateFile(IrpContext, Vcb, Fcb->Mcb, &Size);
                         Fcb->Header.AllocationSize = Size;
                         Fcb->Header.FileSize.QuadPart = Mcb->Inode->i_size;
                         if (Fcb->Header.ValidDataLength.QuadPart > Fcb->Header.FileSize.QuadPart)

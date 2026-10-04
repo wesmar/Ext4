@@ -237,8 +237,9 @@ Ext2JournalStart(IN PEXT2_VCB Vcb, IN journal_t *journal, IN PEXT2_MCB Jcb)
 errorout:
 
     if (J->Flags & JF_SB_MARKED) {
-        /* undo the marker: nothing was logged */
-        JnlMarkSuper(J, FALSE);
+        /* undo the marker: nothing was logged (a failure leaves only the
+           recovery flag, and recovery of an empty log is a no-op) */
+        (void)JnlMarkSuper(J, FALSE);
     }
     if (J->Running) {
         JnlFreeTxn(J, J->Running);
@@ -472,10 +473,12 @@ Ext2JournalStop(IN PEXT2_VCB Vcb, IN BOOLEAN MarkClean)
     if (!J || !(J->Flags & JF_ACTIVE))
         return;
 
+    /* a stop goes on whatever these say: a failure has aborted the
+       journal, and what is logged is replayed at the next mount */
     if (MarkClean)
-        Ext2JournalMarkClean(Vcb);
+        (void)Ext2JournalMarkClean(Vcb);
     else
-        Ext2JournalFlush(Vcb);
+        (void)Ext2JournalFlush(Vcb);
 
     /* no more buffers, no more handles */
     JnlLock(J, irql);

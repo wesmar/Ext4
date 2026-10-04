@@ -129,6 +129,7 @@ Ext2InitializeGroupLocks(IN PEXT2_VCB Vcb)
         ExInitializeResourceLite(&Vcb->GroupLocks[i].BlockLock);
         ExInitializeResourceLite(&Vcb->GroupLocks[i].InodeLock);
         ExInitializePushLock(&Vcb->GroupLocks[i].DescLock);
+        InitializeListHead(&Vcb->GroupLocks[i].FreedGroups);
     }
     Vcb->GroupLockMask = Count - 1;
     return STATUS_SUCCESS;
@@ -142,6 +143,7 @@ Ext2DestroyGroupLocks(IN PEXT2_VCB Vcb)
     if (Vcb->GroupLocks == NULL) {
         return;
     }
+    Ext2DestroyFreedBlocks(Vcb);
     for (i = 0; i <= Vcb->GroupLockMask; i++) {
         ExDeleteResourceLite(&Vcb->GroupLocks[i].BlockLock);
         ExDeleteResourceLite(&Vcb->GroupLocks[i].InodeLock);

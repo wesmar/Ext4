@@ -1,13 +1,13 @@
 #Requires -Version 7.0
 # SPDX-License-Identifier: GPL-2.0-only
 # One short ext2/ext3 write/read-back run on a new dedicated Hyper-V fixture.
-param([string]$Ip = '')
+param([string]$Ip = '', [string]$Image = '')
 $ErrorActionPreference='Stop'
 . "$PSScriptRoot/testenv.ps1"
 if (-not $Ip) { $Ip=Get-TestVmIp }
 $sshOptions=Get-SshOptions
 $target="$($TestEnv.User)@$Ip"
-$image=Join-Path $PSScriptRoot 'legacy-smoke.vhdx'
+$image=if ($Image) { $Image } else { Join-Path $PSScriptRoot 'legacy-smoke.vhdx' }
 $slot=4
 if (Test-Path -LiteralPath $image) { throw 'Fixture already exists; retain it or choose a new path before running' }
 if (Get-VMHardDiskDrive -VMName $TestEnv.Vm | Where-Object { $_.ControllerType -eq 'SCSI' -and $_.ControllerNumber -eq 0 -and $_.ControllerLocation -eq $slot }) {

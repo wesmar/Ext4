@@ -173,17 +173,17 @@ Ext2AddEntry (
 
             Ext4DirNameAdded(Dcb->Inode, de->d_name.name, de->d_name.len);
 
-            /* increase dir inode's nlink for .. */
+            /* a directory's ".." links its parent */
             if (S_ISDIR(Inode->i_mode)) {
                 ext3_inc_count(Dcb->Inode);
-                ext3_mark_inode_dirty(IrpContext, Dcb->Inode);
+                Ext2SaveInodeStatus(IrpContext, Vcb, Dcb->Inode, &status);
             }
 
-            /* increase inode nlink reference */
+            /* and the new name links the inode */
             ext3_inc_count(Inode);
-            ext3_mark_inode_dirty(IrpContext, Inode);
+            Ext2SaveInodeStatus(IrpContext, Vcb, Inode, &status);
 
-            if (Dentry) {
+            if (Dentry && NT_SUCCESS(status)) {
                 *Dentry = de;
                 de = NULL;
             }
@@ -265,12 +265,11 @@ Ext2SetFileType (
             ext3_inc_count(dir);
         }
         dir->i_ctime = dir->i_mtime = ext3_current_time(dir);
-        ext3_mark_inode_dirty(IrpContext, dir);
-
         inode->i_mode = mode;
-        ext3_mark_inode_dirty(IrpContext, inode);
 
         Status = STATUS_SUCCESS;
+        Ext2SaveInodeStatus(IrpContext, Vcb, dir, &Status);
+        Ext2SaveInodeStatus(IrpContext, Vcb, inode, &Status);
 
     } __finally {
 
@@ -364,16 +363,17 @@ Ext2RemoveEntry (
         if (Ext2DropLink(Vcb, inode) && LastName) {
             *LastName = TRUE;
         }
-        ext3_mark_inode_dirty(IrpContext, inode);
 
-        /* decrease dir inode's nlink for .. */
+        Status = STATUS_SUCCESS;
+        Ext2SaveInodeStatus(IrpContext, Vcb, inode, &Status);
+
+        /* a directory's ".." linked its parent */
         if (S_ISDIR(inode->i_mode)) {
             ext3_update_dx_flag(dir);
             ext3_dec_count(dir);
-            ext3_mark_inode_dirty(IrpContext, dir);
         }
-
-        Status = STATUS_SUCCESS;
+        /* the parent changed either way: its times (and count) are written */
+        Ext2SaveInodeStatus(IrpContext, Vcb, dir, &Status);
 
     } __finally {
 
