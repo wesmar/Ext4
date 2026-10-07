@@ -89,5 +89,7 @@ try {
     }
     if ($wslMounted) { & wsl --unmount "\\?\$image" | Out-Null }
     if ($wasRunning) { StartDriver }
+    # nothing of the run stays in the guest
+    try { Guest "if ([IO.File]::Exists('C:\Windows\Temp\legacy.ps1')) { [IO.File]::Delete('C:\Windows\Temp\legacy.ps1') }" | Out-Null } catch { }
     # Retain the fixture as evidence; no automatic deletion or repair.
 }
