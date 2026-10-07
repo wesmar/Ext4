@@ -202,18 +202,6 @@ Ext2IsVolumeMounted (IN PEXT2_IRP_CONTEXT IrpContext);
 NTSTATUS
 Ext2DismountVolume (IN PEXT2_IRP_CONTEXT IrpContext);
 
-BOOLEAN
-Ext2CheckSetBlock(
-    PEXT2_IRP_CONTEXT IrpContext,
-    PEXT2_VCB Vcb, LONGLONG Block
-);
-
-BOOLEAN
-Ext2CheckBitmapConsistency(
-    PEXT2_IRP_CONTEXT IrpContext,
-    PEXT2_VCB Vcb
-);
-
 VOID
 Ext2InsertVcb(PEXT2_VCB Vcb);
 

@@ -103,8 +103,7 @@ IndTruncateTree(
        own metadata, is no part of this file: what it seems to point at
        belongs to others */
     if (*Ptr >= TOTAL_BLOCKS || (Depth > 0 && Ext2MetadataOverlaps(Vcb, *Ptr, 1))) {
-        DbgPrint("ext4: inode %u maps block %u at depth %u: corrupt\n",
-                 Inode->i_ino, *Ptr, Depth);
+        Ext2ReportCorruption(Vcb, (ULONG)Inode->i_ino, *Ptr, -EFSCORRUPTED);
         return STATUS_DISK_CORRUPT_ERROR;
     }
 

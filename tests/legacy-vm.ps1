@@ -7,7 +7,9 @@ $ErrorActionPreference='Stop'
 if (-not $Ip) { $Ip=Get-TestVmIp }
 $sshOptions=Get-SshOptions
 $target="$($TestEnv.User)@$Ip"
-$image=if ($Image) { $Image } else { Join-Path $PSScriptRoot 'legacy-smoke.vhdx' }
+# a full path: wsl --unmount and Hyper-V resolve a relative one each its own way
+$image=if ($Image) { $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Image) }
+       else { Join-Path $PSScriptRoot 'legacy-smoke.vhdx' }
 $slot=4
 if (Test-Path -LiteralPath $image) { throw 'Fixture already exists; retain it or choose a new path before running' }
 if (Get-VMHardDiskDrive -VMName $TestEnv.Vm | Where-Object { $_.ControllerType -eq 'SCSI' -and $_.ControllerNumber -eq 0 -and $_.ControllerLocation -eq $slot }) {

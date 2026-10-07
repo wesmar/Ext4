@@ -231,7 +231,7 @@ struct dx_frame *
     memset(frame_in, 0, EXT4_HTREE_LEVEL * sizeof(frame_in[0]));
     if (dentry)
         dir = dentry->d_parent->d_inode;
-    if (!(bh = ext3_bread (icb, dir, 0, err)))
+    if (!(bh = ext3_bread_index(icb, dir, 0, err)))
         goto fail;
     root = (struct dx_root *) bh->b_data;
     if (root->info.hash_version != DX_HASH_TEA &&
@@ -328,7 +328,7 @@ struct dx_frame *
         frame->entries = entries;
         frame->at = at;
         if (!indirect--) return frame;
-        if (!(bh = ext3_bread(icb, dir, dx_get_block(at), err)))
+        if (!(bh = ext3_bread_index(icb, dir, dx_get_block(at), err)))
             goto fail2;
         at = entries = ((struct dx_node *) bh->b_data)->entries;
         if (dx_get_limit(entries) != dx_node_limit (dir)) {
@@ -434,7 +434,7 @@ int ext3_htree_next_block(struct ext2_icb *icb, struct inode *dir,
      * block so no check is necessary
      */
     while (num_frames--) {
-        if (!(bh = ext3_bread(icb, dir, dx_get_block(p->at), &err)))
+        if (!(bh = ext3_bread_index(icb, dir, dx_get_block(p->at), &err)))
             return err; /* Failure */
         p++;
         brelse (p->bh);

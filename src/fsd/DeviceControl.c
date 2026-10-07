@@ -351,6 +351,15 @@ Ext2ProcessVolumeProperty(
                 }
                 SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
 
+            } else if (IsFlagOn(Vcb->Flags, VCB_WRITE_STOPPED)) {
+
+                /* stopped on an error - a journal abort, errors=remount-ro,
+                   a change neither finished nor undone, another MMP node:
+                   read-only until dismount, as Linux refuses to remount an
+                   aborted file system read-write (it used to be writable
+                   again at the asking) */
+                Status = STATUS_MEDIA_WRITE_PROTECTED;
+
             } else {
 
                 if (Property->bExt3Writable) {

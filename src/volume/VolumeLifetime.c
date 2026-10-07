@@ -188,6 +188,10 @@ Ext2DestroyVcb (IN PEXT2_VCB Vcb)
     /* off the mounted or the dismounting list, whichever it is on */
     Ext2UnlinkVcb(Vcb);
 
+    /* a queued superblock write uses the journal, the superblock and the
+       device below; asked for later, the teardown's own write carries it */
+    Ext2DrainSuperWrites(Vcb);
+
     /* the update thread may not outlive the Vcb it writes for */
     Ext4MmpStop(Vcb, !IsFlagOn(Vcb->Flags, VCB_DEVICE_REMOVED));
 

@@ -9,89 +9,33 @@
 #include "ext4fs.h"
 #include <linux/ext4_xattr.h>
 
-/* Ea iterator */
-struct EaIterator {
-	/* Return only an entry */
-	BOOLEAN ReturnSingleEntry;
-
-	/* Is the buffer overflowing? */
-	BOOL OverFlow;
-
-	/* FILE_FULL_EA_INFORMATION output buffer */
-	PFILE_FULL_EA_INFORMATION FullEa;
-	PFILE_FULL_EA_INFORMATION LastFullEa;
-
-	/* UserBuffer's size */
-	ULONG UserBufferLength;
-
-	/* Remaining UserBuffer's size */
-	ULONG RemainingUserBufferLength;
-
-	/* Start scanning from this EA */
-	ULONG EaIndex;
-
-	/* Next EA index returned by Ext2IterateAllEa */
-	ULONG EaIndexCounter;
-};
-
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, Ext2QueryEa)
 #pragma alloc_text(PAGE, Ext2SetEa)
 #pragma alloc_text(PAGE, Ext2IsEaNameValid)
 #endif
 
-static int Ext2IterateAllEa(struct ext4_xattr_ref *xattr_ref, struct ext4_xattr_item *item, BOOL is_last)
+#define EXT2_EA_NAME_MAX    MAXUCHAR    /* FILE_FULL_EA_INFORMATION.EaNameLength */
+#define EXT2_EA_VALUE_MAX   MAXUSHORT   /* FILE_FULL_EA_INFORMATION.EaValueLength */
+
+/*
+ * Windows EAs are the user.* xattrs whose value an EA can hold (its length
+ * is a USHORT; a value of 64 KiB, which ea_inode allows, is not one -
+ * listed, its length used to wrap to 0 over 64 KiB of data). security.*,
+ * trusted.*, system.* (ACLs, inline data) stay Linux's: neither listed nor
+ * counted, so names never collide once the prefix is gone.
+ */
+static BOOLEAN
+Ext2IsWindowsEa(IN const struct ext4_xattr_item *item)
 {
-	struct EaIterator *pEaIterator = xattr_ref->iter_arg;
-	ULONG EaEntrySize = (ULONG)(4 + 1 + 1 + 2 + item->name_len + 1 + item->data_size);
-	ASSERT(pEaIterator);
+    return item->name_index == EXT4_XATTR_INDEX_USER && item->data_size <= EXT2_EA_VALUE_MAX;
+}
 
-	/* Windows EAs are the user.* namespace: security.*, trusted.*,
-	   system.* (ACLs, inline data) stay Linux's and are neither listed nor
-	   counted in the index, so names never collide after the prefix goes */
-	if (item->name_index != EXT4_XATTR_INDEX_USER)
-		return EXT4_XATTR_ITERATE_CONT;
-
-	if (!is_last && !pEaIterator->ReturnSingleEntry)
-		EaEntrySize = ALIGN_UP(EaEntrySize, ULONG);
-
-	/* Start iteration from index specified */
-	if (pEaIterator->EaIndexCounter < pEaIterator->EaIndex) {
-		pEaIterator->EaIndexCounter++;
-		return EXT4_XATTR_ITERATE_CONT;
-	}
-	pEaIterator->EaIndexCounter++;
-
-	if (EaEntrySize > pEaIterator->RemainingUserBufferLength) {
-		pEaIterator->OverFlow = TRUE;
-		return EXT4_XATTR_ITERATE_STOP;
-	}
-	pEaIterator->FullEa->NextEntryOffset = 0;
-	pEaIterator->FullEa->Flags = 0;
-	pEaIterator->FullEa->EaNameLength = (UCHAR)item->name_len;
-	pEaIterator->FullEa->EaValueLength = (USHORT)item->data_size;
-	RtlCopyMemory(&pEaIterator->FullEa->EaName[0],
-		item->name,
-		item->name_len);
-	RtlCopyMemory(&pEaIterator->FullEa->EaName[0] + item->name_len + 1,
-		item->data,
-		item->data_size);
-
-	/* Link FullEa and LastFullEa together */
-	if (pEaIterator->LastFullEa) {
-		pEaIterator->LastFullEa->NextEntryOffset = (ULONG)
-			((PCHAR)pEaIterator->FullEa - (PCHAR)pEaIterator->LastFullEa);
-	}
-
-	pEaIterator->LastFullEa = pEaIterator->FullEa;
-	pEaIterator->FullEa = (PFILE_FULL_EA_INFORMATION)
-			((PCHAR)pEaIterator->FullEa + EaEntrySize);
-	pEaIterator->RemainingUserBufferLength -= EaEntrySize;
-
-	if (pEaIterator->ReturnSingleEntry)
-		return EXT4_XATTR_ITERATE_STOP;
-
-	return EXT4_XATTR_ITERATE_CONT;
+/* the bytes of one FILE_FULL_EA_INFORMATION entry, unpadded */
+static ULONG
+Ext2EaEntrySize(IN ULONG NameLength, IN ULONG ValueLength)
+{
+    return (ULONG)FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName) + NameLength + 1 + ValueLength;
 }
 
 /*
@@ -104,17 +48,130 @@ static int Ext2IterateAllEa(struct ext4_xattr_ref *xattr_ref, struct ext4_xattr_
 static struct ext4_xattr_item *
 Ext2FindEa(struct ext4_xattr_ref *ref, const char *name, size_t name_len)
 {
-	struct list_head *pos;
+    struct list_head *pos;
 
-	for (pos = ref->ordered_list.next; pos != &ref->ordered_list; pos = pos->next) {
-		struct ext4_xattr_item *item =
-			list_entry(pos, struct ext4_xattr_item, list_node);
-		if (item->name_index == EXT4_XATTR_INDEX_USER &&
-		    item->name_len == name_len &&
-		    !_strnicmp(item->name, name, name_len))
-			return item;
-	}
-	return NULL;
+    for (pos = ref->ordered_list.next; pos != &ref->ordered_list; pos = pos->next) {
+        struct ext4_xattr_item *item = list_entry(pos, struct ext4_xattr_item, list_node);
+        if (item->name_index == EXT4_XATTR_INDEX_USER && item->name_len == name_len &&
+            !_strnicmp(item->name, name, name_len)) {
+            return item;
+        }
+    }
+    return NULL;
+}
+
+/* ---------------------------------------------------------------- the list */
+
+static int
+Ext2CountEa(struct ext4_xattr_ref *ref, struct ext4_xattr_item *item, BOOL is_last)
+{
+    PULONG EaSize = ref->iter_arg;
+
+    UNREFERENCED_PARAMETER(is_last);
+    if (Ext2IsWindowsEa(item)) {
+        /* the packed (FEA) entry: no link to the next one, no padding */
+        *EaSize += Ext2EaEntrySize((ULONG)item->name_len, (ULONG)item->data_size) - sizeof(ULONG);
+    }
+    return EXT4_XATTR_ITERATE_CONT;
+}
+
+/*
+ * The size of the file's EAs as NTFS reports it (FileEaInformation): the
+ * packed list - its length field and the entries without links or padding;
+ * 0: none.
+ */
+NTSTATUS
+Ext2EaListSize(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, OUT PULONG EaSize)
+{
+    struct ext4_xattr_ref   xattr_ref;
+    NTSTATUS                Status;
+
+    *EaSize = 0;
+    Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Mcb, &xattr_ref));
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+    xattr_ref.iter_arg = EaSize;
+    ext4_fs_xattr_iterate(&xattr_ref, Ext2CountEa);
+    (void)ext4_fs_put_xattr_ref(&xattr_ref);    /* read only: nothing written */
+
+    if (*EaSize != 0) {
+        *EaSize += sizeof(ULONG);
+    }
+    return STATUS_SUCCESS;
+}
+
+/* entries filled into a caller's buffer, one after the other */
+typedef struct _EXT2_EA_FILL {
+    PFILE_FULL_EA_INFORMATION   Next;       /* where the next entry goes */
+    PFILE_FULL_EA_INFORMATION   Last;       /* the entry filled last */
+    ULONG                       Left;       /* bytes left */
+    ULONG                       Count;      /* entries filled */
+    ULONG                       Skip;       /* the index (from 1) to start at */
+    ULONG                       Index;      /* the index of the next EA met */
+    ULONG                       Seen;       /* Windows EAs met */
+    BOOLEAN                     Single;
+    BOOLEAN                     Overflow;   /* an entry did not fit */
+} EXT2_EA_FILL, *PEXT2_EA_FILL;
+
+/* one entry; FALSE when it does not fit (an entry but the last is padded) */
+static BOOLEAN
+Ext2FillEa(IN OUT PEXT2_EA_FILL F, IN const char *Name, IN ULONG NameLength,
+           IN const void *Value, IN ULONG ValueLength, IN BOOLEAN IsLast)
+{
+    PFILE_FULL_EA_INFORMATION   Ea = F->Next;
+    ULONG                       Size = Ext2EaEntrySize(NameLength, ValueLength);
+
+    if (!IsLast) {
+        Size = ALIGN_UP(Size, ULONG);
+    }
+    if (Size > F->Left) {
+        F->Overflow = TRUE;
+        return FALSE;
+    }
+
+    Ea->NextEntryOffset = 0;
+    Ea->Flags = 0;
+    Ea->EaNameLength = (UCHAR)NameLength;
+    Ea->EaValueLength = (USHORT)ValueLength;
+    RtlCopyMemory(Ea->EaName, Name, NameLength);
+    Ea->EaName[NameLength] = 0;
+    if (ValueLength != 0) {
+        RtlCopyMemory(&Ea->EaName[NameLength + 1], Value, ValueLength);
+    }
+
+    if (F->Last != NULL) {
+        F->Last->NextEntryOffset = (ULONG)((PCHAR)Ea - (PCHAR)F->Last);
+    }
+    F->Last = Ea;
+    F->Next = (PFILE_FULL_EA_INFORMATION)((PCHAR)Ea + Size);
+    F->Left -= Size;
+    F->Count++;
+    return TRUE;
+}
+
+/* the file's EAs in their order, from F->Skip on; an entry that does not
+   fit stops the fill and is the next one to return (it used to be passed
+   over by the next query) */
+static int
+Ext2FillEaItem(struct ext4_xattr_ref *ref, struct ext4_xattr_item *item, BOOL is_last)
+{
+    PEXT2_EA_FILL F = ref->iter_arg;
+
+    if (!Ext2IsWindowsEa(item)) {
+        return EXT4_XATTR_ITERATE_CONT;
+    }
+    F->Seen++;
+    if (F->Index < F->Skip) {
+        F->Index++;
+        return EXT4_XATTR_ITERATE_CONT;
+    }
+    if (!Ext2FillEa(F, item->name, (ULONG)item->name_len, item->data, (ULONG)item->data_size,
+                    is_last || F->Single)) {
+        return EXT4_XATTR_ITERATE_STOP;
+    }
+    F->Index++;
+    return F->Single ? EXT4_XATTR_ITERATE_STOP : EXT4_XATTR_ITERATE_CONT;
 }
 
 /*
@@ -126,495 +183,356 @@ Ext2FindEa(struct ext4_xattr_ref *ref, const char *name, size_t name_len)
 static NTSTATUS
 Ext2CheckGetEaList(const UCHAR *List, ULONG Length, PULONG ErrorOffset)
 {
-	ULONG Offset = 0;
+    ULONG Offset = 0;
 
-	for (;;) {
-		const FILE_GET_EA_INFORMATION *GetEa =
-			(const FILE_GET_EA_INFORMATION *)(List + Offset);
-		const ULONG Header = (ULONG)FIELD_OFFSET(FILE_GET_EA_INFORMATION, EaName);
-		ULONG Left = Length - Offset;
+    for (;;) {
+        const FILE_GET_EA_INFORMATION *GetEa = (const FILE_GET_EA_INFORMATION *)(List + Offset);
+        const ULONG Header = (ULONG)FIELD_OFFSET(FILE_GET_EA_INFORMATION, EaName);
+        ULONG Left = Length - Offset;
 
-		if (Left < Header || Left - Header < GetEa->EaNameLength ||
-		    GetEa->EaNameLength == 0)
-			break;
-		if (GetEa->NextEntryOffset == 0)
-			return STATUS_SUCCESS;
-		if ((GetEa->NextEntryOffset & (sizeof(ULONG) - 1)) ||
-		    GetEa->NextEntryOffset >= Left)
-			break;
-		Offset += GetEa->NextEntryOffset;
-	}
-	*ErrorOffset = Offset;
-	return STATUS_EA_LIST_INCONSISTENT;
+        if (Left < Header || Left - Header < GetEa->EaNameLength || GetEa->EaNameLength == 0) {
+            break;
+        }
+        if (GetEa->NextEntryOffset == 0) {
+            return STATUS_SUCCESS;
+        }
+        if ((GetEa->NextEntryOffset & (sizeof(ULONG) - 1)) || GetEa->NextEntryOffset >= Left) {
+            break;
+        }
+        Offset += GetEa->NextEntryOffset;
+    }
+    *ErrorOffset = Offset;
+    return STATUS_EA_LIST_INCONSISTENT;
+}
+
+/* one entry per name asked for, in the caller's order; a name the file does
+   not have comes back with an empty value, as NTFS and FAT answer it */
+static NTSTATUS
+Ext2QueryEaByName(IN struct ext4_xattr_ref *ref, IN PUCHAR List, IN ULONG ListLength,
+                  IN OUT PEXT2_EA_FILL F, OUT PULONG_PTR ErrorOffset)
+{
+    ULONG       Offset = 0, Bad = 0;
+    NTSTATUS    Status;
+
+    Status = Ext2CheckGetEaList(List, ListLength, &Bad);
+    if (!NT_SUCCESS(Status)) {
+        *ErrorOffset = Bad;
+        return Status;
+    }
+
+    for (;;) {
+        PFILE_GET_EA_INFORMATION GetEa = (PFILE_GET_EA_INFORMATION)(List + Offset);
+        struct ext4_xattr_item *Item = Ext2FindEa(ref, GetEa->EaName, GetEa->EaNameLength);
+        BOOLEAN IsLast = GetEa->NextEntryOffset == 0 || F->Single;
+
+        if (Item != NULL && !Ext2IsWindowsEa(Item)) {
+            Item = NULL;
+        }
+        if (!Ext2FillEa(F, GetEa->EaName, GetEa->EaNameLength,
+                        Item ? Item->data : NULL, Item ? (ULONG)Item->data_size : 0, IsLast)) {
+            return F->Count ? STATUS_BUFFER_OVERFLOW : STATUS_BUFFER_TOO_SMALL;
+        }
+        if (IsLast) {
+            return STATUS_SUCCESS;
+        }
+        Offset += GetEa->NextEntryOffset;
+    }
+}
+
+/* What a walk of the list filled, as FAT and NTFS report it: nothing to
+   find on the file, the end of the list passed, a buffer too small for the
+   first entry or only for a later one. An index past the end names nothing
+   (it used to be answered STATUS_OBJECTID_NOT_FOUND). */
+static NTSTATUS
+Ext2EaFillStatus(IN PEXT2_EA_FILL F, IN BOOLEAN ByIndex)
+{
+    if (F->Overflow) {
+        return F->Count ? STATUS_BUFFER_OVERFLOW : STATUS_BUFFER_TOO_SMALL;
+    }
+    if (F->Count != 0) {
+        return STATUS_SUCCESS;
+    }
+    if (F->Seen == 0) {
+        return STATUS_NO_EAS_ON_FILE;
+    }
+    return ByIndex ? STATUS_NONEXISTENT_EA_ENTRY : STATUS_NO_MORE_EAS;
 }
 
 NTSTATUS
-Ext2QueryEa (
-	IN PEXT2_IRP_CONTEXT    IrpContext
-)
+Ext2QueryEa (IN PEXT2_IRP_CONTEXT IrpContext)
 {
-	PIRP                Irp = NULL;
-	PIO_STACK_LOCATION  IrpSp;
+    PIRP                Irp = IrpContext->Irp;
+    PIO_STACK_LOCATION  IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    PEXT2_VCB           Vcb = (PEXT2_VCB)IrpContext->DeviceObject->DeviceExtension;
+    PEXT2_FCB           Fcb = IrpContext->Fcb;
+    PEXT2_CCB           Ccb = IrpContext->Ccb;
+    ULONG               Length = IrpSp->Parameters.QueryEa.Length;
+    PUCHAR              Buffer;
+    EXT2_EA_FILL        F = { 0 };
+    struct ext4_xattr_ref xattr_ref;
+    BOOLEAN             MainResourceAcquired = FALSE;
+    BOOLEAN             XattrRefAcquired = FALSE;
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
 
-	PDEVICE_OBJECT      DeviceObject;
+    ASSERT((Ccb->Identifier.Type == EXT2CCB) && (Ccb->Identifier.Size == sizeof(EXT2_CCB)));
 
-	PEXT2_VCB           Vcb = NULL;
-	PEXT2_FCB           Fcb = NULL;
-	PEXT2_CCB           Ccb = NULL;
-	PEXT2_MCB           Mcb = NULL;
+    __try {
 
-	PUCHAR  UserEaList;
-	ULONG   UserEaListLength;
-	ULONG   UserEaIndex;
+        Irp->IoStatus.Information = 0;
 
-	BOOLEAN RestartScan;
-	BOOLEAN ReturnSingleEntry;
-	BOOLEAN IndexSpecified;
+        Buffer = Ext2GetUserBuffer(Irp);
+        if (Buffer == NULL) {
+            Status = STATUS_INVALID_USER_BUFFER;
+            __leave;
+        }
 
-	BOOLEAN             MainResourceAcquired = FALSE;
-	BOOLEAN             XattrRefAcquired = FALSE;
+        /* readers share the inode; Ext2SetEa takes it exclusive */
+        if (!ExAcquireResourceSharedLite(&Fcb->MainResource,
+                                         IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT))) {
+            Status = STATUS_PENDING;
+            __leave;
+        }
+        MainResourceAcquired = TRUE;
 
-	NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+        Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, &xattr_ref));
+        if (!NT_SUCCESS(Status)) {
+            __leave;
+        }
+        XattrRefAcquired = TRUE;
 
-	struct ext4_xattr_ref xattr_ref;
-	PCHAR UserBuffer;
+        RtlZeroMemory(Buffer, Length);
+        F.Next = (PFILE_FULL_EA_INFORMATION)Buffer;
+        F.Left = Length;
+        F.Index = 1;
+        F.Single = BooleanFlagOn(IrpSp->Flags, SL_RETURN_SINGLE_ENTRY);
 
-	ULONG UserBufferLength = 0;
-	ULONG RemainingUserBufferLength = 0;
+        if (IrpSp->Parameters.QueryEa.EaList != NULL) {
 
-	PFILE_FULL_EA_INFORMATION FullEa, LastFullEa = NULL;
+            Status = Ext2QueryEaByName(&xattr_ref, IrpSp->Parameters.QueryEa.EaList,
+                                       IrpSp->Parameters.QueryEa.EaListLength, &F,
+                                       &Irp->IoStatus.Information);
 
-	__try {
+        } else if (BooleanFlagOn(IrpSp->Flags, SL_INDEX_SPECIFIED)) {
 
-		Ccb = IrpContext->Ccb;
-		ASSERT(Ccb != NULL);
-		ASSERT((Ccb->Identifier.Type == EXT2CCB) &&
-			(Ccb->Identifier.Size == sizeof(EXT2_CCB)));
-		DeviceObject = IrpContext->DeviceObject;
-		Vcb = (PEXT2_VCB)DeviceObject->DeviceExtension;
-		Fcb = IrpContext->Fcb;
-		Mcb = Fcb->Mcb;
-		Irp = IrpContext->Irp;
-		IrpSp = IoGetCurrentIrpStackLocation(Irp);
+            /* the one entry at the caller's index (from 1) */
+            F.Skip = IrpSp->Parameters.QueryEa.EaIndex;
+            F.Single = TRUE;
+            xattr_ref.iter_arg = &F;
+            ext4_fs_xattr_iterate(&xattr_ref, Ext2FillEaItem);
+            Status = F.Skip == 0 ? STATUS_NONEXISTENT_EA_ENTRY : Ext2EaFillStatus(&F, TRUE);
 
-		Irp->IoStatus.Information = 0;
+        } else {
 
-		/* Receive input parameter from caller */
-		UserBuffer = Ext2GetUserBuffer(Irp);
-		if (!UserBuffer) {
-			Status = STATUS_INSUFFICIENT_RESOURCES;
-			__leave;
-		}
-		UserBufferLength = IrpSp->Parameters.QueryEa.Length;
-		RemainingUserBufferLength = UserBufferLength;
-		UserEaList = IrpSp->Parameters.QueryEa.EaList;
-		UserEaListLength = IrpSp->Parameters.QueryEa.EaListLength;
-		UserEaIndex = IrpSp->Parameters.QueryEa.EaIndex;
-		RestartScan = BooleanFlagOn(IrpSp->Flags, SL_RESTART_SCAN);
-		ReturnSingleEntry = BooleanFlagOn(IrpSp->Flags, SL_RETURN_SINGLE_ENTRY);
-		IndexSpecified = BooleanFlagOn(IrpSp->Flags, SL_INDEX_SPECIFIED);
+            /* on from where the handle's last scan stopped */
+            if (BooleanFlagOn(IrpSp->Flags, SL_RESTART_SCAN) || Ccb->EaIndex == 0) {
+                Ccb->EaIndex = 1;
+            }
+            F.Skip = Ccb->EaIndex;
+            xattr_ref.iter_arg = &F;
+            ext4_fs_xattr_iterate(&xattr_ref, Ext2FillEaItem);
+            Ccb->EaIndex = F.Index;
+            Status = Ext2EaFillStatus(&F, FALSE);
+        }
 
-		if (!Mcb)
-			__leave;
+        if (NT_SUCCESS(Status) || Status == STATUS_BUFFER_OVERFLOW) {
+            Irp->IoStatus.Information = Length - F.Left;
+        }
 
-		/* readers share the inode; Ext2SetEa takes it exclusive */
-		if (!ExAcquireResourceSharedLite(
-			&Fcb->MainResource,
-			IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT))) {
-			Status = STATUS_PENDING;
-			__leave;
-		}
-		MainResourceAcquired = TRUE;
+    } __finally {
 
-		Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, &xattr_ref));
-		if (!NT_SUCCESS(Status)) {
-			DbgPrint("ext4_fs_get_xattr_ref() failed!\n");
-			__leave;
-		}
+        /* a query writes nothing, and changes nothing to notify about */
+        if (XattrRefAcquired) {
+            xattr_ref.dirty = FALSE;
+            (void)ext4_fs_put_xattr_ref(&xattr_ref);
+        }
+        if (MainResourceAcquired) {
+            ExReleaseResourceLite(&Fcb->MainResource);
+        }
 
-		FullEa = (PFILE_FULL_EA_INFORMATION)UserBuffer;
+        if (!AbnormalTermination()) {
+            if (Status == STATUS_PENDING || Status == STATUS_CANT_WAIT) {
+                Status = Ext2QueueRequest(IrpContext);
+            } else {
+                Ext2CompleteIrpContext(IrpContext, Status);
+            }
+        }
+    }
 
-		XattrRefAcquired = TRUE;
-
-		if (RemainingUserBufferLength)
-			RtlZeroMemory(FullEa, RemainingUserBufferLength);
-
-		if (UserEaList != NULL) {
-			ULONG Offset = 0;
-			ULONG Count = 0;
-			ULONG ErrorOffset = 0;
-
-			Status = Ext2CheckGetEaList(UserEaList, UserEaListLength, &ErrorOffset);
-			if (!NT_SUCCESS(Status)) {
-				Irp->IoStatus.Information = ErrorOffset;
-				__leave;
-			}
-
-			/* one entry per name asked for, in the caller's order; a name
-			   the file does not have comes back with an empty value, as
-			   NTFS and FAT answer it */
-			for (;;) {
-				PFILE_GET_EA_INFORMATION GetEa =
-					(PFILE_GET_EA_INFORMATION)(UserEaList + Offset);
-				struct ext4_xattr_item *Item =
-					Ext2FindEa(&xattr_ref, GetEa->EaName, GetEa->EaNameLength);
-				ULONG ValueLength = Item ? (ULONG)min(Item->data_size, MAXUSHORT) : 0;
-				BOOLEAN IsLast = GetEa->NextEntryOffset == 0 || ReturnSingleEntry;
-				ULONG EaEntrySize = FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName) +
-						    GetEa->EaNameLength + 1 + ValueLength;
-
-				if (!IsLast)
-					EaEntrySize = ALIGN_UP(EaEntrySize, ULONG);
-				if (EaEntrySize > RemainingUserBufferLength) {
-					Status = Count ? STATUS_BUFFER_OVERFLOW : STATUS_BUFFER_TOO_SMALL;
-					__leave;
-				}
-
-				FullEa->NextEntryOffset = 0;
-				FullEa->Flags = 0;
-				FullEa->EaNameLength = GetEa->EaNameLength;
-				FullEa->EaValueLength = (USHORT)ValueLength;
-				RtlCopyMemory(&FullEa->EaName[0], &GetEa->EaName[0], GetEa->EaNameLength);
-				FullEa->EaName[GetEa->EaNameLength] = 0;
-				if (ValueLength)
-					RtlCopyMemory(&FullEa->EaName[GetEa->EaNameLength + 1],
-						      Item->data, ValueLength);
-
-				if (LastFullEa)
-					LastFullEa->NextEntryOffset = (ULONG)((PCHAR)FullEa -
-									      (PCHAR)LastFullEa);
-				LastFullEa = FullEa;
-				FullEa = (PFILE_FULL_EA_INFORMATION)((PCHAR)FullEa + EaEntrySize);
-				RemainingUserBufferLength -= EaEntrySize;
-				Count++;
-
-				if (IsLast)
-					break;
-				Offset += GetEa->NextEntryOffset;
-			}
-			Status = STATUS_SUCCESS;
-		} else if (IndexSpecified) {
-			struct EaIterator EaIterator;
-			/* The user supplied an index into the Ea list. */
-			if (RemainingUserBufferLength)
-				RtlZeroMemory(FullEa, RemainingUserBufferLength);
-
-			EaIterator.OverFlow = FALSE;
-			EaIterator.RemainingUserBufferLength = UserBufferLength;
-			/* In this case, return only an entry. */
-			EaIterator.ReturnSingleEntry = TRUE;
-			EaIterator.FullEa = (PFILE_FULL_EA_INFORMATION)UserBuffer;
-			EaIterator.LastFullEa = NULL;
-			EaIterator.UserBufferLength = UserBufferLength;
-			EaIterator.EaIndex = UserEaIndex;
-			EaIterator.EaIndexCounter = 1;
-
-			xattr_ref.iter_arg = &EaIterator;
-			ext4_fs_xattr_iterate(&xattr_ref, Ext2IterateAllEa);
-
-			RemainingUserBufferLength = EaIterator.RemainingUserBufferLength;
-
-			Status = STATUS_SUCCESS;
-
-			/* It seems that the item isn't found */
-			if (RemainingUserBufferLength == UserBufferLength)
-				Status = STATUS_OBJECTID_NOT_FOUND;
-
-			if (EaIterator.OverFlow) {
-				if (RemainingUserBufferLength == UserBufferLength)
-					Status = STATUS_BUFFER_TOO_SMALL;
-				else
-					Status = STATUS_BUFFER_OVERFLOW;
-			}
-
-		} else {
-			struct EaIterator EaIterator;
-			/* Else perform a simple scan, taking into account the restart
-			   flag and the position of the next Ea stored in the Ccb. */
-			if (RestartScan)
-				Ccb->EaIndex = 1;
-
-			if (RemainingUserBufferLength)
-				RtlZeroMemory(FullEa, RemainingUserBufferLength);
-
-			EaIterator.OverFlow = FALSE;
-			EaIterator.RemainingUserBufferLength = UserBufferLength;
-			EaIterator.ReturnSingleEntry = ReturnSingleEntry;
-			EaIterator.FullEa = (PFILE_FULL_EA_INFORMATION)UserBuffer;
-			EaIterator.LastFullEa = NULL;
-			EaIterator.UserBufferLength = UserBufferLength;
-			EaIterator.EaIndex = Ccb->EaIndex;
-			EaIterator.EaIndexCounter = 1;
-
-			xattr_ref.iter_arg = &EaIterator;
-			ext4_fs_xattr_iterate(&xattr_ref, Ext2IterateAllEa);
-
-			RemainingUserBufferLength = EaIterator.RemainingUserBufferLength;
-
-			if (Ccb->EaIndex < EaIterator.EaIndexCounter)
-				Ccb->EaIndex = EaIterator.EaIndexCounter;
-
-			Status = STATUS_SUCCESS;
-
-			if (EaIterator.OverFlow) {
-				if (RemainingUserBufferLength == UserBufferLength)
-					Status = STATUS_BUFFER_TOO_SMALL;
-				else
-					Status = STATUS_BUFFER_OVERFLOW;
-			}
-
-		}
-	}
-	__finally {
-
-		if (XattrRefAcquired) {
-			if (!NT_SUCCESS(Status)) {
-				xattr_ref.dirty = FALSE;
-				(void)ext4_fs_put_xattr_ref(&xattr_ref);	/* a release: nothing written */
-			}
-			else
-				Status = Ext2WinntError(ext4_fs_put_xattr_ref(&xattr_ref));
-		}
-
-		if (MainResourceAcquired) {
-			ExReleaseResourceLite(&Fcb->MainResource);
-		}
-
-		/* a query changes nothing: no directory notification */
-		if (NT_SUCCESS(Status) || Status == STATUS_BUFFER_OVERFLOW)
-			Irp->IoStatus.Information = UserBufferLength - RemainingUserBufferLength;
-
-		if (!AbnormalTermination()) {
-			if (Status == STATUS_PENDING || Status == STATUS_CANT_WAIT) {
-				Status = Ext2QueueRequest(IrpContext);
-			}
-			else {
-				Ext2CompleteIrpContext(IrpContext, Status);
-			}
-		}
-	}
-
-	return Status;
+    return Status;
 }
 
+/* a name Windows may give an EA: not empty, not longer than an EA holds,
+   characters FAT allows */
 BOOLEAN
-Ext2IsEaNameValid(
-	IN OEM_STRING Name
-)
+Ext2IsEaNameValid(IN OEM_STRING Name)
 {
-	ULONG Index;
-	UCHAR Char;
+    ULONG Index;
 
-	/* Empty names are not valid */
+    if (Name.Length == 0 || Name.Length > EXT2_EA_NAME_MAX) {
+        return FALSE;
+    }
 
-	if (Name.Length == 0)
-		return FALSE;
+    for (Index = 0; Index < (ULONG)Name.Length; Index++) {
+        UCHAR Char = Name.Buffer[Index];
 
-	/* Do not allow EA name longer than 255 bytes */
-	if (Name.Length > 255)
-		return FALSE;
+        /* a lead byte of a double-byte character takes its trail along */
+        if (FsRtlIsLeadDbcsCharacter(Char)) {
+            ASSERT(Index != (ULONG)(Name.Length - 1));
+            Index++;
+            continue;
+        }
+        if (!FsRtlIsAnsiCharacterLegalFat(Char, FALSE)) {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
 
-	for (Index = 0; Index < (ULONG)Name.Length; Index += 1) {
+/* the entries of a FILE_FULL_EA_INFORMATION list (IoCheckEaBufferValidity
+   has checked its links) */
+#define FOR_EACH_FULL_EA(Ea, Buffer, Length)                                         \
+    for ((Ea) = (PFILE_FULL_EA_INFORMATION)(Buffer);                                  \
+         (PCHAR)(Ea) < (PCHAR)(Buffer) + (Length);                                    \
+         (Ea) = (PFILE_FULL_EA_INFORMATION)((Ea)->NextEntryOffset == 0 ?              \
+                (PCHAR)(Buffer) + (Length) : (PCHAR)(Ea) + (Ea)->NextEntryOffset))
 
-		Char = Name.Buffer[Index];
+/*
+ * NtSetEaFile semantics, as NTFS implements them: each entry adds or
+ * replaces the EA of that name, an entry with an empty value deletes it,
+ * and every EA not named is left alone. Windows EAs live in the "user."
+ * namespace; the other namespaces of the inode (POSIX ACLs, security
+ * labels, capabilities) are never touched from here. The old code purged
+ * everything first, so a single EA written by Windows - Smart App Control
+ * tags every copied executable - wiped the Linux ACLs of the file.
+ */
+static NTSTATUS
+Ext2SetEaList(IN struct ext4_xattr_ref *ref, IN PCHAR Buffer, IN ULONG Length,
+              OUT PULONG_PTR ErrorOffset)
+{
+    PFILE_FULL_EA_INFORMATION   FullEa;
+    OEM_STRING                  EaName;
+    NTSTATUS                    Status;
 
-		/* Skip over and Dbcs chacters */
-		if (FsRtlIsLeadDbcsCharacter(Char)) {
+    /* every name valid before anything changes */
+    FOR_EACH_FULL_EA(FullEa, Buffer, Length) {
+        EaName.MaximumLength = EaName.Length = FullEa->EaNameLength;
+        EaName.Buffer = FullEa->EaName;
+        if (!Ext2IsEaNameValid(EaName)) {
+            *ErrorOffset = (PCHAR)FullEa - Buffer;
+            return STATUS_INVALID_EA_NAME;
+        }
+    }
 
-			ASSERT(Index != (ULONG)(Name.Length - 1));
-			Index += 1;
-			continue;
-		}
+    ref->dirty = TRUE;
+    FOR_EACH_FULL_EA(FullEa, Buffer, Length) {
 
-		/* Make sure this character is legal, and if a wild card, that
-		   wild cards are permissible. */
-		if (!FsRtlIsAnsiCharacterLegalFat(Char, FALSE))
-			return FALSE;
+        /* the old value goes, in whatever case it was stored (absent is
+           fine); the new one comes unless the caller asked for deletion */
+        for (;;) {
+            struct ext4_xattr_item *Old = Ext2FindEa(ref, FullEa->EaName, FullEa->EaNameLength);
+            if (Old == NULL ||
+                ext4_fs_remove_xattr(ref, EXT4_XATTR_INDEX_USER, Old->name, Old->name_len)) {
+                break;
+            }
+        }
+        if (FullEa->EaValueLength == 0) {
+            continue;
+        }
 
-	}
-
-	return TRUE;
+        Status = Ext2WinntError(ext4_fs_set_xattr_ordered(ref, EXT4_XATTR_INDEX_USER,
+                                                          FullEa->EaName, FullEa->EaNameLength,
+                                                          &FullEa->EaName[FullEa->EaNameLength + 1],
+                                                          FullEa->EaValueLength));
+        if (!NT_SUCCESS(Status)) {
+            return Status;
+        }
+    }
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS
-Ext2SetEa (
-	IN PEXT2_IRP_CONTEXT    IrpContext
-)
+Ext2SetEa (IN PEXT2_IRP_CONTEXT IrpContext)
 {
-	PIRP                Irp = NULL;
-	PIO_STACK_LOCATION  IrpSp;
+    PIRP                Irp = IrpContext->Irp;
+    PIO_STACK_LOCATION  IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    PEXT2_VCB           Vcb = (PEXT2_VCB)IrpContext->DeviceObject->DeviceExtension;
+    PEXT2_FCB           Fcb = IrpContext->Fcb;
+    PCHAR               Buffer = Irp->UserBuffer;
+    ULONG               Length = IrpSp->Parameters.SetEa.Length;
+    struct ext4_xattr_ref xattr_ref;
+    BOOLEAN             MainResourceAcquired = FALSE;
+    BOOLEAN             XattrRefAcquired = FALSE;
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
 
-	PDEVICE_OBJECT      DeviceObject;
+    ASSERT((IrpContext->Ccb->Identifier.Type == EXT2CCB) &&
+           (IrpContext->Ccb->Identifier.Size == sizeof(EXT2_CCB)));
 
-	PEXT2_VCB           Vcb = NULL;
-	PEXT2_FCB           Fcb = NULL;
-	PEXT2_CCB           Ccb = NULL;
-	PEXT2_MCB           Mcb = NULL;
+    __try {
 
-	BOOLEAN             MainResourceAcquired = FALSE;
-	BOOLEAN             FcbLockAcquired = FALSE;
-	BOOLEAN             XattrRefAcquired = FALSE;
+        Irp->IoStatus.Information = 0;
 
-	NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+        if (IsVcbReadOnly(Vcb)) {
+            Status = STATUS_MEDIA_WRITE_PROTECTED;
+            __leave;
+        }
 
-	struct ext4_xattr_ref xattr_ref;
-	PCHAR UserBuffer;
-	ULONG UserBufferLength;
+        Status = IoCheckEaBufferValidity((PFILE_FULL_EA_INFORMATION)Buffer, Length,
+                                         (PULONG)&Irp->IoStatus.Information);
+        if (!NT_SUCCESS(Status)) {
+            __leave;
+        }
 
-	PFILE_FULL_EA_INFORMATION FullEa;
+        /* the inode's: one writer at a time, readers wait. The volume's
+           FcbLock was held as well - every open of the volume waited for
+           the attribute block to be written. */
+        if (!ExAcquireResourceExclusiveLite(&Fcb->MainResource,
+                                            IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT))) {
+            Status = STATUS_PENDING;
+            __leave;
+        }
+        MainResourceAcquired = TRUE;
 
-	__try {
+        /* an immutable or append-only inode keeps its attributes, as Linux
+           refuses setxattr on it */
+        if (Ext4IsSealed(Fcb->Inode)) {
+            Status = STATUS_ACCESS_DENIED;
+            __leave;
+        }
 
-		Ccb = IrpContext->Ccb;
-		ASSERT(Ccb != NULL);
-		ASSERT((Ccb->Identifier.Type == EXT2CCB) &&
-			(Ccb->Identifier.Size == sizeof(EXT2_CCB)));
-		DeviceObject = IrpContext->DeviceObject;
-		Vcb = (PEXT2_VCB)DeviceObject->DeviceExtension;
-		Fcb = IrpContext->Fcb;
-		Mcb = Fcb->Mcb;
-		Irp = IrpContext->Irp;
-		IrpSp = IoGetCurrentIrpStackLocation(Irp);
+        Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, &xattr_ref));
+        if (!NT_SUCCESS(Status)) {
+            __leave;
+        }
+        XattrRefAcquired = TRUE;
 
-		Irp->IoStatus.Information = 0;
+        Status = Ext2SetEaList(&xattr_ref, Buffer, Length, &Irp->IoStatus.Information);
 
-		/* Receive input parameter from caller */
-		UserBufferLength = IrpSp->Parameters.SetEa.Length;
-		UserBuffer = Irp->UserBuffer;
+    } __finally {
 
-		/* Check if the EA buffer provided is valid */
-		Status = IoCheckEaBufferValidity((PFILE_FULL_EA_INFORMATION)UserBuffer,
-			UserBufferLength,
-			(PULONG)&Irp->IoStatus.Information);
-		if (!NT_SUCCESS(Status))
-			__leave;
+        if (XattrRefAcquired) {
+            if (!NT_SUCCESS(Status)) {
+                xattr_ref.dirty = FALSE;
+                (void)ext4_fs_put_xattr_ref(&xattr_ref);    /* a release: nothing written */
+            } else {
+                Status = Ext2WinntError(ext4_fs_put_xattr_ref(&xattr_ref));
+            }
+        }
 
-		ExAcquireResourceExclusiveLite(&Vcb->FcbLock, TRUE);
-		FcbLockAcquired = TRUE;
+        if (MainResourceAcquired) {
+            ExReleaseResourceLite(&Fcb->MainResource);
+        }
 
-		if (!Mcb)
-			__leave;
-
-		/* We do not allow multiple instance gaining EA access to the same file */
-		if (!ExAcquireResourceExclusiveLite(
-			&Fcb->MainResource,
-			IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT))) {
-			Status = STATUS_PENDING;
-			__leave;
-		}
-		MainResourceAcquired = TRUE;
-
-		Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, &xattr_ref));
-		if (!NT_SUCCESS(Status)) {
-			DbgPrint("ext4_fs_get_xattr_ref() failed!\n");
-			__leave;
-		}
-
-		XattrRefAcquired = TRUE;
-
-		/* NtSetEaFile semantics, as NTFS implements them: each entry in
-		   the buffer adds or replaces the EA of that name, an entry with
-		   an empty value deletes it, and every EA not named is left alone.
-		   Windows EAs live in the "user." namespace; the other namespaces
-		   of the inode (POSIX ACLs, security labels, capabilities) are
-		   never touched from here. The old code purged everything first,
-		   so a single EA written by Windows - Smart App Control tags every
-		   copied executable - wiped the Linux ACLs of the file. */
-		xattr_ref.dirty = TRUE;
-		Status = STATUS_SUCCESS;
-
-		/* Iterate the whole EA buffer to do inspection */
-		for (FullEa = (PFILE_FULL_EA_INFORMATION)UserBuffer;
-			FullEa < (PFILE_FULL_EA_INFORMATION)&UserBuffer[UserBufferLength];
-			FullEa = (PFILE_FULL_EA_INFORMATION)(FullEa->NextEntryOffset == 0 ?
-				&UserBuffer[UserBufferLength] :
-				(PCHAR)FullEa + FullEa->NextEntryOffset)) {
-
-			OEM_STRING EaName;
-
-			EaName.MaximumLength = EaName.Length = FullEa->EaNameLength;
-			EaName.Buffer = &FullEa->EaName[0];
-
-			/* Check if EA's name is valid */
-			if (!Ext2IsEaNameValid(EaName)) {
-				Irp->IoStatus.Information = (PCHAR)FullEa - UserBuffer;
-				Status = STATUS_INVALID_EA_NAME;
-				__leave;
-			}
-		}
-
-		/* Now add EA entries to the inode */
-		for (FullEa = (PFILE_FULL_EA_INFORMATION)UserBuffer;
-			FullEa < (PFILE_FULL_EA_INFORMATION)&UserBuffer[UserBufferLength];
-			FullEa = (PFILE_FULL_EA_INFORMATION)(FullEa->NextEntryOffset == 0 ?
-				&UserBuffer[UserBufferLength] :
-				(PCHAR)FullEa + FullEa->NextEntryOffset)) {
-
-				OEM_STRING EaName;
-
-				EaName.MaximumLength = EaName.Length = FullEa->EaNameLength;
-				EaName.Buffer = &FullEa->EaName[0];
-
-				/* drop the old value in whatever case it was stored
-				   (absent is fine), then store the new one unless the
-				   caller asked for deletion */
-				for (;;) {
-					struct ext4_xattr_item *Old =
-						Ext2FindEa(&xattr_ref, EaName.Buffer, EaName.Length);
-					if (!Old || ext4_fs_remove_xattr(&xattr_ref, EXT4_XATTR_INDEX_USER,
-									 Old->name, Old->name_len))
-						break;
-				}
-				if (FullEa->EaValueLength == 0)
-					continue;
-
-				Status = Ext2WinntError(
-					ext4_fs_set_xattr_ordered(&xattr_ref,
-						EXT4_XATTR_INDEX_USER,
-						EaName.Buffer,
-						EaName.Length,
-						&FullEa->EaName[0] + FullEa->EaNameLength + 1,
-						FullEa->EaValueLength));
-				if (!NT_SUCCESS(Status))
-					__leave;
-
-		}
-	} __finally {
-
-		if (XattrRefAcquired) {
-			if (!NT_SUCCESS(Status)) {
-				xattr_ref.dirty = FALSE;
-				(void)ext4_fs_put_xattr_ref(&xattr_ref);	/* a release: nothing written */
-			} else
-				Status = Ext2WinntError(ext4_fs_put_xattr_ref(&xattr_ref));
-		}
-
-		if (FcbLockAcquired) {
-			ExReleaseResourceLite(&Vcb->FcbLock);
-			FcbLockAcquired = FALSE;
-		}
-
-		if (MainResourceAcquired) {
-			ExReleaseResourceLite(&Fcb->MainResource);
-		}
-
-		if (NT_SUCCESS(Status)) {
-			Ext2NotifyReportChange(
-				IrpContext,
-				Vcb,
-				Mcb,
-				FILE_NOTIFY_CHANGE_EA,
-				FILE_ACTION_MODIFIED);
-		}
-
-		if (!AbnormalTermination()) {
-			if (Status == STATUS_PENDING || Status == STATUS_CANT_WAIT) {
-				Status = Ext2QueueRequest(IrpContext);
-			}
-			else {
-				Ext2CompleteIrpContext(IrpContext, Status);
-			}
-		}
-	}
-	return Status;
+        if (!AbnormalTermination()) {
+            if (NT_SUCCESS(Status)) {
+                Ext2NotifyReportChange(IrpContext, Vcb, Fcb->Mcb,
+                                       FILE_NOTIFY_CHANGE_EA, FILE_ACTION_MODIFIED);
+            }
+            if (Status == STATUS_PENDING || Status == STATUS_CANT_WAIT) {
+                Status = Ext2QueueRequest(IrpContext);
+            } else {
+                Ext2CompleteIrpContext(IrpContext, Status);
+            }
+        }
+    }
+    return Status;
 }

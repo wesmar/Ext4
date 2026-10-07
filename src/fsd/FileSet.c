@@ -59,6 +59,365 @@ Ext2ZeroResizeRange(PFILE_OBJECT FileObject, PLARGE_INTEGER Start,
     return Done;
 }
 
+/* ---------------------------------------------------------------- one class each */
+
+/* a time Windows asks to set: 0 and -1 leave it as it is */
+static BOOLEAN
+Ext2SetTimeIf(IN PLARGE_INTEGER Given, OUT __u32 *Time, OUT __u32 *Extra, OUT PLARGE_INTEGER Cached)
+{
+    if (Given->QuadPart == 0 || Given->QuadPart == -1) {
+        return FALSE;
+    }
+    Ext2SetInodeTime(Given, Time, Extra);
+    *Cached = Ext2GetInodeTime(*Time, *Extra);
+    return TRUE;
+}
+
+/* FileBasicInformation: the times and the attributes */
+static NTSTATUS
+Ext2SetBasicInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE_OBJECT FileObject,
+                 IN PEXT2_FCB Fcb, IN PEXT2_CCB Ccb, IN PEXT2_MCB Mcb,
+                 IN PFILE_BASIC_INFORMATION FBI, OUT PULONG NotifyFilter)
+{
+    struct inode   *Inode = Mcb->Inode;
+    PEXT2_ICB       Icb = Mcb->Icb;
+    ULONG           Changed = 0;
+
+    if (Ext2SetTimeIf(&FBI->CreationTime, &Inode->i_crtime, &Inode->i_crtime_extra, &Icb->CreationTime)) {
+        Changed |= FILE_NOTIFY_CHANGE_CREATION;
+    }
+    if (Ext2SetTimeIf(&FBI->LastAccessTime, &Inode->i_atime, &Inode->i_atime_extra, &Icb->LastAccessTime)) {
+        Changed |= FILE_NOTIFY_CHANGE_LAST_ACCESS;
+    }
+    if (Ext2SetTimeIf(&FBI->LastWriteTime, &Inode->i_mtime, &Inode->i_mtime_extra, &Icb->LastWriteTime)) {
+        Changed |= FILE_NOTIFY_CHANGE_LAST_WRITE;
+        SetLongFlag(Ccb->Flags, CCB_LAST_WRITE_UPDATED);
+    }
+    if (Ext2SetTimeIf(&FBI->ChangeTime, &Inode->i_ctime, &Inode->i_ctime_extra, &Icb->ChangeTime)) {
+        Changed |= FILE_NOTIFY_CHANGE_ATTRIBUTES;
+    }
+
+    if (FBI->FileAttributes != 0) {
+        Changed |= FILE_NOTIFY_CHANGE_ATTRIBUTES;
+
+        if (IsFlagOn(FBI->FileAttributes, FILE_ATTRIBUTE_READONLY)) {
+            Ext2SetOwnerReadOnly(Inode->i_mode);
+        } else {
+            Ext2SetOwnerWritable(Inode->i_mode);
+        }
+        if (FBI->FileAttributes & FILE_ATTRIBUTE_TEMPORARY) {
+            SetFlag(FileObject->Flags, FO_TEMPORARY_FILE);
+        } else {
+            ClearFlag(FileObject->Flags, FO_TEMPORARY_FILE);
+        }
+
+        Mcb->FileAttr = FBI->FileAttributes;
+        if (IsDirectory(Fcb)) {
+            SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_DIRECTORY);
+            ClearFlag(Mcb->FileAttr, FILE_ATTRIBUTE_NORMAL);
+        }
+    }
+
+    /* the change is the request: a save that fails fails it (it used to be
+       reported a success) */
+    if (Changed != 0 && !Ext2SaveInode(IrpContext, Vcb, Inode)) {
+        return STATUS_UNEXPECTED_IO_ERROR;
+    }
+
+    /* an access time alone is no change worth a notification */
+    *NotifyFilter = Changed & ~FILE_NOTIFY_CHANGE_LAST_ACCESS;
+    return STATUS_SUCCESS;
+}
+
+/* the data of a symlink are its target's: a size is set on the file the
+   Fcb stands for */
+static NTSTATUS
+Ext2SizedFile(IN PEXT2_FCB Fcb, IN OUT PEXT2_MCB *Mcb)
+{
+    if (IsMcbDirectory(*Mcb) || IsMcbSpecialFile(*Mcb)) {
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+    if (IsMcbSymLink(*Mcb)) {
+        ASSERT(Fcb->Mcb->Icb == (*Mcb)->Target->Icb);
+    }
+    *Mcb = Fcb->Mcb;
+    return STATUS_SUCCESS;
+}
+
+/* FileAllocationInformation: blocks for the file, or blocks given back */
+static NTSTATUS
+Ext2SetAllocationInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE_OBJECT FileObject,
+                      IN PEXT2_FCB Fcb, IN OUT PEXT2_MCB *Name,
+                      IN PFILE_ALLOCATION_INFORMATION FAI, OUT PULONG NotifyFilter)
+{
+    LARGE_INTEGER   AllocationSize;
+    PEXT2_MCB       Mcb;
+    NTSTATUS        Status;
+
+    Status = Ext2SizedFile(Fcb, Name);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+    Mcb = *Name;
+
+    Status = Ext4CheckFileSize(Vcb, Mcb->Inode, FAI->AllocationSize.QuadPart);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+    /* get user specified allocationsize aligned with BLOCK_SIZE */
+    AllocationSize.QuadPart = CEILING_ALIGNED(ULONGLONG,
+                              (ULONGLONG)FAI->AllocationSize.QuadPart,
+                              (ULONGLONG)BLOCK_SIZE);
+
+    if (AllocationSize.QuadPart > Fcb->Header.AllocationSize.QuadPart) {
+
+        Status = Ext2ExpandFile(IrpContext, Vcb, Mcb, &AllocationSize);
+        Fcb->Header.AllocationSize = AllocationSize;
+        *NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
+        SetLongFlag(Fcb->Flags, FCB_ALLOC_IN_SETINFO);
+
+    } else if (AllocationSize.QuadPart < Fcb->Header.AllocationSize.QuadPart) {
+
+        if (!MmCanFileBeTruncated(&(Fcb->SectionObject), &AllocationSize)) {
+            return STATUS_USER_MAPPED_FILE;
+        }
+
+        /* truncate file blocks */
+        Status = Ext2TruncateFile(IrpContext, Vcb, Mcb, &AllocationSize);
+        if (NT_SUCCESS(Status)) {
+            ClearLongFlag(Fcb->Flags, FCB_ALLOC_IN_CREATE);
+        }
+
+        *NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
+        Fcb->Header.AllocationSize.QuadPart = AllocationSize.QuadPart;
+        if (Mcb->Inode->i_size > (loff_t)AllocationSize.QuadPart) {
+            Mcb->Inode->i_size = AllocationSize.QuadPart;
+        }
+        Fcb->Header.FileSize.QuadPart = Mcb->Inode->i_size;
+        if (Fcb->Header.ValidDataLength.QuadPart > Fcb->Header.FileSize.QuadPart) {
+            Fcb->Header.ValidDataLength.QuadPart = Fcb->Header.FileSize.QuadPart;
+        }
+    }
+
+    if (*NotifyFilter) {
+        SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
+        SetLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
+        Ext2SaveInodeStatus(IrpContext, Vcb, Mcb->Inode, &Status);
+        if (CcIsFileCached(FileObject)) {
+            CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
+        }
+    }
+
+    DEBUG(DL_IO, ("Ext2SetInformation: %wZ NewSize=%I64xh AllocationSize=%I64xh "
+                  "FileSize=%I64xh VDL=%I64xh i_size=%I64xh status = %xh\n",
+                  &Fcb->Mcb->ShortName, AllocationSize.QuadPart,
+                  Fcb->Header.AllocationSize.QuadPart,
+                  Fcb->Header.FileSize.QuadPart, Fcb->Header.ValidDataLength.QuadPart,
+                  Mcb->Inode->i_size, Status));
+    return Status;
+}
+
+/* FileEndOfFileInformation: the file grows or shrinks to the size given */
+static NTSTATUS
+Ext2SetEndOfFileInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE_OBJECT FileObject,
+                     IN PEXT2_FCB Fcb, IN OUT PEXT2_MCB *Name, IN BOOLEAN AdvanceOnly,
+                     IN PFILE_END_OF_FILE_INFORMATION FEOFI, OUT PULONG NotifyFilter)
+{
+    LARGE_INTEGER   NewSize, OldSize, EndOfFile;
+    PEXT2_MCB       Mcb;
+    NTSTATUS        Status;
+
+    Status = Ext2SizedFile(Fcb, Name);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+    Mcb = *Name;
+
+    OldSize = Fcb->Header.AllocationSize;
+    EndOfFile = FEOFI->EndOfFile;
+    Status = Ext4CheckFileSize(Vcb, Mcb->Inode, EndOfFile.QuadPart);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+
+    /* the lazy writer moving the valid data length up: nothing past the
+       file's end, nothing for a file about to go */
+    if (AdvanceOnly) {
+        if (IsFlagOn(Fcb->Flags, FCB_DELETE_PENDING)) {
+            return STATUS_SUCCESS;
+        }
+        if (EndOfFile.QuadPart > Fcb->Header.FileSize.QuadPart) {
+            EndOfFile.QuadPart = Fcb->Header.FileSize.QuadPart;
+        }
+        if (EndOfFile.QuadPart > Fcb->Header.ValidDataLength.QuadPart) {
+            Fcb->Header.ValidDataLength.QuadPart = EndOfFile.QuadPart;
+            *NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
+        }
+        return STATUS_SUCCESS;
+    }
+
+    /* Anchor the map before changing sizes or zeroing an unaligned
+       tail. CcIsFileCached is only a snapshot, not a lifetime hold.
+       The map also makes metadata zeroing coherent with existing
+       cached views on an uncached handle. Its read/write requests
+       still retain FO_NO_INTERMEDIATE_BUFFERING and bypass cache. */
+    if (FileObject->PrivateCacheMap == NULL) {
+        CcInitializeCacheMap(FileObject,
+            (PCC_FILE_SIZES)&Fcb->Header.AllocationSize, FALSE,
+            &Ext2Global->CacheManagerCallbacks, Fcb);
+        CcSetReadAheadGranularity(FileObject, READ_AHEAD_GRANULARITY);
+    }
+
+    NewSize.QuadPart = CEILING_ALIGNED(ULONGLONG, EndOfFile.QuadPart, BLOCK_SIZE);
+
+    if (NewSize.QuadPart > OldSize.QuadPart) {
+
+        Fcb->Header.AllocationSize = NewSize;
+        Status = Ext2ExpandFile(IrpContext, Vcb, Mcb, &(Fcb->Header.AllocationSize));
+        *NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
+        SetLongFlag(Fcb->Flags, FCB_ALLOC_IN_SETINFO);
+
+    } else if (NewSize.QuadPart < OldSize.QuadPart) {
+
+        /* MainResource and PagingIoResource serialize this change
+           with writes. FCB_ALLOC_IN_WRITE records earlier growth;
+           it does not mean a write is still in flight. Retaining
+           initialized blocks here exposes their old contents when
+           the file is later extended through an uncached handle. */
+        if (!MmCanFileBeTruncated(&(Fcb->SectionObject), &NewSize)) {
+            return STATUS_USER_MAPPED_FILE;
+        }
+
+        /* truncate file blocks */
+        Status = Ext2TruncateFile(IrpContext, Vcb, Mcb, &NewSize);
+        if (NT_SUCCESS(Status)) {
+            ClearLongFlag(Fcb->Flags, FCB_ALLOC_IN_CREATE);
+        }
+
+        /* the allocation now ends at the new size */
+        Fcb->Header.AllocationSize.QuadPart = NewSize.QuadPart;
+
+        ASSERT((loff_t)NewSize.QuadPart >= Mcb->Inode->i_size);
+        if ((loff_t)Fcb->Header.FileSize.QuadPart < Mcb->Inode->i_size) {
+            Fcb->Header.FileSize.QuadPart = Mcb->Inode->i_size;
+        }
+        if (Fcb->Header.ValidDataLength.QuadPart > Fcb->Header.FileSize.QuadPart) {
+            Fcb->Header.ValidDataLength.QuadPart = Fcb->Header.FileSize.QuadPart;
+        }
+
+        SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
+        SetLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
+        *NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
+    }
+    /* the same size: nothing to allocate or free */
+
+    if (NT_SUCCESS(Status)) {
+
+        Fcb->Header.FileSize.QuadPart = Mcb->Inode->i_size = EndOfFile.QuadPart;
+        if (CcIsFileCached(FileObject)) {
+            CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
+        }
+
+        /* ext4 keeps no valid data length on disk, so everything up
+           to the new end must read as zeros from now on. Blocks past
+           the old end are either not allocated or unwritten extents
+           (allocated by Ext2ExpandFile outside a write): both read
+           as zeros, and a write converts exactly the blocks it
+           covers. Only the old last block can carry bytes past the
+           old end, left by an earlier truncation - Linux zeroes them
+           in ext4_block_truncate_page. So an extent-mapped file gets
+           that block tail zeroed, not the whole range; an indirect-
+           mapped file (ext2/ext3) allocates plain blocks and gets
+           all of it zeroed. */
+        if (EndOfFile.QuadPart > Fcb->Header.ValidDataLength.QuadPart) {
+
+            LARGE_INTEGER ZeroEnd = EndOfFile;
+
+            if (INODE_HAS_EXTENT(Mcb->Inode)) {
+                LONGLONG BlockEnd = CEILING_ALIGNED(LONGLONG,
+                                        Fcb->Header.ValidDataLength.QuadPart,
+                                        (LONGLONG)BLOCK_SIZE);
+                if (BlockEnd < ZeroEnd.QuadPart) {
+                    ZeroEnd.QuadPart = BlockEnd;
+                }
+            }
+
+            if (ZeroEnd.QuadPart > Fcb->Header.ValidDataLength.QuadPart &&
+                !Ext2ZeroResizeRange(FileObject, &Fcb->Header.ValidDataLength, &ZeroEnd)) {
+                return STATUS_UNEXPECTED_IO_ERROR;
+            }
+        }
+        Fcb->Header.ValidDataLength = EndOfFile;
+        if (CcIsFileCached(FileObject)) {
+            CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
+        }
+
+        if (Fcb->Header.FileSize.QuadPart >= 0x80000000 &&
+                !IsFlagOn(SUPER_BLOCK->s_feature_ro_compat, EXT2_FEATURE_RO_COMPAT_LARGE_FILE)) {
+            Ext2SetSuperRoCompat(IrpContext, Vcb, EXT2_FEATURE_RO_COMPAT_LARGE_FILE);
+        }
+
+        SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
+        SetLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
+        *NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
+    }
+
+    Ext2SaveInodeStatus(IrpContext, Vcb, Mcb->Inode, &Status);
+
+    DEBUG(DL_IO, ("Ext2SetInformation: FileEndOfFileInformation %wZ EndofFile=%I64xh "
+                  "AllocatieonSize=%I64xh FileSize=%I64xh VDL=%I64xh i_size=%I64xh status = %xh\n",
+                  &Fcb->Mcb->ShortName, EndOfFile.QuadPart, Fcb->Header.AllocationSize.QuadPart,
+                  Fcb->Header.FileSize.QuadPart, Fcb->Header.ValidDataLength.QuadPart,
+                  Mcb->Inode->i_size, Status));
+    return Status;
+}
+
+/* FileValidDataLengthInformation: the valid data length moves up, never down */
+static NTSTATUS
+Ext2SetValidDataLengthInfo(IN PFILE_OBJECT FileObject, IN PEXT2_FCB Fcb, IN PEXT2_MCB Mcb,
+                           IN PFILE_VALID_DATA_LENGTH_INFORMATION FVDL)
+{
+    LARGE_INTEGER NewVDL;
+
+    if (IsMcbDirectory(Mcb) || IsMcbSpecialFile(Mcb)) {
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+
+    NewVDL = FVDL->ValidDataLength;
+    if (NewVDL.QuadPart < Fcb->Header.ValidDataLength.QuadPart) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (NewVDL.QuadPart > Fcb->Header.FileSize.QuadPart) {
+        NewVDL = Fcb->Header.FileSize;
+    }
+    if (!MmCanFileBeTruncated(FileObject->SectionObjectPointer, &NewVDL)) {
+        return STATUS_USER_MAPPED_FILE;
+    }
+
+    Fcb->Header.ValidDataLength = NewVDL;
+    FileObject->Flags |= FO_FILE_MODIFIED;
+    if (CcIsFileCached(FileObject)) {
+        CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
+    }
+    return STATUS_SUCCESS;
+}
+
+/* FilePositionInformation: the one change a read-only volume takes */
+static NTSTATUS
+Ext2SetPositionInfo(IN PDEVICE_OBJECT DeviceObject, IN PFILE_OBJECT FileObject,
+                    IN ULONG Length, IN PFILE_POSITION_INFORMATION FPI)
+{
+    if (Length < sizeof(FILE_POSITION_INFORMATION)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (FlagOn(FileObject->Flags, FO_NO_INTERMEDIATE_BUFFERING) &&
+        (FPI->CurrentByteOffset.LowPart & DeviceObject->AlignmentRequirement)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    FileObject->CurrentByteOffset = FPI->CurrentByteOffset;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS
 Ext2SetFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 {
@@ -82,6 +441,7 @@ Ext2SetFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
     BOOLEAN                 FcbMainResourceAcquired = FALSE;
     BOOLEAN                 FcbPagingIoResourceAcquired = FALSE;
     BOOLEAN                 VcbMainResourceAcquired = FALSE;
+    BOOLEAN                 Wait;
 
     __try {
 
@@ -90,6 +450,7 @@ Ext2SetFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
         ASSERT((IrpContext->Identifier.Type == EXT2ICX) &&
                (IrpContext->Identifier.Size == sizeof(EXT2_IRP_CONTEXT)));
         DeviceObject = IrpContext->DeviceObject;
+        Wait = IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
 
         /* This request is not allowed on the main device object */
         if (IsExt2FsDevice(DeviceObject)) {
@@ -189,8 +550,7 @@ Ext2SetFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
         /* Growth of the allocation needs blocks; any that only a commit can
            free are waited for here, before any lock (ext4\FreedBlocks.c).
            The lazy writer's EOF updates are not top level and never grow. */
-        if (!IsDirectory(Fcb) && IrpContext->IsTopLevel &&
-            IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT)) {
+        if (!IsDirectory(Fcb) && IrpContext->IsTopLevel && Wait) {
             if (FileInformationClass == FileEndOfFileInformation &&
                 Length >= sizeof(FILE_END_OF_FILE_INFORMATION)) {
                 Ext2WaitForFreedBlocks(Vcb, Fcb->Header.AllocationSize.QuadPart,
@@ -213,9 +573,7 @@ Ext2SetFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
         if (FileInformationClass == FileRenameInformation ||
             FileInformationClass == FileLinkInformation) {
 
-            if (!ExAcquireResourceExclusiveLite(
-                        &Vcb->MainResource,
-                        IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT) )) {
+            if (!ExAcquireResourceExclusiveLite(&Vcb->MainResource, Wait)) {
                 Status = STATUS_PENDING;
                 __leave;
             }
@@ -233,9 +591,7 @@ Ext2SetFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
             IsDirectory(Fcb) && Ccb->SymLink == NULL) {
 
             DirIcb = Fcb->Mcb->Icb;
-            if (!ExAcquireResourceExclusiveLite(
-                        &DirIcb->DirResource,
-                        IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT) )) {
+            if (!ExAcquireResourceExclusiveLite(&DirIcb->DirResource, Wait)) {
                 DirIcb = NULL;
                 Status = STATUS_PENDING;
                 __leave;
@@ -248,22 +604,17 @@ Ext2SetFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
             FileInformationClass != FileRenameInformation &&
             FileInformationClass != FileLinkInformation) {
 
-            if (!ExAcquireResourceExclusiveLite(
-                        &Fcb->MainResource,
-                        IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT) )) {
+            if (!ExAcquireResourceExclusiveLite(&Fcb->MainResource, Wait)) {
                 Status = STATUS_PENDING;
                 __leave;
             }
-
             FcbMainResourceAcquired = TRUE;
 
             if ( FileInformationClass == FileAllocationInformation ||
                  FileInformationClass == FileEndOfFileInformation ||
                  FileInformationClass == FileValidDataLengthInformation) {
 
-                if (!ExAcquireResourceExclusiveLite(
-                            &Fcb->PagingIoResource,
-                            IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT) )) {
+                if (!ExAcquireResourceExclusiveLite(&Fcb->PagingIoResource, Wait)) {
                     Status = STATUS_PENDING;
                     __leave;
                 }
@@ -274,420 +625,45 @@ Ext2SetFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
         switch (FileInformationClass) {
 
         case FileBasicInformation:
-        {
-            PFILE_BASIC_INFORMATION FBI = (PFILE_BASIC_INFORMATION) Buffer;
-            struct inode *Inode = Mcb->Inode;
-
-            if (FBI->CreationTime.QuadPart != 0 && FBI->CreationTime.QuadPart != -1) {
-                Ext2SetInodeTime(&FBI->CreationTime, &Inode->i_crtime, &Inode->i_crtime_extra);
-                Mcb->Icb->CreationTime = Ext2GetInodeTime(Inode->i_crtime, Inode->i_crtime_extra);
-                NotifyFilter |= FILE_NOTIFY_CHANGE_CREATION;
-            }
-
-            if (FBI->LastAccessTime.QuadPart != 0 && FBI->LastAccessTime.QuadPart != -1) {
-                Ext2SetInodeTime(&FBI->LastAccessTime, &Inode->i_atime, &Inode->i_atime_extra);
-                Mcb->Icb->LastAccessTime = Ext2GetInodeTime(Inode->i_atime, Inode->i_atime_extra);
-                NotifyFilter |= FILE_NOTIFY_CHANGE_LAST_ACCESS;
-            }
-
-            if (FBI->LastWriteTime.QuadPart != 0 && FBI->LastWriteTime.QuadPart != -1) {
-                Ext2SetInodeTime(&FBI->LastWriteTime, &Inode->i_mtime, &Inode->i_mtime_extra);
-                Mcb->Icb->LastWriteTime = Ext2GetInodeTime(Inode->i_mtime, Inode->i_mtime_extra);
-                NotifyFilter |= FILE_NOTIFY_CHANGE_LAST_WRITE;
-                SetLongFlag(Ccb->Flags, CCB_LAST_WRITE_UPDATED);
-            }
-
-            if (FBI->ChangeTime.QuadPart !=0 && FBI->ChangeTime.QuadPart != -1) {
-                Ext2SetInodeTime(&FBI->ChangeTime, &Inode->i_ctime, &Inode->i_ctime_extra);
-                Mcb->Icb->ChangeTime = Ext2GetInodeTime(Inode->i_ctime, Inode->i_ctime_extra);
-                NotifyFilter |= FILE_NOTIFY_CHANGE_ATTRIBUTES;
-            }
-
-            if (FBI->FileAttributes != 0) {
-
-                BOOLEAN bIsDirectory = IsDirectory(Fcb);
-                NotifyFilter |= FILE_NOTIFY_CHANGE_ATTRIBUTES;
-
-                if (IsFlagOn(FBI->FileAttributes, FILE_ATTRIBUTE_READONLY)) {
-                    Ext2SetOwnerReadOnly(Inode->i_mode);
-                } else {
-                    Ext2SetOwnerWritable(Inode->i_mode);
-                }
-
-                if (FBI->FileAttributes & FILE_ATTRIBUTE_TEMPORARY) {
-                    SetFlag(FileObject->Flags, FO_TEMPORARY_FILE);
-                } else {
-                    ClearFlag(FileObject->Flags, FO_TEMPORARY_FILE);
-                }
-
-                Mcb->FileAttr = FBI->FileAttributes;
-                if (bIsDirectory) {
-                    SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_DIRECTORY);
-                    ClearFlag(Mcb->FileAttr, FILE_ATTRIBUTE_NORMAL);
-                }
-            }
-
-            if (NotifyFilter != 0) {
-                if (Ext2SaveInode(IrpContext, Vcb, Inode)) {
-                    Status = STATUS_SUCCESS;
-                }
-            }
-
-            ClearFlag(NotifyFilter, FILE_NOTIFY_CHANGE_LAST_ACCESS);
-            Status = STATUS_SUCCESS;
-        }
-
-        break;
+            Status = Ext2SetBasicInfo(IrpContext, Vcb, FileObject, Fcb, Ccb, Mcb,
+                                      (PFILE_BASIC_INFORMATION)Buffer, &NotifyFilter);
+            break;
 
         case FileAllocationInformation:
-        {
-            PFILE_ALLOCATION_INFORMATION FAI = (PFILE_ALLOCATION_INFORMATION)Buffer;
-            LARGE_INTEGER  AllocationSize;
-
-            if (IsMcbDirectory(Mcb) || IsMcbSpecialFile(Mcb)) {
-                Status = STATUS_INVALID_DEVICE_REQUEST;
-                __leave;
-            } else {
-                Status = STATUS_SUCCESS;
-            }
-
-            /* set Mcb to its target */
-            if (IsMcbSymLink(Mcb)) {
-                ASSERT(Fcb->Mcb->Icb == Mcb->Target->Icb);
-            }
-            Mcb = Fcb->Mcb;
-
-            Status = Ext4CheckFileSize(Vcb, Mcb->Inode, FAI->AllocationSize.QuadPart);
-            if (!NT_SUCCESS(Status))
-                __leave;
-            /* get user specified allocationsize aligned with BLOCK_SIZE */
-            AllocationSize.QuadPart = CEILING_ALIGNED(ULONGLONG,
-                                      (ULONGLONG)FAI->AllocationSize.QuadPart,
-                                      (ULONGLONG)BLOCK_SIZE);
-
-            if (AllocationSize.QuadPart > Fcb->Header.AllocationSize.QuadPart) {
-
-                Status = Ext2ExpandFile(IrpContext, Vcb, Mcb, &AllocationSize); 
-                Fcb->Header.AllocationSize = AllocationSize;
-                NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
-                SetLongFlag(Fcb->Flags, FCB_ALLOC_IN_SETINFO);
-
-            } else if (AllocationSize.QuadPart < Fcb->Header.AllocationSize.QuadPart) {
-
-                if (MmCanFileBeTruncated(&(Fcb->SectionObject), &AllocationSize))  {
-
-                    /* truncate file blocks */
-                    Status = Ext2TruncateFile(IrpContext, Vcb, Mcb, &AllocationSize);
-
-                    if (NT_SUCCESS(Status)) {
-                        ClearLongFlag(Fcb->Flags, FCB_ALLOC_IN_CREATE);
-                    }
-
-                    NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
-                    Fcb->Header.AllocationSize.QuadPart = AllocationSize.QuadPart;
-                    if (Mcb->Inode->i_size > (loff_t)AllocationSize.QuadPart) {
-                        Mcb->Inode->i_size = AllocationSize.QuadPart;
-                    }
-                    Fcb->Header.FileSize.QuadPart = Mcb->Inode->i_size;
-                    if (Fcb->Header.ValidDataLength.QuadPart > Fcb->Header.FileSize.QuadPart) {
-                        Fcb->Header.ValidDataLength.QuadPart = Fcb->Header.FileSize.QuadPart;
-                    }
-
-                } else {
-
-                    Status = STATUS_USER_MAPPED_FILE;
-                    __leave;
-                }
-            }
-
-            if (NotifyFilter) {
-
-                SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
-                SetLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
-                Ext2SaveInodeStatus(IrpContext, Vcb, Mcb->Inode, &Status);
-                if (CcIsFileCached(FileObject)) {
-                    CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
-                }
-            }
-
-            DEBUG(DL_IO, ("Ext2SetInformation: %wZ NewSize=%I64xh AllocationSize=%I64xh "
-                          "FileSize=%I64xh VDL=%I64xh i_size=%I64xh status = %xh\n",
-                          &Fcb->Mcb->ShortName, AllocationSize.QuadPart,
-                          Fcb->Header.AllocationSize.QuadPart,
-                          Fcb->Header.FileSize.QuadPart, Fcb->Header.ValidDataLength.QuadPart,
-                          Mcb->Inode->i_size, Status));
-        }
-
-        break;
+            Status = Ext2SetAllocationInfo(IrpContext, Vcb, FileObject, Fcb, &Mcb,
+                                           (PFILE_ALLOCATION_INFORMATION)Buffer, &NotifyFilter);
+            break;
 
         case FileEndOfFileInformation:
-        {
-            PFILE_END_OF_FILE_INFORMATION FEOFI = (PFILE_END_OF_FILE_INFORMATION) Buffer;
-            LARGE_INTEGER NewSize, OldSize, EndOfFile;
-
-            if (IsMcbDirectory(Mcb) || IsMcbSpecialFile(Mcb)) {
-                Status = STATUS_INVALID_DEVICE_REQUEST;
-                __leave;
-            } else {
-                Status = STATUS_SUCCESS;
-            }
-
-            /* set Mcb to its target */
-            if (IsMcbSymLink(Mcb)) {
-                ASSERT(Fcb->Mcb->Icb == Mcb->Target->Icb);
-            }
-            Mcb = Fcb->Mcb;
-
-            OldSize = Fcb->Header.AllocationSize;
-            EndOfFile = FEOFI->EndOfFile;
-            Status = Ext4CheckFileSize(Vcb, Mcb->Inode, EndOfFile.QuadPart);
-            if (!NT_SUCCESS(Status)) {
-                __leave;
-            }
-
-            if (IoStackLocation->Parameters.SetFile.AdvanceOnly) {
-
-                if (IsFlagOn(Fcb->Flags, FCB_DELETE_PENDING)) {
-                    __leave;
-                }
-
-                if (EndOfFile.QuadPart > Fcb->Header.FileSize.QuadPart) {
-                    EndOfFile.QuadPart = Fcb->Header.FileSize.QuadPart;
-                }
-
-                if (EndOfFile.QuadPart > Fcb->Header.ValidDataLength.QuadPart) {
-                    Fcb->Header.ValidDataLength.QuadPart = EndOfFile.QuadPart;
-                    NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
-                }
-
-                __leave;
-            }
-
-            /* Anchor the map before changing sizes or zeroing an unaligned
-               tail. CcIsFileCached is only a snapshot, not a lifetime hold.
-               The map also makes metadata zeroing coherent with existing
-               cached views on an uncached handle. Its read/write requests
-               still retain FO_NO_INTERMEDIATE_BUFFERING and bypass cache. */
-            if (FileObject->PrivateCacheMap == NULL) {
-                CcInitializeCacheMap(FileObject,
-                    (PCC_FILE_SIZES)&Fcb->Header.AllocationSize, FALSE,
-                    &Ext2Global->CacheManagerCallbacks, Fcb);
-                CcSetReadAheadGranularity(FileObject, READ_AHEAD_GRANULARITY);
-            }
-
-            NewSize.QuadPart = CEILING_ALIGNED(ULONGLONG,
-                                               EndOfFile.QuadPart, BLOCK_SIZE);
-
-            if (NewSize.QuadPart > OldSize.QuadPart) {
-
-                Fcb->Header.AllocationSize = NewSize;
-                Status = Ext2ExpandFile(
-                                 IrpContext,
-                                 Vcb,
-                                 Mcb,
-                                 &(Fcb->Header.AllocationSize)
-                             );
-                NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
-                SetLongFlag(Fcb->Flags, FCB_ALLOC_IN_SETINFO);
-
-
-            } else if (NewSize.QuadPart == OldSize.QuadPart) {
-
-                /* same size: nothing to allocate or free */
-                Status = STATUS_SUCCESS;
-
-            } else {
-
-                /* MainResource and PagingIoResource serialize this change
-                   with writes. FCB_ALLOC_IN_WRITE records earlier growth;
-                   it does not mean a write is still in flight. Retaining
-                   initialized blocks here exposes their old contents when
-                   the file is later extended through an uncached handle. */
-                if (!MmCanFileBeTruncated(&(Fcb->SectionObject), &NewSize)) {
-                    Status = STATUS_USER_MAPPED_FILE;
-                    __leave;
-                }
-
-                /* truncate file blocks */
-                Status = Ext2TruncateFile(IrpContext, Vcb, Mcb, &NewSize);
-
-                /* restore original file size */
-                if (NT_SUCCESS(Status)) {
-                    ClearLongFlag(Fcb->Flags, FCB_ALLOC_IN_CREATE);
-                }
-
-                /* the allocation now ends at the new size */
-                Fcb->Header.AllocationSize.QuadPart = NewSize.QuadPart;
-
-                ASSERT((loff_t)NewSize.QuadPart >= Mcb->Inode->i_size);
-                if ((loff_t)Fcb->Header.FileSize.QuadPart < Mcb->Inode->i_size) {
-                    Fcb->Header.FileSize.QuadPart = Mcb->Inode->i_size;
-                }
-                if (Fcb->Header.ValidDataLength.QuadPart > Fcb->Header.FileSize.QuadPart) {
-                    Fcb->Header.ValidDataLength.QuadPart = Fcb->Header.FileSize.QuadPart;
-                }
-
-                SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
-                SetLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
-                NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
-            }
-
-            if (NT_SUCCESS(Status)) {
-
-                Fcb->Header.FileSize.QuadPart = Mcb->Inode->i_size = EndOfFile.QuadPart;
-                if (CcIsFileCached(FileObject)) {
-                    CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
-                }
-
-                /* ext4 keeps no valid data length on disk, so everything up
-                   to the new end must read as zeros from now on. Blocks past
-                   the old end are either not allocated or unwritten extents
-                   (allocated by Ext2ExpandFile outside a write): both read
-                   as zeros, and a write converts exactly the blocks it
-                   covers. Only the old last block can carry bytes past the
-                   old end, left by an earlier truncation - Linux zeroes them
-                   in ext4_block_truncate_page. So an extent-mapped file gets
-                   that block tail zeroed, not the whole range; an indirect-
-                   mapped file (ext2/ext3) allocates plain blocks and gets
-                   all of it zeroed. */
-                if (EndOfFile.QuadPart > Fcb->Header.ValidDataLength.QuadPart) {
-
-                    LARGE_INTEGER ZeroEnd = EndOfFile;
-
-                    if (INODE_HAS_EXTENT(Mcb->Inode)) {
-                        LONGLONG BlockEnd = CEILING_ALIGNED(LONGLONG,
-                                                Fcb->Header.ValidDataLength.QuadPart,
-                                                (LONGLONG)BLOCK_SIZE);
-                        if (BlockEnd < ZeroEnd.QuadPart) {
-                            ZeroEnd.QuadPart = BlockEnd;
-                        }
-                    }
-
-                    if (ZeroEnd.QuadPart > Fcb->Header.ValidDataLength.QuadPart &&
-                        !Ext2ZeroResizeRange(FileObject, &Fcb->Header.ValidDataLength,
-                                            &ZeroEnd)) {
-                        Status = STATUS_UNEXPECTED_IO_ERROR;
-                        __leave;
-                    }
-                }
-                Fcb->Header.ValidDataLength = EndOfFile;
-                if (CcIsFileCached(FileObject)) {
-                    CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
-                }
-
-                if (Fcb->Header.FileSize.QuadPart >= 0x80000000 &&
-                        !IsFlagOn(SUPER_BLOCK->s_feature_ro_compat, EXT2_FEATURE_RO_COMPAT_LARGE_FILE)) {
-                    Ext2SetSuperRoCompat(IrpContext, Vcb, EXT2_FEATURE_RO_COMPAT_LARGE_FILE);
-                }
-
-                SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
-                SetLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
-                NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
-            }
-
-
-            if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode) && NT_SUCCESS(Status))
-                Status = STATUS_UNEXPECTED_IO_ERROR;
-
-            DEBUG(DL_IO, ("Ext2SetInformation: FileEndOfFileInformation %wZ EndofFile=%I64xh "
-                          "AllocatieonSize=%I64xh FileSize=%I64xh VDL=%I64xh i_size=%I64xh status = %xh\n",
-                          &Fcb->Mcb->ShortName, EndOfFile.QuadPart, Fcb->Header.AllocationSize.QuadPart,
-                          Fcb->Header.FileSize.QuadPart, Fcb->Header.ValidDataLength.QuadPart,
-                          Mcb->Inode->i_size, Status));
-        }
-
-        break;
+            Status = Ext2SetEndOfFileInfo(IrpContext, Vcb, FileObject, Fcb, &Mcb,
+                                          IoStackLocation->Parameters.SetFile.AdvanceOnly,
+                                          (PFILE_END_OF_FILE_INFORMATION)Buffer, &NotifyFilter);
+            break;
 
         case FileValidDataLengthInformation:
-        {
-            PFILE_VALID_DATA_LENGTH_INFORMATION FVDL = (PFILE_VALID_DATA_LENGTH_INFORMATION) Buffer;
-            LARGE_INTEGER NewVDL;
-
-            if (IsMcbDirectory(Mcb) || IsMcbSpecialFile(Mcb)) {
-                Status = STATUS_INVALID_DEVICE_REQUEST;
-                __leave;
-            } else {
-                Status = STATUS_SUCCESS;
-            }
-
-            NewVDL = FVDL->ValidDataLength;
-            if ((NewVDL.QuadPart < Fcb->Header.ValidDataLength.QuadPart)) {
-                Status = STATUS_INVALID_PARAMETER;
-                __leave;
-            }
-            if (NewVDL.QuadPart > Fcb->Header.FileSize.QuadPart)
-                NewVDL = Fcb->Header.FileSize;
-
-            if (!MmCanFileBeTruncated(FileObject->SectionObjectPointer,
-                                      &NewVDL)) {
-                Status = STATUS_USER_MAPPED_FILE;
-                __leave;
-            }
-
-            Fcb->Header.ValidDataLength = NewVDL;
-            FileObject->Flags |= FO_FILE_MODIFIED;
-            if (CcIsFileCached(FileObject)) {
-                CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
-            }
-        }
-
-        break;
+            Status = Ext2SetValidDataLengthInfo(FileObject, Fcb, Mcb,
+                                                (PFILE_VALID_DATA_LENGTH_INFORMATION)Buffer);
+            break;
 
         case FileDispositionInformation:
-        {
-            PFILE_DISPOSITION_INFORMATION FDI = (PFILE_DISPOSITION_INFORMATION)Buffer;
-
-            Status = Ext2SetDispositionInfo(IrpContext, Vcb, Fcb, Ccb, FDI->DeleteFile);
-
+            Status = Ext2SetDispositionInfo(IrpContext, Vcb, Fcb, Ccb,
+                                            ((PFILE_DISPOSITION_INFORMATION)Buffer)->DeleteFile);
             DEBUG(DL_INF, ( "Ext2SetInformation: SetDispositionInformation: DeleteFile=%d %wZ status = %xh\n",
-                            FDI->DeleteFile, &Mcb->ShortName, Status));
-        }
-
-        break;
+                            ((PFILE_DISPOSITION_INFORMATION)Buffer)->DeleteFile, &Mcb->ShortName, Status));
+            break;
 
         case FileRenameInformation:
-        {
             Status = Ext2SetRenameInfo(IrpContext, Vcb, Fcb, Ccb);
-        }
-
-        break;
-
+            break;
 
         case FileLinkInformation:
-        {
             Status = Ext2SetLinkInfo(IrpContext, Vcb, Fcb, Ccb);
-        }
+            break;
 
-        break;
-
-        /* This is the only set file information request supported on read
-           only file systems */
         case FilePositionInformation:
-        {
-            PFILE_POSITION_INFORMATION FilePositionInformation;
-
-            if (Length < sizeof(FILE_POSITION_INFORMATION)) {
-                Status = STATUS_INVALID_PARAMETER;
-                __leave;
-            }
-
-            FilePositionInformation = (PFILE_POSITION_INFORMATION) Buffer;
-
-            if ((FlagOn(FileObject->Flags, FO_NO_INTERMEDIATE_BUFFERING)) &&
-                    (FilePositionInformation->CurrentByteOffset.LowPart &
-                     DeviceObject->AlignmentRequirement) ) {
-                Status = STATUS_INVALID_PARAMETER;
-                __leave;
-            }
-
-            FileObject->CurrentByteOffset =
-                FilePositionInformation->CurrentByteOffset;
-
-            Status = STATUS_SUCCESS;
-            __leave;
-        }
-
-        break;
+            Status = Ext2SetPositionInfo(DeviceObject, FileObject, Length,
+                                         (PFILE_POSITION_INFORMATION)Buffer);
+            break;
 
         default:
             DEBUG(DL_WRN, ( "Ext2SetInformation: invalid class: %d\n",

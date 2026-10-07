@@ -37,8 +37,6 @@ typedef struct _EXT2_MOUNT_STATE {
 } EXT2_MOUNT_STATE, *PEXT2_MOUNT_STATE;
 
 #ifdef ALLOC_PRAGMA
-#pragma alloc_text(PAGE, Ext2CheckBitmapConsistency)
-#pragma alloc_text(PAGE, Ext2CheckSetBlock)
 #pragma alloc_text(PAGE, Ext2InitializeVcb)
 #endif
 
@@ -52,99 +50,6 @@ static inline BOOLEAN Ext2IsNullUuid (__u8 * uuid)
     }
 
     return (i >= 16);
-}
-
-/* ---------------------------------------------------------------- bitmap check */
-
-BOOLEAN
-Ext2CheckSetBlock(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb, LONGLONG Block)
-{
-    UNREFERENCED_PARAMETER(IrpContext);
-    PEXT2_GROUP_DESC    gd;
-    struct buffer_head *gb = NULL;
-    struct buffer_head *bh = NULL;
-    ULONG               group, dwBlk, Length;
-    RTL_BITMAP          bitmap;
-    BOOLEAN             bModified = FALSE;
-
-    if (Block < EXT2_FIRST_DATA_BLOCK || (ULONGLONG)Block >= TOTAL_BLOCKS) {
-        return FALSE;
-    }
-    group = (ULONG)((Block - EXT2_FIRST_DATA_BLOCK) / BLOCKS_PER_GROUP);
-    dwBlk = (ULONG)((Block - EXT2_FIRST_DATA_BLOCK) % BLOCKS_PER_GROUP);
-
-    gd = ext4_get_group_desc(&Vcb->sb, group, &gb);
-    if (!gd) {
-        return FALSE;
-    }
-    bh = sb_getblk(&Vcb->sb, ext4_block_bitmap(&Vcb->sb, gd));
-    if (!bh) {
-        fini_bh(&gb);
-        return FALSE;
-    }
-
-    if (group == Vcb->sbi.s_groups_count - 1) {
-        Length = (ULONG)(TOTAL_BLOCKS % BLOCKS_PER_GROUP);
-
-        /* s_blocks_count is integer multiple of s_blocks_per_group */
-        if (Length == 0)
-            Length = BLOCKS_PER_GROUP;
-    } else {
-        Length = BLOCKS_PER_GROUP;
-    }
-
-    if (dwBlk >= Length) {
-        fini_bh(&gb);
-        fini_bh(&bh);
-        return FALSE;
-    }
-
-    RtlInitializeBitMap(&bitmap, (PULONG)bh->b_data, Length);
-
-    if (RtlCheckBit(&bitmap, dwBlk) == 0) {
-        RtlSetBits(&bitmap, dwBlk, 1);
-        bModified = TRUE;
-        mark_buffer_dirty(bh);
-    }
-
-    fini_bh(&gb);
-    fini_bh(&bh);
-
-    return (!bModified);
-}
-
-BOOLEAN
-Ext2CheckBitmapConsistency(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb)
-{
-    ULONG i, j, InodeBlocks;
-
-    for (i = 0; i < Vcb->sbi.s_groups_count; i++) {
-
-        PEXT2_GROUP_DESC    gd;
-        struct buffer_head  *bh = NULL;
-
-        gd = ext4_get_group_desc(&Vcb->sb, i, &bh);
-        if (!gd)
-            continue;
-        Ext2CheckSetBlock(IrpContext, Vcb, ext4_block_bitmap(&Vcb->sb, gd));
-        Ext2CheckSetBlock(IrpContext, Vcb, ext4_inode_bitmap(&Vcb->sb, gd));
-
-        if (i == Vcb->sbi.s_groups_count - 1) {
-            InodeBlocks = ((INODES_COUNT % INODES_PER_GROUP) *
-                           Vcb->InodeSize + Vcb->BlockSize - 1) /
-                          (Vcb->BlockSize);
-        } else {
-            InodeBlocks = (INODES_PER_GROUP * Vcb->InodeSize +
-                           Vcb->BlockSize - 1) / (Vcb->BlockSize);
-        }
-
-        for (j = 0; j < InodeBlocks; j++ )
-            Ext2CheckSetBlock(IrpContext, Vcb, ext4_inode_table(&Vcb->sb, gd) + j);
-
-        fini_bh(&bh);
-    }
-
-    return TRUE;
 }
 
 /* ---------------------------------------------------------------- 1. superblock */
@@ -317,6 +222,7 @@ Ext2InitializeVcbObjects(IN PEXT2_VCB Vcb, IN PEXT2_SUPER_BLOCK sb,
     ExInitializeResourceLite(&Vcb->SuperLock);
     ExInitializeResourceLite(&Vcb->FcbLock);
     ExInitializeResourceLite(&Vcb->sbi.s_gd_lock);
+    ExInitializeRundownProtection(&Vcb->SuperWriteRundown);
     ExInitializeFastMutex(&Vcb->Mutex);
     FsRtlSetupAdvancedHeader(&Vcb->Header,  &Vcb->Mutex);
     State->Resources = TRUE;
@@ -660,7 +566,12 @@ Ext2LoadGroups(IN PEXT2_VCB Vcb, IN OUT PEXT2_MOUNT_STATE State)
     }
     State->GroupLoaded = TRUE;
 
-    /* where all the metadata is, for the allocator; freed with the groups */
+    /* which groups failed a bitmap check (none yet), and where all the
+       metadata is, for the allocator; both freed with the groups */
+    Status = Ext2InitializeGroupHealth(Vcb);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
     return Ext2BuildMetadataMap(Vcb);
 }
 
@@ -757,6 +668,12 @@ Ext2LoadRoot(IN PEXT2_VCB Vcb)
 static VOID
 Ext2UndoMount(IN PEXT2_VCB Vcb, IN PEXT2_MOUNT_STATE State)
 {
+    /* corruption found while mounting queued a superblock write: it uses
+       what goes below */
+    if (State->Resources) {
+        Ext2DrainSuperWrites(Vcb);
+    }
+
     if (Vcb->McbTree) {
         Ext2FreeMcb(Vcb, Vcb->McbTree);
         Vcb->McbTree = NULL;
@@ -866,11 +783,6 @@ Ext2InitializeVcb( IN PEXT2_IRP_CONTEXT IrpContext,
         Status = Ext2LoadRoot(Vcb);
         if (!NT_SUCCESS(Status)) {
             __leave;
-        }
-
-        /* check bitmap if user specifies it */
-        if (IsFlagOn(Ext2Global->Flags, EXT2_CHECKING_BITMAP)) {
-            Ext2CheckBitmapConsistency(IrpContext, Vcb);
         }
 
         /* get anything done, then refer target device */

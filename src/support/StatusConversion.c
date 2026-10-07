@@ -64,6 +64,11 @@ int Ext2LinuxError (NTSTATUS Status)
     case STATUS_DISK_FULL:
         return (-ENOSPC);
 
+    /* and so does a corrupt one */
+    case STATUS_DISK_CORRUPT_ERROR:
+    case STATUS_FILE_CORRUPT_ERROR:
+        return (-EUCLEAN);
+
     case STATUS_PAGEFILE_QUOTA:
     case STATUS_NO_MEMORY:
     case STATUS_CONFLICTING_ADDRESSES:
@@ -138,7 +143,12 @@ NTSTATUS Ext2WinntError(int rc)
     case -ETOOSMALL:
         return STATUS_BUFFER_TOO_SMALL;
 
+    /* EFSCORRUPTED and EFSBADCRC: on-disk structures found corrupt, never
+       a bad parameter of the caller's */
+    case -EUCLEAN:
     case -EBADMSG:
+        return STATUS_DISK_CORRUPT_ERROR;
+
     case -EBADF:
     case -EINVAL:
     case -EFBIG:

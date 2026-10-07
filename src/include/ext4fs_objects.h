@@ -33,6 +33,18 @@ typedef struct _EXT2_VCB {
        read-only after mount, so read without a lock (ext4\MetadataMap.c) */
     struct _EXT2_META_MAP      *MetaMap;
 
+    /* Groups whose block or inode bitmap failed its check, two bits each,
+       set once and read without a lock (ext4\GroupCache.c) */
+    volatile LONG              *GroupCorrupt;
+
+    /* Corruption found this mount: reports printed (the first ones only).
+       The superblock write a report or a journal stop asks for, made by a
+       system worker: one queued at a time, the volume's teardown waits for
+       it (Ext2QueueSuperWrite, Superblock.c) */
+    volatile LONG               ErrorReports;
+    volatile LONG               SuperWritePending;
+    EX_RUNDOWN_REF              SuperWriteRundown;
+
     /* Free block and inode totals, kept here and written to the superblock
        on flush (Ext2AdjustVcbStat, Ext2SyncSuperTotals) */
     volatile LONG64             FreeBlocks;
@@ -219,10 +231,11 @@ typedef struct _EXT2_VCB {
 #define VCB_LETTER_ASSIGNED     0x00000200  /* DrvLetter was created by DriveLetters.c */
 #define VCB_STREAM_TEARDOWN     0x00000400  /* one thread owns Ext2TearDownStream */
 #define VCB_WRITE_TRANSITION    0x00000800  /* replay/start before accepting user writes */
-
+#define VCB_FOREIGN_OWNER       0x00001000  /* another node has the disk (MMP): nothing more is written */
 #define VCB_BEING_DROPPED       0x00002000
 #define VCB_FORCE_WRITING       0x00004000
 #define VCB_DEVICE_REMOVED      0x00008000
+#define VCB_WRITE_STOPPED       0x00010000  /* stopped writing on an error: read-only until dismount */
 #define VCB_JOURNAL_RECOVER     0x00080000
 #define VCB_ARRIVAL_NOTIFIED    0x00800000
 #define VCB_RO_COMPAT_READ_ONLY 0x01000000

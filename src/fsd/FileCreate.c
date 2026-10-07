@@ -409,8 +409,15 @@ Ext2CreateInode(
     goto errorout;
 
 freeinode:
-    /* the inode never got a name: it goes back. This fails only once the
-       volume has stopped writing, when nothing of it reaches the disk. */
+    /* The inode never got a name: it goes back, marked deleted as Linux
+       leaves one it gives back (a mode without links or dtime is what
+       e2fsck calls a deleted inode with zero dtime). These fail only once
+       the volume has stopped writing, when nothing of it reaches the disk. */
+    if (Inode.i_ino != 0) {
+        Inode.i_nlink = 0;
+        Inode.i_dtime = (__u32)Ext2UnixTime(&SysTime);
+        (void)Ext2SaveInode(IrpContext, Vcb, &Inode);
+    }
     (void)Ext2FreeInode(IrpContext, Vcb, iNo, Type);
 
 errorout:

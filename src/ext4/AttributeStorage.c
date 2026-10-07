@@ -335,11 +335,8 @@ static int ext4_xattr_block_fetch(struct ext4_xattr_ref *xattr_ref)
 		return -EFSCORRUPTED;
 	/* nor one whose checksum does not match (Linux: EFSBADCRC): changed
 	   and written back, its damage would be hidden under a fresh one */
-	if (!ext4_xattr_block_csum_verify(xattr_ref->inode_ref->Inode, xattr_ref->block_bh)) {
-		DbgPrint("ext4: inode %u: xattr block %I64u: checksum does not match\n",
-			 (ULONG)xattr_ref->inode_ref->Inode->i_ino, (ULONGLONG)xattr_ref->block_bh->b_blocknr);
+	if (!ext4_xattr_block_csum_verify(xattr_ref->inode_ref->Inode, xattr_ref->block_bh))
 		return -EFSBADCRC;
-	}
 	return ext4_xattr_fetch_entries(xattr_ref, EXT4_XATTR_BFIRST(xattr_ref->block_bh),
 					xattr_ref->block_bh->b_data, xattr_ref->fs->BlockSize,
 					FALSE);
@@ -407,16 +404,22 @@ int ext4_xattr_fetch(struct ext4_xattr_ref *xattr_ref)
 {
 	int ret = 0;
 	int inode_size = xattr_ref->fs->InodeSize;
-	if (inode_size > EXT4_GOOD_OLD_INODE_SIZE) {
+	ULONGLONG where = 0;
+
+	if (inode_size > EXT4_GOOD_OLD_INODE_SIZE)
 		ret = ext4_xattr_inode_fetch(xattr_ref);
-		if (ret != 0)
-			return ret;
+	if (ret == 0 && xattr_ref->block_loaded) {
+		where = xattr_ref->block_bh->b_blocknr;
+		ret = ext4_xattr_block_fetch(xattr_ref);
 	}
 
-	if (xattr_ref->block_loaded)
-		ret = ext4_xattr_block_fetch(xattr_ref);
-
-	xattr_ref->dirty = FALSE;
+	/* a set found corrupt is reported where it lies (Linux: ext4_error) */
+	if (ret == -EFSCORRUPTED || ret == -EFSBADCRC) {
+		Ext2ReportCorruption(xattr_ref->fs, (ULONG)xattr_ref->inode_ref->Inode->i_ino, where, ret);
+		return ret;
+	}
+	if (ret == 0)
+		xattr_ref->dirty = FALSE;
 	return ret;
 }
 

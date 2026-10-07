@@ -8,6 +8,15 @@
 
 #include "ext4fs.h"
 
+/* a pointer of Mcb's map that names no block the file may own: reported
+   (Linux: ext4_error_inode from ext4_ind_map_blocks' validity checks) */
+static NTSTATUS
+Ext2CorruptPointer(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN ULONGLONG Block)
+{
+    Ext2ReportCorruption(Vcb, (ULONG)Mcb->Inode->i_ino, Block, -EFSCORRUPTED);
+    return STATUS_DISK_CORRUPT_ERROR;
+}
+
 NTSTATUS
 Ext2ExpandLast(
     IN PEXT2_IRP_CONTEXT    IrpContext,
@@ -167,7 +176,7 @@ Ext2GetBlock(
         } else {
             /* check the block is valid or not */
             if (BlockArray[0] >= TOTAL_BLOCKS) {
-                Status = STATUS_DISK_CORRUPT_ERROR;
+                Status = Ext2CorruptPointer(Vcb, Mcb, BlockArray[0]);
                 goto errorout;
             }
         }
@@ -190,7 +199,7 @@ Ext2GetBlock(
            inode table would take inodes with it */
         if (*Block != 0 && ((ULONGLONG)*Block + *Number > TOTAL_BLOCKS ||
                             Ext2MetadataOverlaps(Vcb, *Block, *Number))) {
-            Status = STATUS_DISK_CORRUPT_ERROR;
+            Status = Ext2CorruptPointer(Vcb, Mcb, *Block);
             goto errorout;
         }
 
@@ -199,7 +208,7 @@ Ext2GetBlock(
         /* an indirect block inside the volume, not among its metadata */
         if (BlockArray[0] == 0 || BlockArray[0] >= TOTAL_BLOCKS ||
             Ext2MetadataOverlaps(Vcb, BlockArray[0], 1)) {
-            Status = STATUS_DISK_CORRUPT_ERROR;
+            Status = Ext2CorruptPointer(Vcb, Mcb, BlockArray[0]);
             goto errorout;
         }
 
@@ -430,7 +439,7 @@ Ext2ExpandBlock(
             if (Wanted == 0) {
 
                 if (Ext2MetadataOverlaps(Vcb, BlockArray[i], 1)) {
-                    Status = STATUS_DISK_CORRUPT_ERROR;
+                    Status = Ext2CorruptPointer(Vcb, Mcb, BlockArray[i]);
                     goto errorout;
                 }
                 /* add block extent into Mcb */
@@ -504,7 +513,7 @@ Ext2ExpandBlock(
             } else {
 
                 if (Ext2MetadataOverlaps(Vcb, BlockArray[i], 1)) {
-                    Status = STATUS_DISK_CORRUPT_ERROR;
+                    Status = Ext2CorruptPointer(Vcb, Mcb, BlockArray[i]);
                     goto errorout;
                 }
                 bh = sb_getblk(&Vcb->sb, (sector_t)BlockArray[i]);

@@ -205,12 +205,11 @@ Ext2LoadInode (IN PEXT2_VCB Vcb,
            Linux refuses it (EFSBADCRC). It used to be loaded: written back
            under a fresh checksum, the damage was then hidden from e2fsck. */
         if (!ext4_inode_csum_verify(Inode, raw, &unused)) {
-            DbgPrint("ext4: inode %u: checksum does not match, refused\n", Inode->i_ino);
+            Ext2ReportCorruption(Vcb, Inode->i_ino, bh->b_blocknr, -EFSBADCRC);
             Valid = FALSE;
         }
     } else {
-        DbgPrint("ext4: inode %u: bad i_extra_isize %u\n", Inode->i_ino,
-                 (ULONG)le16_to_cpu(raw->i_extra_isize));
+        Ext2ReportCorruption(Vcb, Inode->i_ino, bh->b_blocknr, -EFSCORRUPTED);
     }
     fini_bh(&bh);
     return Valid;

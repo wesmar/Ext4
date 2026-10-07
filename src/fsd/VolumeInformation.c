@@ -13,24 +13,145 @@
 #pragma alloc_text(PAGE, Ext2SetVolumeInformation)
 #endif
 
+/* the label's bytes in the superblock (s_volume_name, not terminated when full) */
+#define EXT2_LABEL_BYTES    RTL_FIELD_SIZE(EXT2_SUPER_BLOCK, s_volume_name)
+
+/*
+ * A structure that ends in a name: Header bytes, then the name, cut to what
+ * fits - with STATUS_BUFFER_OVERFLOW, and Information covering what was
+ * filled, as NTFS answers (a cut label used to be left out entirely).
+ */
+static NTSTATUS
+Ext2QueryFsName(OUT PVOID Name, IN PCWSTR Source, IN ULONG Bytes,
+                IN ULONG Header, IN ULONG Length, OUT PULONG_PTR Information)
+{
+    ULONG Copied = min(Bytes, Length - Header);
+
+    RtlCopyMemory(Name, Source, Copied);
+    *Information = Header + Copied;
+    return Copied < Bytes ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
+}
+
+/* the allocation units: blocks, of whole sectors */
+static VOID
+Ext2QueryFsUnits(IN PEXT2_VCB Vcb, OUT PULONG SectorsPerUnit, OUT PULONG BytesPerSector)
+{
+    *BytesPerSector = Vcb->DiskGeometry.BytesPerSector;
+    *SectorsPerUnit = Vcb->BlockSize / Vcb->DiskGeometry.BytesPerSector;
+}
+
+static NTSTATUS
+Ext2QueryFsClass(IN PEXT2_VCB Vcb, IN FS_INFORMATION_CLASS Class, OUT PVOID Buffer,
+                 IN ULONG Length, OUT PULONG_PTR Information)
+{
+    switch (Class) {
+
+    case FileFsVolumeInformation:
+    {
+        PFILE_FS_VOLUME_INFORMATION FFVI = (PFILE_FS_VOLUME_INFORMATION)Buffer;
+        const ULONG Header = FIELD_OFFSET(FILE_FS_VOLUME_INFORMATION, VolumeLabel);
+
+        if (Length < Header) {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        FFVI->VolumeCreationTime = Ext2GetSuperTime(Vcb->SuperBlock, s_mkfs_time);
+        FFVI->VolumeSerialNumber = Vcb->Vpb->SerialNumber;
+        FFVI->VolumeLabelLength = Vcb->Vpb->VolumeLabelLength;
+        FFVI->SupportsObjects = FALSE;      /* no object ids */
+        return Ext2QueryFsName(FFVI->VolumeLabel, Vcb->Vpb->VolumeLabel,
+                               Vcb->Vpb->VolumeLabelLength, Header, Length, Information);
+    }
+
+    case FileFsSizeInformation:
+    {
+        PFILE_FS_SIZE_INFORMATION FFSI = (PFILE_FS_SIZE_INFORMATION)Buffer;
+
+        if (Length < sizeof(FILE_FS_SIZE_INFORMATION)) {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        FFSI->TotalAllocationUnits.QuadPart = ext3_blocks_count(Vcb->SuperBlock);
+        FFSI->AvailableAllocationUnits.QuadPart = Ext2FreeBlocks(Vcb);
+        Ext2QueryFsUnits(Vcb, &FFSI->SectorsPerAllocationUnit, &FFSI->BytesPerSector);
+        *Information = sizeof(FILE_FS_SIZE_INFORMATION);
+        return STATUS_SUCCESS;
+    }
+
+    case FileFsFullSizeInformation:
+    {
+        PFILE_FS_FULL_SIZE_INFORMATION FFFSI = (PFILE_FS_FULL_SIZE_INFORMATION)Buffer;
+
+        if (Length < sizeof(FILE_FS_FULL_SIZE_INFORMATION)) {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        FFFSI->TotalAllocationUnits.QuadPart = ext3_blocks_count(Vcb->SuperBlock);
+        /* the blocks reserved for root (s_r_blocks_count) are not held back
+           from Windows, which has no root: every free block is the caller's */
+        FFFSI->CallerAvailableAllocationUnits.QuadPart = Ext2FreeBlocks(Vcb);
+        FFFSI->ActualAvailableAllocationUnits.QuadPart = Ext2FreeBlocks(Vcb);
+        Ext2QueryFsUnits(Vcb, &FFFSI->SectorsPerAllocationUnit, &FFFSI->BytesPerSector);
+        *Information = sizeof(FILE_FS_FULL_SIZE_INFORMATION);
+        return STATUS_SUCCESS;
+    }
+
+    case FileFsDeviceInformation:
+    {
+        PFILE_FS_DEVICE_INFORMATION FFDI = (PFILE_FS_DEVICE_INFORMATION)Buffer;
+
+        if (Length < sizeof(FILE_FS_DEVICE_INFORMATION)) {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        FFDI->DeviceType = Vcb->TargetDeviceObject->DeviceType;
+        FFDI->Characteristics = Vcb->TargetDeviceObject->Characteristics;
+        if (IsVcbReadOnly(Vcb)) {
+            SetFlag(FFDI->Characteristics, FILE_READ_ONLY_DEVICE);
+        }
+        *Information = sizeof(FILE_FS_DEVICE_INFORMATION);
+        return STATUS_SUCCESS;
+    }
+
+    case FileFsAttributeInformation:
+    {
+        PFILE_FS_ATTRIBUTE_INFORMATION FFAI = (PFILE_FS_ATTRIBUTE_INFORMATION)Buffer;
+        const ULONG Header = FIELD_OFFSET(FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName);
+        PCWSTR      Name;
+
+        if (Length < Header) {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        FFAI->FileSystemAttributes = FILE_SUPPORTS_HARD_LINKS |
+            FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES |
+            FILE_SUPPORTS_REPARSE_POINTS | FILE_SUPPORTS_EXTENDED_ATTRIBUTES;
+        if (IsVcbReadOnly(Vcb)) {
+            SetFlag(FFAI->FileSystemAttributes, FILE_READ_ONLY_VOLUME);
+        }
+        FFAI->MaximumComponentNameLength = EXT2_NAME_LEN;
+
+        Name = IsFlagOn(Vcb->SuperBlock->s_feature_incompat, EXT4_FEATURE_INCOMPAT_EXTENTS) ? L"EXT4" :
+               Vcb->IsExt3fs ? L"EXT3" : L"EXT2";
+        FFAI->FileSystemNameLength = (ULONG)(wcslen(Name) * sizeof(WCHAR));
+        return Ext2QueryFsName(FFAI->FileSystemName, Name, FFAI->FileSystemNameLength,
+                               Header, Length, Information);
+    }
+
+    default:
+        return STATUS_INVALID_INFO_CLASS;
+    }
+}
+
 NTSTATUS
 Ext2QueryVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT          DeviceObject;
     PEXT2_VCB               Vcb = NULL;
-    PIRP                    Irp = NULL;
-    PIO_STACK_LOCATION      IoStackLocation = NULL;
-    PVOID                   Buffer;
-    ULONG                   Length;
+    PIRP                    Irp;
+    PIO_STACK_LOCATION      IrpSp;
     NTSTATUS                Status = STATUS_UNSUCCESSFUL;
-    FS_INFORMATION_CLASS    FsInformationClass;
     BOOLEAN                 VcbResourceAcquired = FALSE;
 
-    __try {
+    ASSERT((IrpContext->Identifier.Type == EXT2ICX) &&
+           (IrpContext->Identifier.Size == sizeof(EXT2_IRP_CONTEXT)));
 
-        ASSERT(IrpContext != NULL);
-        ASSERT((IrpContext->Identifier.Type == EXT2ICX) &&
-               (IrpContext->Identifier.Size == sizeof(EXT2_IRP_CONTEXT)));
+    __try {
 
         DeviceObject = IrpContext->DeviceObject;
 
@@ -41,204 +162,28 @@ Ext2QueryVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
         }
 
         Vcb = (PEXT2_VCB) DeviceObject->DeviceExtension;
-        ASSERT(Vcb != NULL);
         ASSERT((Vcb->Identifier.Type == EXT2VCB) &&
                (Vcb->Identifier.Size == sizeof(EXT2_VCB)));
-
         if (!IsMounted(Vcb)) {
             Status = STATUS_VOLUME_DISMOUNTED;
             __leave;
         }
 
-        if (!ExAcquireResourceSharedLite(
-                    &Vcb->MainResource,
-                    IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT)
-                )) {
-
+        if (!ExAcquireResourceSharedLite(&Vcb->MainResource,
+                                         IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT))) {
             Status = STATUS_PENDING;
             __leave;
         }
         VcbResourceAcquired = TRUE;
 
         Irp = IrpContext->Irp;
-        IoStackLocation = IoGetCurrentIrpStackLocation(Irp);
-        FsInformationClass =
-            IoStackLocation->Parameters.QueryVolume.FsInformationClass;
+        IrpSp = IoGetCurrentIrpStackLocation(Irp);
+        RtlZeroMemory(Irp->AssociatedIrp.SystemBuffer, IrpSp->Parameters.QueryVolume.Length);
 
-        Length = IoStackLocation->Parameters.QueryVolume.Length;
-        Buffer = Irp->AssociatedIrp.SystemBuffer;
-
-        RtlZeroMemory(Buffer, Length);
-
-        switch (FsInformationClass) {
-
-        case FileFsVolumeInformation:
-        {
-            PFILE_FS_VOLUME_INFORMATION FsVolInfo;
-            ULONG                       VolumeLabelLength;
-            ULONG                       RequiredLength;
-
-            if (Length < sizeof(FILE_FS_VOLUME_INFORMATION)) {
-                Status = STATUS_BUFFER_OVERFLOW;
-                __leave;
-            }
-
-            FsVolInfo = (PFILE_FS_VOLUME_INFORMATION) Buffer;
-            FsVolInfo->VolumeCreationTime = Ext2GetSuperTime(Vcb->SuperBlock, s_mkfs_time);
-            FsVolInfo->VolumeSerialNumber = Vcb->Vpb->SerialNumber;
-            VolumeLabelLength = Vcb->Vpb->VolumeLabelLength;
-            FsVolInfo->VolumeLabelLength = VolumeLabelLength;
-            /* We don't support ObjectId */
-            FsVolInfo->SupportsObjects = FALSE;
-
-            RequiredLength = sizeof(FILE_FS_VOLUME_INFORMATION)
-                             + VolumeLabelLength - sizeof(WCHAR);
-
-            if (Length < RequiredLength) {
-                Irp->IoStatus.Information =
-                    sizeof(FILE_FS_VOLUME_INFORMATION);
-                Status = STATUS_BUFFER_OVERFLOW;
-                __leave;
-            }
-
-            RtlCopyMemory(FsVolInfo->VolumeLabel, Vcb->Vpb->VolumeLabel, Vcb->Vpb->VolumeLabelLength);
-
-            Irp->IoStatus.Information = RequiredLength;
-            Status = STATUS_SUCCESS;
-        }
-        break;
-
-        case FileFsSizeInformation:
-        {
-            PFILE_FS_SIZE_INFORMATION FsSizeInfo;
-
-            if (Length < sizeof(FILE_FS_SIZE_INFORMATION)) {
-                Status = STATUS_BUFFER_OVERFLOW;
-                __leave;
-            }
-
-            FsSizeInfo = (PFILE_FS_SIZE_INFORMATION) Buffer;
-            FsSizeInfo->TotalAllocationUnits.QuadPart =
-                ext3_blocks_count(SUPER_BLOCK);
-            FsSizeInfo->AvailableAllocationUnits.QuadPart =
-                Ext2FreeBlocks(Vcb);
-            FsSizeInfo->SectorsPerAllocationUnit =
-                Vcb->BlockSize / Vcb->DiskGeometry.BytesPerSector;
-            FsSizeInfo->BytesPerSector =
-                Vcb->DiskGeometry.BytesPerSector;
-
-            Irp->IoStatus.Information = sizeof(FILE_FS_SIZE_INFORMATION);
-            Status = STATUS_SUCCESS;
-        }
-        break;
-
-        case FileFsDeviceInformation:
-        {
-            PFILE_FS_DEVICE_INFORMATION FsDevInfo;
-
-            if (Length < sizeof(FILE_FS_DEVICE_INFORMATION)) {
-                Status = STATUS_BUFFER_OVERFLOW;
-                __leave;
-            }
-
-            FsDevInfo = (PFILE_FS_DEVICE_INFORMATION) Buffer;
-            FsDevInfo->DeviceType =
-                Vcb->TargetDeviceObject->DeviceType;
-
-            FsDevInfo->Characteristics =
-                Vcb->TargetDeviceObject->Characteristics;
-
-            if (IsVcbReadOnly(Vcb)) {
-                SetFlag( FsDevInfo->Characteristics,
-                         FILE_READ_ONLY_DEVICE   );
-            }
-
-            Irp->IoStatus.Information = sizeof(FILE_FS_DEVICE_INFORMATION);
-            Status = STATUS_SUCCESS;
-        }
-        break;
-
-        case FileFsAttributeInformation:
-        {
-            PFILE_FS_ATTRIBUTE_INFORMATION  FsAttrInfo;
-            ULONG                           RequiredLength;
-
-            if (Length < sizeof(FILE_FS_ATTRIBUTE_INFORMATION)) {
-                Status = STATUS_BUFFER_OVERFLOW;
-                __leave;
-            }
-
-            FsAttrInfo =
-                (PFILE_FS_ATTRIBUTE_INFORMATION) Buffer;
-            FsAttrInfo->FileSystemAttributes = FILE_SUPPORTS_HARD_LINKS |
-                FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES |
-                FILE_SUPPORTS_REPARSE_POINTS | FILE_SUPPORTS_EXTENDED_ATTRIBUTES;
-            if (IsVcbReadOnly(Vcb)) {
-                FsAttrInfo->FileSystemAttributes |= FILE_READ_ONLY_VOLUME;
-            }
-            FsAttrInfo->MaximumComponentNameLength = EXT2_NAME_LEN;
-            FsAttrInfo->FileSystemNameLength = 8;
-
-            RequiredLength = sizeof(FILE_FS_ATTRIBUTE_INFORMATION) +
-                             8 - sizeof(WCHAR);
-
-            if (Length < RequiredLength) {
-                Irp->IoStatus.Information =
-                    sizeof(FILE_FS_ATTRIBUTE_INFORMATION);
-                Status = STATUS_BUFFER_OVERFLOW;
-                __leave;
-            }
-
-            if (IsFlagOn(SUPER_BLOCK->s_feature_incompat, EXT4_FEATURE_INCOMPAT_EXTENTS)) {
-                RtlCopyMemory(FsAttrInfo->FileSystemName,  L"EXT4\0", 10);
-            } else if (Vcb->IsExt3fs) {
-                RtlCopyMemory(FsAttrInfo->FileSystemName,  L"EXT3\0", 10);
-            } else {
-                RtlCopyMemory(FsAttrInfo->FileSystemName,  L"EXT2\0", 10);
-            }
-
-            Irp->IoStatus.Information = RequiredLength;
-            Status = STATUS_SUCCESS;
-        }
-        break;
-
-
-        case FileFsFullSizeInformation:
-        {
-            PFILE_FS_FULL_SIZE_INFORMATION PFFFSI;
-
-            if (Length < sizeof(FILE_FS_FULL_SIZE_INFORMATION)) {
-                Status = STATUS_BUFFER_OVERFLOW;
-                __leave;
-            }
-
-            PFFFSI = (PFILE_FS_FULL_SIZE_INFORMATION) Buffer;
-
-            PFFFSI->TotalAllocationUnits.QuadPart =
-                ext3_blocks_count(SUPER_BLOCK);
-
-            PFFFSI->CallerAvailableAllocationUnits.QuadPart =
-                Ext2FreeBlocks(Vcb);
-
-                /* - Vcb->SuperBlock->s_r_blocks_count; */
-            PFFFSI->ActualAvailableAllocationUnits.QuadPart =
-                Ext2FreeBlocks(Vcb);
-
-            PFFFSI->SectorsPerAllocationUnit =
-                Vcb->BlockSize / Vcb->DiskGeometry.BytesPerSector;
-
-            PFFFSI->BytesPerSector = Vcb->DiskGeometry.BytesPerSector;
-
-            Irp->IoStatus.Information = sizeof(FILE_FS_FULL_SIZE_INFORMATION);
-            Status = STATUS_SUCCESS;
-        }
-        break;
-
-
-        default:
-            Status = STATUS_INVALID_INFO_CLASS;
-            break;
-        }
+        Status = Ext2QueryFsClass(Vcb, IrpSp->Parameters.QueryVolume.FsInformationClass,
+                                  Irp->AssociatedIrp.SystemBuffer,
+                                  IrpSp->Parameters.QueryVolume.Length,
+                                  &Irp->IoStatus.Information);
 
     } __finally {
 
@@ -248,7 +193,7 @@ Ext2QueryVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 
         if (!IrpContext->ExceptionInProgress) {
             if (Status == STATUS_PENDING) {
-                Ext2QueueRequest(IrpContext);
+                Status = Ext2QueueRequest(IrpContext);
             } else {
                 Ext2CompleteIrpContext(IrpContext, Status);
             }
@@ -258,6 +203,56 @@ Ext2QueryVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
     return Status;
 }
 
+/*
+ * A new label: in the superblock (s_volume_name, the volume's code page)
+ * and in the VPB. Converted first: a label the superblock cannot hold
+ * changes nothing (it used to change the VPB all the same). The
+ * superblock's copy changes under its lock, as every field its checksum
+ * covers does - a concurrent write of it computed the checksum over a half
+ * written label.
+ */
+static NTSTATUS
+Ext2SetVolumeLabel(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb,
+                   IN PFILE_FS_LABEL_INFORMATION Info, IN ULONG Length)
+{
+    /* room for the terminator the conversion insists on writing: a label
+       of all 16 bytes is legal, unterminated, on disk */
+    UCHAR           Label[EXT2_LABEL_BYTES + 1] = { 0 };
+    UNICODE_STRING  Unicode;
+    OEM_STRING      Oem;
+    BOOLEAN         Saved;
+
+    const ULONG     Header = FIELD_OFFSET(FILE_FS_LABEL_INFORMATION, VolumeLabel);
+
+    if (Length < Header || Info->VolumeLabelLength > Length - Header ||
+        Info->VolumeLabelLength > sizeof(Vcb->Vpb->VolumeLabel) ||
+        (Info->VolumeLabelLength & (sizeof(WCHAR) - 1))) {
+        return STATUS_INVALID_VOLUME_LABEL;
+    }
+
+    Unicode.Buffer = Info->VolumeLabel;
+    Unicode.Length = Unicode.MaximumLength = (USHORT)Info->VolumeLabelLength;
+    Oem.Buffer = (PCHAR)Label;
+    Oem.Length = 0;
+    Oem.MaximumLength = sizeof(Label);
+    if (Unicode.Length != 0 &&
+        (!NT_SUCCESS(Ext2UnicodeToOEM(Vcb, &Oem, &Unicode)) || Oem.Length > EXT2_LABEL_BYTES)) {
+        return STATUS_INVALID_VOLUME_LABEL;
+    }
+
+    Ext2LockSuper(Vcb);
+    RtlCopyMemory(Vcb->SuperBlock->s_volume_name, Label, EXT2_LABEL_BYTES);
+    Saved = Ext2SaveSuper(IrpContext, Vcb);
+    Ext2UnlockSuper(Vcb);
+    if (!Saved) {
+        return STATUS_UNEXPECTED_IO_ERROR;
+    }
+
+    RtlCopyMemory(Vcb->Vpb->VolumeLabel, Info->VolumeLabel, Info->VolumeLabelLength);
+    Vcb->Vpb->VolumeLabelLength = (USHORT)Info->VolumeLabelLength;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS
 Ext2SetVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 {
@@ -265,16 +260,13 @@ Ext2SetVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
     NTSTATUS                Status = STATUS_UNSUCCESSFUL;
     PEXT2_VCB               Vcb = NULL;
     PIRP                    Irp;
-    PIO_STACK_LOCATION      IoStackLocation;
-    FS_INFORMATION_CLASS    FsInformationClass;
+    PIO_STACK_LOCATION      IrpSp;
     BOOLEAN                 VcbResourceAcquired = FALSE;
 
+    ASSERT((IrpContext->Identifier.Type == EXT2ICX) &&
+           (IrpContext->Identifier.Size == sizeof(EXT2_IRP_CONTEXT)));
+
     __try {
-
-        ASSERT(IrpContext != NULL);
-
-        ASSERT((IrpContext->Identifier.Type == EXT2ICX) &&
-               (IrpContext->Identifier.Size == sizeof(EXT2_IRP_CONTEXT)));
 
         DeviceObject = IrpContext->DeviceObject;
 
@@ -285,77 +277,34 @@ Ext2SetVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
         }
 
         Vcb = (PEXT2_VCB) DeviceObject->DeviceExtension;
-        ASSERT(Vcb != NULL);
         ASSERT((Vcb->Identifier.Type == EXT2VCB) &&
                (Vcb->Identifier.Size == sizeof(EXT2_VCB)));
-
         if (!IsMounted(Vcb) || IsFlagOn(Vcb->Flags, VCB_DISMOUNT_PENDING)) {
             Status = STATUS_VOLUME_DISMOUNTED;
             __leave;
         }
-
         if (IsVcbReadOnly(Vcb)) {
             Status = STATUS_MEDIA_WRITE_PROTECTED;
             __leave;
         }
 
-        if (!ExAcquireResourceExclusiveLite(
-                    &Vcb->MainResource, TRUE)) {
-            Status = STATUS_PENDING;
-            __leave;
-        }
+        ExAcquireResourceExclusiveLite(&Vcb->MainResource, TRUE);
         VcbResourceAcquired = TRUE;
 
         Ext2VerifyVcb(IrpContext, Vcb);
 
         Irp = IrpContext->Irp;
-        IoStackLocation = IoGetCurrentIrpStackLocation(Irp);
+        IrpSp = IoGetCurrentIrpStackLocation(Irp);
+        Irp->IoStatus.Information = 0;
 
-        /* Notes: SetVolume is not defined in ntddk.h of win2k ddk,
-           But it's same to QueryVolume .... */
-        FsInformationClass =
-            IoStackLocation->Parameters./*SetVolume*/QueryVolume.FsInformationClass;
-
-        switch (FsInformationClass) {
+        /* the set parameters have the query's layout */
+        switch (IrpSp->Parameters.QueryVolume.FsInformationClass) {
 
         case FileFsLabelInformation:
-        {
-            PFILE_FS_LABEL_INFORMATION      VolLabelInfo = NULL;
-            ULONG                           VolLabelLen;
-            UNICODE_STRING                  LabelName  ;
-            OEM_STRING                      OemName;
-
-            VolLabelInfo = (PFILE_FS_LABEL_INFORMATION) Irp->AssociatedIrp.SystemBuffer;
-            VolLabelLen = VolLabelInfo->VolumeLabelLength;
-
-            if (VolLabelLen > (16 * sizeof(WCHAR))) {
-                Status = STATUS_INVALID_VOLUME_LABEL;
-                __leave;
-            }
-
-            RtlCopyMemory( Vcb->Vpb->VolumeLabel,
-                           VolLabelInfo->VolumeLabel,
-                           VolLabelLen );
-
-            RtlZeroMemory(Vcb->SuperBlock->s_volume_name, 16);
-            LabelName.Buffer = VolLabelInfo->VolumeLabel;
-            LabelName.MaximumLength = (USHORT)16 * sizeof(WCHAR);
-            LabelName.Length = (USHORT)VolLabelLen;
-
-            OemName.Buffer = SUPER_BLOCK->s_volume_name;
-            OemName.Length  = 0;
-            OemName.MaximumLength = 16;
-
-            Ext2UnicodeToOEM(Vcb, &OemName, &LabelName);
-            Vcb->Vpb->VolumeLabelLength = (USHORT) VolLabelLen;
-
-            if (Ext2SaveSuper(IrpContext, Vcb)) {
-                Status = STATUS_SUCCESS;
-            }
-
-            Irp->IoStatus.Information = 0;
-        }
-        break;
+            Status = Ext2SetVolumeLabel(IrpContext, Vcb,
+                                        (PFILE_FS_LABEL_INFORMATION)Irp->AssociatedIrp.SystemBuffer,
+                                        IrpSp->Parameters.QueryVolume.Length);
+            break;
 
         default:
             Status = STATUS_INVALID_INFO_CLASS;
@@ -369,7 +318,7 @@ Ext2SetVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 
         if (!IrpContext->ExceptionInProgress) {
             if (Status == STATUS_PENDING) {
-                Ext2QueueRequest(IrpContext);
+                Status = Ext2QueueRequest(IrpContext);
             } else {
                 Ext2CompleteIrpContext(IrpContext, Status);
             }

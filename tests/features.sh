@@ -217,6 +217,9 @@ rmdir "$mnt"
 # block); the kernel must find Windows's names through the index
 p8=${dev}8
 if e2fsck -fn "$p8" > /tmp/uh.fsck 2>&1; then echo "  unsigned hash: e2fsck clean"; else echo "  unsigned hash: e2fsck FAILED"; tail -15 /tmp/uh.fsck; fail=1; fi
+# the label Windows set: all 16 bytes of s_volume_name
+name=$(dumpe2fs -h "$p8" 2>/dev/null | awk -F': *' '$1 == "Filesystem volume name" {print $2}')
+[ "$name" = "win-label-16byte" ] && echo "  label set by Windows: $name" || { echo "  label '$name', want 'win-label-16byte'"; fail=1; }
 mnt=$(mktemp -d)
 if mount -o ro,noload "$p8" "$mnt"; then
     miss=0

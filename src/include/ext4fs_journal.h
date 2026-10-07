@@ -51,6 +51,10 @@ Ext2JournalAbortQuiet(IN PEXT2_VCB Vcb);
 VOID
 Ext2JournalAbandon(IN PEXT2_VCB Vcb, IN NTSTATUS Status);
 
+/* an aborted journal's error into its own superblock (Ext2QueueSuperWrite) */
+VOID
+Ext2JournalRecordAbort(IN PEXT2_VCB Vcb);
+
 /* The transaction a change made now belongs to, or a later one: blocks
    freed by it may be reused once it has committed. FALSE: no journal is
    logging, a change is final when made. */

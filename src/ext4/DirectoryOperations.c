@@ -498,6 +498,9 @@ int ext3_check_dir_entry (const char * function, struct inode * dir,
                        function, dir->i_ino, error_msg, offset,
                        (unsigned long) le32_to_cpu(de->inode),
                        rlen, de->name_len));
+        /* Linux: ext4_check_dir_entry -> ext4_error_file */
+        Ext2ReportCorruption((PEXT2_VCB)dir->i_sb->s_priv, (ULONG)dir->i_ino,
+                             bh ? (ULONGLONG)bh->b_blocknr : 0, -EFSCORRUPTED);
     }
     return error_msg == NULL ? 1 : 0;
 }

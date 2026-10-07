@@ -28,11 +28,64 @@ Ext2DropGroupBH(IN PEXT2_VCB Vcb)
     }
 }
 
+/* ---------------------------------------------------------------- group health */
+
+#define EXT2_GROUP_HEALTH_TAG   'HG4E'
+#define EXT2_GROUP_HEALTH_BITS  (sizeof(LONG) * 8)
+
+/* two bits a group, all clear: built with the groups at mount */
+NTSTATUS
+Ext2InitializeGroupHealth(IN PEXT2_VCB Vcb)
+{
+    SIZE_T Words = ((SIZE_T)Vcb->sbi.s_groups_count * EXT2_GROUP_BITMAPS +
+                    EXT2_GROUP_HEALTH_BITS - 1) / EXT2_GROUP_HEALTH_BITS;
+
+    Vcb->GroupCorrupt = Ext2AllocatePool(PagedPool, Words * sizeof(LONG), EXT2_GROUP_HEALTH_TAG);
+    if (Vcb->GroupCorrupt == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlZeroMemory((PVOID)Vcb->GroupCorrupt, Words * sizeof(LONG));
+    return STATUS_SUCCESS;
+}
+
+VOID
+Ext2FreeGroupHealth(IN PEXT2_VCB Vcb)
+{
+    if (Vcb->GroupCorrupt != NULL) {
+        Ext2FreePool((PVOID)Vcb->GroupCorrupt, EXT2_GROUP_HEALTH_TAG);
+        Vcb->GroupCorrupt = NULL;
+    }
+}
+
+BOOLEAN
+Ext2GroupCorrupt(IN PEXT2_VCB Vcb, IN ULONG Group, IN ULONG Bitmap)
+{
+    ULONGLONG Bit = (ULONGLONG)Group * EXT2_GROUP_BITMAPS + Bitmap;
+
+    return Vcb->GroupCorrupt != NULL &&
+           (ReadNoFence(&Vcb->GroupCorrupt[Bit / EXT2_GROUP_HEALTH_BITS]) &
+            (1L << (Bit % EXT2_GROUP_HEALTH_BITS))) != 0;
+}
+
+/* TRUE for the caller that marked it: the one to report it */
+BOOLEAN
+Ext2MarkGroupCorrupt(IN PEXT2_VCB Vcb, IN ULONG Group, IN ULONG Bitmap)
+{
+    ULONGLONG   Bit = (ULONGLONG)Group * EXT2_GROUP_BITMAPS + Bitmap;
+    LONG        Mask = 1L << (Bit % EXT2_GROUP_HEALTH_BITS);
+
+    if (Vcb->GroupCorrupt == NULL) {
+        return FALSE;
+    }
+    return (InterlockedOr(&Vcb->GroupCorrupt[Bit / EXT2_GROUP_HEALTH_BITS], Mask) & Mask) == 0;
+}
+
 VOID
 Ext2PutGroup(IN PEXT2_VCB Vcb)
 {
 
     Ext2FreeMetadataMap(Vcb);
+    Ext2FreeGroupHealth(Vcb);
     if (NULL == Vcb->sbi.s_gd) {
         return;
     }

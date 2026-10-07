@@ -47,6 +47,151 @@ Ext2GetInfoLength(IN FILE_INFORMATION_CLASS  FileInformationClass)
     return 0;
 }
 
+/* What the directory classes share: the same fields up to the name's length
+   (FILE_DIRECTORY_INFORMATION's), the EA size right after it, and the name
+   at the end (Ext2GetInfoLength). FILE_NAMES_INFORMATION shares the first
+   two fields only. */
+C_ASSERT(FIELD_OFFSET(FILE_FULL_DIR_INFORMATION, FileNameLength) == FIELD_OFFSET(FILE_DIRECTORY_INFORMATION, FileNameLength) &&
+         FIELD_OFFSET(FILE_BOTH_DIR_INFORMATION, FileNameLength) == FIELD_OFFSET(FILE_DIRECTORY_INFORMATION, FileNameLength) &&
+         FIELD_OFFSET(FILE_ID_FULL_DIR_INFORMATION, FileNameLength) == FIELD_OFFSET(FILE_DIRECTORY_INFORMATION, FileNameLength) &&
+         FIELD_OFFSET(FILE_ID_BOTH_DIR_INFORMATION, FileNameLength) == FIELD_OFFSET(FILE_DIRECTORY_INFORMATION, FileNameLength));
+C_ASSERT(FIELD_OFFSET(FILE_BOTH_DIR_INFORMATION, EaSize) == FIELD_OFFSET(FILE_FULL_DIR_INFORMATION, EaSize) &&
+         FIELD_OFFSET(FILE_ID_FULL_DIR_INFORMATION, EaSize) == FIELD_OFFSET(FILE_FULL_DIR_INFORMATION, EaSize) &&
+         FIELD_OFFSET(FILE_ID_BOTH_DIR_INFORMATION, EaSize) == FIELD_OFFSET(FILE_FULL_DIR_INFORMATION, EaSize));
+C_ASSERT(FIELD_OFFSET(FILE_NAMES_INFORMATION, FileIndex) == FIELD_OFFSET(FILE_DIRECTORY_INFORMATION, FileIndex));
+
+/* what an entry shows of its file */
+typedef struct _EXT2_ENTRY_INFO {
+    LARGE_INTEGER   CreationTime;
+    LARGE_INTEGER   LastAccessTime;
+    LARGE_INTEGER   LastWriteTime;
+    LARGE_INTEGER   ChangeTime;
+    LONGLONG        FileSize;
+    ULONG           Attributes;
+    BOOLEAN         Symlink;
+} EXT2_ENTRY_INFO, *PEXT2_ENTRY_INFO;
+
+/* a cached name: its node's times and attributes; a symlink shows its
+   target's size and kind */
+static VOID
+Ext2EntryFromName(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, OUT PEXT2_ENTRY_INFO E)
+{
+    PEXT2_MCB Target;
+
+    E->CreationTime = Mcb->Icb->CreationTime;
+    E->LastAccessTime = Mcb->Icb->LastAccessTime;
+    E->LastWriteTime = Mcb->Icb->LastWriteTime;
+    E->ChangeTime = Mcb->Icb->ChangeTime;
+    E->Attributes = Mcb->FileAttr;
+    E->Symlink = IsInodeSymLink(Mcb->Inode);
+
+    if (!IsMcbSymLink(Mcb)) {
+        E->FileSize = IsMcbDirectory(Mcb) ? 0 : Mcb->Inode->i_size;
+        return;
+    }
+
+    /* the target, held while it is looked at (a demotion of the link may
+       drop it meanwhile) */
+    Target = Ext2ReferLinkTarget(Vcb, Mcb);
+    if (Target == NULL || IsFileDeleted(Target)) {
+        ClearFlag(E->Attributes, FILE_ATTRIBUTE_DIRECTORY);
+    } else if (IsMcbDirectory(Target)) {
+        SetFlag(E->Attributes, FILE_ATTRIBUTE_DIRECTORY);
+    } else {
+        E->FileSize = Target->Inode->i_size;
+    }
+    if (Target != NULL) {
+        Ext2DerefMcb(Target);
+    }
+}
+
+/* an inode read for the listing alone */
+static VOID
+Ext2EntryFromInode(IN PEXT2_VCB Vcb, IN struct inode *Inode, OUT PEXT2_ENTRY_INFO E)
+{
+    E->LastAccessTime = Ext2GetInodeTime(Inode->i_atime, Inode->i_atime_extra);
+    E->LastWriteTime = Ext2GetInodeTime(Inode->i_mtime, Inode->i_mtime_extra);
+    E->ChangeTime = Ext2GetInodeTime(Inode->i_ctime, Inode->i_ctime_extra);
+    E->CreationTime = Inode->i_crtime ? Ext2GetInodeTime(Inode->i_crtime, Inode->i_crtime_extra) :
+                                        E->ChangeTime;
+
+    if (S_ISDIR(Inode->i_mode)) {
+        E->Attributes = FILE_ATTRIBUTE_DIRECTORY;
+    } else if (S_ISLNK(Inode->i_mode)) {
+        E->Attributes = FILE_ATTRIBUTE_REPARSE_POINT;
+        E->Symlink = TRUE;
+        E->FileSize = Inode->i_size;
+    } else {
+        E->Attributes = FILE_ATTRIBUTE_NORMAL;
+        /* a device node, a fifo, a socket: no size to show */
+        E->FileSize = S_ISREG(Inode->i_mode) ? Inode->i_size : 0;
+    }
+
+    if (!Ext2IsOwnerWritable(Inode->i_mode) || Ext4IsImmutable(Inode) ||
+        !Ext2CheckInodeAccess(Vcb, Inode, Ext2FileCanWrite)) {
+        SetFlag(E->Attributes, FILE_ATTRIBUTE_READONLY);
+    }
+}
+
+/* the entry named Name, inode Ino, of directory Dcb */
+static VOID
+Ext2EntryInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PEXT2_FCB Dcb,
+              IN ULONG Ino, IN PUNICODE_STRING Name, OUT PEXT2_ENTRY_INFO E)
+{
+    struct inode    Inode = { 0 };
+    PEXT2_MCB       Mcb;
+
+    RtlZeroMemory(E, sizeof(EXT2_ENTRY_INFO));
+
+    Mcb = Ext2SearchMcb(Vcb, Dcb->Mcb, Name);
+    if (Mcb != NULL) {
+        /* a link not followed yet, or demoted: its target may exist now
+           (under LinkLock, like every change of a link) */
+        if (S_ISLNK(Mcb->Inode->i_mode)) {
+            Ext2ResolveLink(IrpContext, Vcb, Mcb, 0, FALSE);
+        }
+        Ext2EntryFromName(Vcb, Mcb, E);
+        Ext2DerefMcb(Mcb);
+        return;
+    }
+
+    /* an open hard link of this inode may be ahead of the disk */
+    Inode.i_ino = Ino;
+    Inode.i_sb = &Vcb->sb;
+    if (!Ext2PeekCachedInode(Vcb, Ino, &Inode) && !Ext2LoadInode(Vcb, &Inode)) {
+        /* An inode that cannot be read (corrupt, and reported) is listed
+           by its name all the same, as Linux lists it - an empty read-only
+           file; opening it fails. It used to be left out: the damage was
+           hidden. */
+        DEBUG(DL_ERR, ("Ext2EntryInfo: inode %xh (%wZ) cannot be read\n", Ino, Name));
+        RtlZeroMemory(&Inode, sizeof(Inode));
+        Inode.i_ino = Ino;
+        Inode.i_sb = &Vcb->sb;
+        Inode.i_mode = S_IFREG;
+    }
+
+    /* a symlink is shown as its target is: the lookup resolves it */
+    if (S_ISLNK(Inode.i_mode)) {
+        Mcb = NULL;
+        Ext2LookupFile(IrpContext, Vcb, Name, Dcb->Mcb, &Mcb, 0);
+        if (Mcb != NULL) {
+            if (!IsMcbSpecialFile(Mcb)) {
+                Ext2EntryFromName(Vcb, Mcb, E);
+                Ext2DerefMcb(Mcb);
+                return;
+            }
+            Ext2DerefMcb(Mcb);
+        }
+    }
+
+    Ext2EntryFromInode(Vcb, &Inode, E);
+}
+
+/*
+ * One entry of a directory listing into Buffer at UsedLength (8-aligned),
+ * Length bytes left there. A first entry that does not fit whole is
+ * returned cut, as STATUS_BUFFER_OVERFLOW; a later one is refused so.
+ */
 NTSTATUS
 Ext2ProcessEntry(
     IN PEXT2_IRP_CONTEXT    IrpContext,
@@ -63,308 +208,86 @@ Ext2ProcessEntry(
     IN BOOLEAN              Single
 )
 {
-    PFILE_DIRECTORY_INFORMATION     FDI = NULL;
-    PFILE_FULL_DIR_INFORMATION      FFI = NULL;
-    PFILE_ID_FULL_DIR_INFORMATION   FIF = NULL;
-
-    PFILE_BOTH_DIR_INFORMATION      FBI = NULL;
-    PFILE_ID_BOTH_DIR_INFORMATION   FIB = NULL;
-
-    PFILE_NAMES_INFORMATION         FNI = NULL;
-
-    PEXT2_MCB   Mcb = NULL;
-    PEXT2_MCB   Target = NULL;
-
-    NTSTATUS    Status = STATUS_SUCCESS;
-    struct inode Inode = { 0 };
-
-    ULONG InfoLength = 0;
-    ULONG NameLength = 0;
-    LONGLONG FileSize = 0;
-    LONGLONG AllocationSize;
-    ULONG   FileAttributes = 0;
-
-    BOOLEAN IsEntrySymlink = FALSE;
+    PUCHAR          Entry = (PUCHAR)Buffer + UsedLength;
+    ULONG           InfoLength = Ext2GetInfoLength(FileInformationClass);
+    ULONG           NameLength = pName->Length;
+    ULONG           Copied;
+    EXT2_ENTRY_INFO E;
+    NTSTATUS        Status = STATUS_SUCCESS;
 
     *EntrySize = 0;
-    NameLength = pName->Length;
     ASSERT((UsedLength & 7) == 0);
 
-    InfoLength = Ext2GetInfoLength(FileInformationClass);
     if (InfoLength == 0) {
-        DEBUG(DL_ERR, ("Ext2ProcessDirEntry: Invalid Info Class %xh for %wZ in %wZ\n",
-                       FileInformationClass, pName, &Dcb->Mcb->FullName ));
+        DEBUG(DL_ERR, ("Ext2ProcessEntry: invalid class %xh for %wZ in %wZ\n",
+                       FileInformationClass, pName, &Dcb->Mcb->FullName));
         return STATUS_INVALID_INFO_CLASS;
     }
-
-    if (InfoLength + NameLength > Length)  {
-        DEBUG(DL_INF, ( "Ext2PricessDirEntry: Buffer is not enough.\n"));
+    if (InfoLength + NameLength > Length) {
+        if (UsedLength != 0 || InfoLength > Length) {
+            return STATUS_BUFFER_OVERFLOW;
+        }
         Status = STATUS_BUFFER_OVERFLOW;
-        if (UsedLength || InfoLength > Length) {
-            DEBUG(DL_CP, ("Ext2ProcessDirEntry: Buffer overflows for %wZ in %wZ\n",
-                          pName, &Dcb->Mcb->FullName ));
-            return Status;
-        }
     }
 
-    DEBUG(DL_CP, ("Ext2ProcessDirEntry: %wZ in %wZ\n", pName, &Dcb->Mcb->FullName ));
+    Ext2EntryInfo(IrpContext, Vcb, Dcb, in, pName, &E);
 
-    Mcb = Ext2SearchMcb(Vcb, Dcb->Mcb, pName);
-    if (NULL != Mcb) {
-        /* a link not followed yet, or demoted: its target may exist now
-           (under LinkLock, like every change of a link) */
-        if (S_ISLNK(Mcb->Inode->i_mode)) {
-            Ext2ResolveLink(IrpContext, Vcb, Mcb, 0, FALSE);
-        }
+    if (E.Attributes == 0) {
+        E.Attributes = FILE_ATTRIBUTE_NORMAL;
+    }
+    /* Recycled, RECYCLER, pagefile.sys in the root: hidden and system */
+    if (IsRoot(Dcb) && Ext2IsSpecialSystemFile(pName, IsFlagOn(E.Attributes, FILE_ATTRIBUTE_DIRECTORY))) {
+        SetFlag(E.Attributes, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+    }
+    /* a name starting with '.', but not "." or "..": hidden, the Unix
+       convention */
+    if (pName->Length >= 2 * sizeof(WCHAR) && pName->Buffer[0] == L'.' &&
+        (pName->Length > 2 * sizeof(WCHAR) || pName->Buffer[1] != L'.')) {
+        SetFlag(E.Attributes, FILE_ATTRIBUTE_HIDDEN);
+    }
+
+    /* the fields every class has */
+    if (!Single) {
+        ((PFILE_DIRECTORY_INFORMATION)Entry)->NextEntryOffset =
+            CEILING_ALIGNED(ULONG, InfoLength + NameLength, 8);
+    }
+    ((PFILE_DIRECTORY_INFORMATION)Entry)->FileIndex = FileIndex;
+
+    if (FileInformationClass == FileNamesInformation) {
+
+        ((PFILE_NAMES_INFORMATION)Entry)->FileNameLength = NameLength;
 
     } else {
 
-        /* an open hard link of this inode may be ahead of the disk */
-        Inode.i_ino = in;
-        Inode.i_sb = &Vcb->sb;
-        if (!Ext2PeekCachedInode(Vcb, in, &Inode) &&
-            !Ext2LoadInode(Vcb, &Inode)) {
-            DEBUG(DL_ERR, ("Ext2PricessDirEntry: Loading inode %xh (%wZ) error.\n",
-                           in, pName ));
-            Status = STATUS_SUCCESS;
-            goto errorout;
-        }
+        PFILE_DIRECTORY_INFORMATION FDI = (PFILE_DIRECTORY_INFORMATION)Entry;
 
-        if (S_ISLNK(Inode.i_mode)) {
-            DEBUG(DL_RES, ("Ext2ProcessDirEntry: SymLink: %wZ\\%wZ\n",
-                           &Dcb->Mcb->FullName, pName));
-            Ext2LookupFile(IrpContext, Vcb, pName, Dcb->Mcb, &Mcb,0);
-
-            if (Mcb && IsMcbSpecialFile(Mcb)) {
-                Ext2DerefMcb(Mcb);
-                Mcb = NULL;
-            }
-        } else if (!S_ISDIR(Inode.i_mode) && !S_ISREG(Inode.i_mode)) {
-            /* a device node, a fifo, a socket: no size to show */
-            Inode.i_size = 0;
-        }
-    }
-
-    if (Mcb != NULL)  {
-
-        FileAttributes = Mcb->FileAttr;
-        if (IsMcbSymLink(Mcb)) {
-            /* the target, held while it is looked at (a demotion of the
-               link may drop it meanwhile) */
-            Target = Ext2ReferLinkTarget(Vcb, Mcb);
-            if (Target == NULL || IsFileDeleted(Target)) {
-                ClearFlag(FileAttributes, FILE_ATTRIBUTE_DIRECTORY);
-                FileSize = 0;
-            } else if (IsMcbDirectory(Target)) {
-                FileSize = 0;
-                FileAttributes |= FILE_ATTRIBUTE_DIRECTORY;
-            } else {
-                FileSize = Target->Inode->i_size;
-            }
-            if (Target) {
-                Ext2DerefMcb(Target);
-                Target = NULL;
-            }
-        } else {
-            if (IsMcbDirectory(Mcb)) {
-                FileSize = 0;
-            } else {
-                FileSize = Mcb->Inode->i_size;
-            }
-        }
-
-        if (IsInodeSymLink(Mcb->Inode)) {
-            IsEntrySymlink = TRUE;
-        }
-
-    } else {
-
-        if (S_ISDIR(Inode.i_mode)) {
-            FileSize = 0;
-        } else {
-            FileSize  = Inode.i_size;
-        }
-
-        if (S_ISDIR(Inode.i_mode)) {
-            FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
-        } else if (S_ISLNK(Inode.i_mode)) {
-            FileAttributes = FILE_ATTRIBUTE_REPARSE_POINT;
-            IsEntrySymlink = TRUE;
-        } else {
-            FileAttributes = FILE_ATTRIBUTE_NORMAL;
-        }
-
-        if (!Ext2IsOwnerWritable(Inode.i_mode) || Ext4IsImmutable(&Inode) ||
-            !Ext2CheckInodeAccess(Vcb, &Inode, Ext2FileCanWrite)) {
-            SetFlag(FileAttributes, FILE_ATTRIBUTE_READONLY);
-        }
-    }
-
-    if (FileAttributes == 0)
-        FileAttributes = FILE_ATTRIBUTE_NORMAL;
-
-    AllocationSize = CEILING_ALIGNED(ULONGLONG, FileSize, BLOCK_SIZE);
-
-    /* process special files under root directory */
-    if (IsRoot(Dcb)) {
-        /* set hidden and system attributes for Recycled /
-           RECYCLER / pagefile.sys */
-        BOOLEAN IsDirectory = IsFlagOn(FileAttributes, FILE_ATTRIBUTE_DIRECTORY);
-        if (Ext2IsSpecialSystemFile(pName, IsDirectory)) {
-            SetFlag(FileAttributes, FILE_ATTRIBUTE_HIDDEN);
-            SetFlag(FileAttributes, FILE_ATTRIBUTE_SYSTEM);
-        }
-    }
-
-    /* set hidden attribute for all entries starting with '.' */
-    if (( pName->Length >= 4 && pName->Buffer[0] == L'.') &&
-            ((pName->Length == 4 && pName->Buffer[1] != L'.') ||
-             pName->Length >= 6 )) {
-        SetFlag(FileAttributes, FILE_ATTRIBUTE_HIDDEN);
-    }
-
-    switch (FileInformationClass) {
-
-    case FileIdFullDirectoryInformation:
-        FIF = (PFILE_ID_FULL_DIR_INFORMATION) ((PUCHAR)Buffer + UsedLength);
-    case FileFullDirectoryInformation:
-        FFI = (PFILE_FULL_DIR_INFORMATION) ((PUCHAR)Buffer + UsedLength);
-    case FileDirectoryInformation:
-        FDI = (PFILE_DIRECTORY_INFORMATION) ((PUCHAR)Buffer + UsedLength);
-
-        if (!Single) {
-            FDI->NextEntryOffset = CEILING_ALIGNED(ULONG, InfoLength + NameLength, 8);
-        }
-
-        FDI->FileIndex = FileIndex;
-
-        if (Mcb) {
-
-            FDI->CreationTime = Mcb->Icb->CreationTime;
-            FDI->LastAccessTime = Mcb->Icb->LastAccessTime;
-            FDI->LastWriteTime = Mcb->Icb->LastWriteTime;
-            FDI->ChangeTime = Mcb->Icb->ChangeTime;
-
-        } else {
-
-            FDI->LastAccessTime = Ext2GetInodeTime(Inode.i_atime, Inode.i_atime_extra);
-            FDI->LastWriteTime = Ext2GetInodeTime(Inode.i_mtime, Inode.i_mtime_extra);
-            FDI->ChangeTime = Ext2GetInodeTime(Inode.i_ctime, Inode.i_ctime_extra);
-            if (Inode.i_crtime)
-                FDI->CreationTime = Ext2GetInodeTime(Inode.i_crtime, Inode.i_crtime_extra);
-            else
-                FDI->CreationTime = Ext2GetInodeTime(Inode.i_ctime, Inode.i_ctime_extra);
-        }
-
-        FDI->FileAttributes = FileAttributes;
-        FDI->EndOfFile.QuadPart = FileSize;
-        FDI->AllocationSize.QuadPart = AllocationSize;
-
+        FDI->CreationTime = E.CreationTime;
+        FDI->LastAccessTime = E.LastAccessTime;
+        FDI->LastWriteTime = E.LastWriteTime;
+        FDI->ChangeTime = E.ChangeTime;
+        FDI->EndOfFile.QuadPart = E.FileSize;
+        FDI->AllocationSize.QuadPart = CEILING_ALIGNED(ULONGLONG, E.FileSize, BLOCK_SIZE);
+        FDI->FileAttributes = E.Attributes;
         FDI->FileNameLength = NameLength;
-        if (InfoLength + NameLength > Length) {
-            NameLength = Length - InfoLength;
+
+        /* a reparse point's tag stands where its EA size would (NTFS) */
+        if (FileInformationClass != FileDirectoryInformation && E.Symlink) {
+            ((PFILE_FULL_DIR_INFORMATION)Entry)->EaSize = IO_REPARSE_TAG_SYMLINK;
         }
-
-        if (FIF) {
-            FIF->FileId.QuadPart = (LONGLONG) in;
-            if (IsEntrySymlink) {
-                FIF->EaSize = IO_REPARSE_TAG_SYMLINK;
-            }
-            RtlCopyMemory(&FIF->FileName[0], &pName->Buffer[0], NameLength);
-        } else if (FFI) {
-            if (IsEntrySymlink) {
-                FFI->EaSize = IO_REPARSE_TAG_SYMLINK;
-            }
-            RtlCopyMemory(&FFI->FileName[0], &pName->Buffer[0], NameLength);
-        } else {
-            RtlCopyMemory(&FDI->FileName[0], &pName->Buffer[0], NameLength);
+        if (FileInformationClass == FileIdFullDirectoryInformation) {
+            ((PFILE_ID_FULL_DIR_INFORMATION)Entry)->FileId.QuadPart = (LONGLONG)in;
+        } else if (FileInformationClass == FileIdBothDirectoryInformation) {
+            ((PFILE_ID_BOTH_DIR_INFORMATION)Entry)->FileId.QuadPart = (LONGLONG)in;
         }
-
-        *EntrySize = InfoLength + NameLength;
-        break;
-
-
-    case FileIdBothDirectoryInformation:
-        FIB = (PFILE_ID_BOTH_DIR_INFORMATION)((PUCHAR)Buffer + UsedLength);
-    case FileBothDirectoryInformation:
-        FBI = (PFILE_BOTH_DIR_INFORMATION) ((PUCHAR)Buffer + UsedLength);
-
-        if (!Single) {
-            FBI->NextEntryOffset = CEILING_ALIGNED(ULONG, InfoLength + NameLength, 8);
-        }
-
-        FBI->FileIndex = FileIndex;
-        FBI->EndOfFile.QuadPart = FileSize;
-        FBI->AllocationSize.QuadPart = AllocationSize;
-
-        if (Mcb) {
-
-            FBI->CreationTime = Mcb->Icb->CreationTime;
-            FBI->LastAccessTime = Mcb->Icb->LastAccessTime;
-            FBI->LastWriteTime = Mcb->Icb->LastWriteTime;
-            FBI->ChangeTime = Mcb->Icb->ChangeTime;
-
-        } else {
-
-            FBI->LastAccessTime = Ext2GetInodeTime(Inode.i_atime, Inode.i_atime_extra);
-            FBI->LastWriteTime = Ext2GetInodeTime(Inode.i_mtime, Inode.i_mtime_extra);
-            FBI->ChangeTime = Ext2GetInodeTime(Inode.i_ctime, Inode.i_ctime_extra);
-            if (Inode.i_crtime)
-                FBI->CreationTime = Ext2GetInodeTime(Inode.i_crtime, Inode.i_crtime_extra);
-            else
-                FBI->CreationTime = Ext2GetInodeTime(Inode.i_ctime, Inode.i_ctime_extra);
-        }
-
-        FBI->FileAttributes = FileAttributes;
-
-        FBI->FileNameLength = NameLength;
-        if (InfoLength + NameLength > Length) {
-            NameLength = Length - InfoLength;
-        }
-
-        if (FIB) {
-            FIB->FileId.QuadPart = (LONGLONG)in;
-            if (IsEntrySymlink) {
-                FIB->EaSize = IO_REPARSE_TAG_SYMLINK;
-            }
-            RtlCopyMemory(&FIB->FileName[0], &pName->Buffer[0], NameLength);
-        } else {
-            RtlCopyMemory(&FBI->FileName[0], &pName->Buffer[0], NameLength);
-        }
-
-        *EntrySize = InfoLength + NameLength;
-        break;
-
-    case FileNamesInformation:
-
-        FNI = (PFILE_NAMES_INFORMATION) ((PUCHAR)Buffer + UsedLength);
-        if (!Single) {
-            FNI->NextEntryOffset = CEILING_ALIGNED(ULONG, InfoLength + NameLength, 8);
-        }
-
-        FNI->FileNameLength = NameLength;
-        if (InfoLength + NameLength > Length) {
-            NameLength = Length - InfoLength;
-        }
-        RtlCopyMemory(&FNI->FileName[0], &pName->Buffer[0], NameLength);
-
-        *EntrySize = InfoLength + NameLength;
-        break;
-
-    default:
-        Status = STATUS_INVALID_INFO_CLASS;
-        break;
     }
 
-    if (Mcb) {
-        Ext2DerefMcb(Mcb);
-    }
+    /* the name, cut to what fits */
+    Copied = min(NameLength, Length - InfoLength);
+    RtlCopyMemory(Entry + InfoLength, pName->Buffer, Copied);
+    *EntrySize = InfoLength + Copied;
 
-errorout:
-
-    DEBUG(DL_CP, ("Ext2ProcessDirEntry: Status = %xh for %wZ in %wZ\n",
-                  Status, pName, &Dcb->Mcb->FullName ));
-
+    DEBUG(DL_CP, ("Ext2ProcessEntry: Status = %xh for %wZ in %wZ\n",
+                  Status, pName, &Dcb->Mcb->FullName));
     return Status;
 }
 
@@ -412,112 +335,126 @@ Ext2IsWearingCloak(
     return FALSE;
 }
 
-int Ext2FillEntry(void *context, const char *name, int namlen,
-                         ULONG offset, __u32 ino, unsigned int d_type)
+/* the entry's name in the query's buffer, which grows when a name needs more */
+static NTSTATUS
+Ext2FillName(IN PEXT2_VCB Vcb, IN OUT PEXT2_FILLDIR_CONTEXT fc, IN POEM_STRING Oem)
 {
+    ULONG Bytes = Ext2OEMToUnicodeSize(Vcb, Oem) + sizeof(WCHAR);
+
+    if (Bytes > fc->efc_name.MaximumLength) {
+        PWCHAR Buffer = Ext2AllocatePool(PagedPool, Bytes, EXT2_INAME_MAGIC);
+        if (Buffer == NULL) {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        if (fc->efc_name.Buffer != NULL) {
+            DEC_MEM_COUNT(PS_INODE_NAME, fc->efc_name.Buffer, fc->efc_name.MaximumLength);
+            Ext2FreePool(fc->efc_name.Buffer, EXT2_INAME_MAGIC);
+        }
+        INC_MEM_COUNT(PS_INODE_NAME, Buffer, Bytes);
+        fc->efc_name.Buffer = Buffer;
+        fc->efc_name.MaximumLength = (USHORT)Bytes;
+    }
+    fc->efc_name.Length = 0;
+    RtlZeroMemory(fc->efc_name.Buffer, fc->efc_name.MaximumLength);
+    return Ext2OEMToUnicode(Vcb, &fc->efc_name, Oem);
+}
+
+/* the buffer of names a query used (Ext2FillName) */
+VOID
+Ext2FreeFillName(IN OUT PEXT2_FILLDIR_CONTEXT fc)
+{
+    if (fc->efc_name.Buffer != NULL) {
+        DEC_MEM_COUNT(PS_INODE_NAME, fc->efc_name.Buffer, fc->efc_name.MaximumLength);
+        Ext2FreePool(fc->efc_name.Buffer, EXT2_INAME_MAGIC);
+        RtlZeroMemory(&fc->efc_name, sizeof(fc->efc_name));
+    }
+}
+
+/*
+ * One directory entry into a query's buffer, for both the indexed walk
+ * (ext3_dx_readdir) and the walk in disk order (Ext2QueryDirectory). 0: go
+ * on with the next entry. Not 0: stop before this entry - the buffer is
+ * full, one entry was asked for, or the fill failed (efc_status says why);
+ * the entry is the next query's.
+ */
+int Ext2FillEntry(void *context, const char *name, int namlen,
+                  ULONG offset, __u32 ino, unsigned int d_type)
+{
+    PEXT2_FILLDIR_CONTEXT   fc = context;
+    PEXT2_IRP_CONTEXT       IrpContext = fc->efc_irp;
+    PEXT2_FCB               Fcb = IrpContext->Fcb;
+    PEXT2_CCB               Ccb = IrpContext->Ccb;
+    PEXT2_VCB               Vcb = Fcb->Vcb;
+    PUNICODE_STRING         Pattern = &Ccb->DirectorySearchPattern;
+    OEM_STRING              Oem;
+    ULONG                   Start, EntrySize;
+    NTSTATUS                Status;
+
     UNREFERENCED_PARAMETER(d_type);
-    PEXT2_FILLDIR_CONTEXT fc = context;
-    PEXT2_IRP_CONTEXT IrpContext = fc->efc_irp;
 
-    PEXT2_FCB       Fcb = IrpContext->Fcb;
-    PEXT2_CCB       Ccb = IrpContext->Ccb;
-    PEXT2_VCB       Vcb = Fcb->Vcb;
-
-    OEM_STRING      Oem;
-    UNICODE_STRING  Unicode = { 0 };
-    NTSTATUS        Status = STATUS_SUCCESS;
-    ULONG           EntrySize;
-    USHORT          NameLen;
-    int             rc = 0;
-
-    if (fc->efc_start > 0 && (fc->efc_single || (fc->efc_size <
-                              fc->efc_start +  namlen * 2 + Ext2GetInfoLength(fc->efc_fi)) )) {
-        rc = 1;
-        goto errorout;
+    if (fc->efc_start > 0 &&
+        (fc->efc_single ||
+         fc->efc_size < fc->efc_start + namlen * sizeof(WCHAR) + Ext2GetInfoLength(fc->efc_fi))) {
+        return 1;
     }
 
-
-    Oem.Buffer = (void *)name;
-    Oem.Length = namlen & 0xFF;
+    Oem.Buffer = (PCHAR)name;
+    Oem.Length = (USHORT)(namlen & 0xFF);
     Oem.MaximumLength = Oem.Length;
 
-    /* "." and ".." are reported for every directory but the root, the
-       way NTFS and FAT do it (see Ext2QueryDirectory) */
-    if ((Oem.Length == 1 && name[0] == '.') || (Oem.Length == 2 &&
-            name[0] == '.' && name[1] == '.' )) {
+    /* "." and ".." are reported for every directory but the root, the way
+       NTFS and FAT report them: a first "*" query then always finds
+       something, which Win32 callers rely on - skipping them made
+       FindFirstFile on an empty directory fail with ERROR_NO_MORE_FILES,
+       and .NET's Directory.Delete with it */
+    if ((Oem.Length == 1 && name[0] == '.') ||
+        (Oem.Length == 2 && name[0] == '.' && name[1] == '.')) {
         if (IsRoot(Fcb)) {
-            goto errorout;
+            return 0;
         }
-    } else if (Ext2IsWearingCloak(Vcb, &Oem)) {
-        goto errorout;
+    } else if (Oem.Length == 0 || Ext2IsWearingCloak(Vcb, &Oem)) {
+        return 0;
     }
 
-    NameLen = (USHORT)Ext2OEMToUnicodeSize(Vcb, &Oem);
-    if (NameLen <= 0) {
-        fc->efc_status = STATUS_INSUFFICIENT_RESOURCES;
-        rc = -ENOMEM;
-        goto errorout;
-    }
+    /* an entry exists that Windows may see, matching the pattern or not:
+       an empty directory is told apart from a pattern that matched nothing */
+    fc->efc_visible = TRUE;
 
-    Unicode.MaximumLength = NameLen + 2;
-    Unicode.Buffer = Ext2AllocatePool(
-                         PagedPool,
-                         Unicode.MaximumLength,
-                         EXT2_INAME_MAGIC
-                     );
-    if (!Unicode.Buffer) {
-        DEBUG(DL_ERR, ( "Ext2QueryDirectory: failed to "
-                        "allocate InodeFileName.\n"));
-        fc->efc_status = STATUS_INSUFFICIENT_RESOURCES;
-        rc = -ENOMEM;
-        goto errorout;
-    }
-    RtlZeroMemory(Unicode.Buffer, Unicode.MaximumLength);
-    INC_MEM_COUNT(PS_INODE_NAME, Unicode.Buffer, Unicode.MaximumLength);
-
-    Status = Ext2OEMToUnicode(Vcb, &Unicode, &Oem);
+    Status = Ext2FillName(Vcb, fc, &Oem);
     if (!NT_SUCCESS(Status)) {
-        DEBUG(DL_ERR, ( "Ext2QueryDirectory: Ext2OEMtoUnicode failed with %xh.\n", Status));
-        fc->efc_status = STATUS_INSUFFICIENT_RESOURCES;
-        rc = -ENOMEM;
-        goto errorout;
+        fc->efc_status = Status;
+        return 1;
     }
 
-    if (FsRtlDoesNameContainWildCards( &Ccb->DirectorySearchPattern) ?
-            FsRtlIsNameInExpression(&Ccb->DirectorySearchPattern,
-                                    &Unicode, TRUE, NULL) :
-            !RtlCompareUnicodeString(&Ccb->DirectorySearchPattern,
-                                     &Unicode, TRUE)) {
-        Status = Ext2ProcessEntry(fc->efc_irp, Vcb, Fcb, fc->efc_fi, ino, fc->efc_buf,
-                                  CEILING_ALIGNED(ULONG, fc->efc_start, 8),
-                                  fc->efc_size - CEILING_ALIGNED(ULONG, fc->efc_start, 8),
-                                  offset, &Unicode, &EntrySize, fc->efc_single);
-        if (NT_SUCCESS(Status)) {
-            if (EntrySize > 0) {
-                fc->efc_prev = CEILING_ALIGNED(ULONG, fc->efc_start, 8);
-                fc->efc_start = fc->efc_prev + EntrySize;
-            }
-        } else {
-            if (Status == STATUS_BUFFER_OVERFLOW) {
-                if (fc->efc_start == 0) {
-                    fc->efc_start = EntrySize;
-                } else {
-                    Status = STATUS_SUCCESS;
-                }
-            }
-            rc = 1;
+    if (FsRtlDoesNameContainWildCards(Pattern) ?
+            !FsRtlIsNameInExpression(Pattern, &fc->efc_name, TRUE, NULL) :
+            RtlCompareUnicodeString(Pattern, &fc->efc_name, TRUE) != 0) {
+        return 0;
+    }
+
+    Start = CEILING_ALIGNED(ULONG, fc->efc_start, 8);
+    Status = Ext2ProcessEntry(IrpContext, Vcb, Fcb, fc->efc_fi, ino, fc->efc_buf,
+                              Start, fc->efc_size - Start, offset, &fc->efc_name,
+                              &EntrySize, fc->efc_single);
+    if (NT_SUCCESS(Status)) {
+        if (EntrySize > 0) {
+            fc->efc_prev = Start;
+            fc->efc_start = Start + EntrySize;
         }
+        return 0;
     }
 
-errorout:
-
-    fc->efc_status = Status;
-    if (Unicode.Buffer) {
-        DEC_MEM_COUNT(PS_INODE_NAME, Unicode.Buffer, Unicode.MaximumLength );
-        Ext2FreePool(Unicode.Buffer, EXT2_INAME_MAGIC);
+    /* an entry that does not fit: the first one is returned cut, as
+       STATUS_BUFFER_OVERFLOW; after others it is the next query's */
+    if (Status == STATUS_BUFFER_OVERFLOW) {
+        if (fc->efc_start == 0) {
+            fc->efc_start = EntrySize;
+            fc->efc_status = Status;
+        }
+    } else {
+        fc->efc_status = Status;
     }
-
-    return rc;
+    return 1;
 }
 
 NTSTATUS
@@ -674,6 +611,20 @@ Ext2NotifyReportChange (
                                  (ULONG) Filter,
                                  (ULONG) Action,
                                  (PVOID) NULL );
+}
+
+/* a name came, went or changed: a directory's or a file's, as watchers filter them */
+VOID
+Ext2NotifyNameChange (
+    IN PEXT2_IRP_CONTEXT IrpContext,
+    IN PEXT2_VCB         Vcb,
+    IN PEXT2_MCB         Mcb,
+    IN ULONG             Action   )
+{
+    Ext2NotifyReportChange(IrpContext, Vcb, Mcb,
+                           IsMcbDirectory(Mcb) ? FILE_NOTIFY_CHANGE_DIR_NAME :
+                                                 FILE_NOTIFY_CHANGE_FILE_NAME,
+                           Action);
 }
 
 NTSTATUS

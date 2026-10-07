@@ -36,7 +36,7 @@ New-Item -ItemType Directory -Force -Path $Output | Out-Null
 $Output = (Resolve-Path -LiteralPath $Output).Path
 $source = [IO.File]::ReadAllText("$PSScriptRoot/write-path-model.c") + "`n" +
     (ProductionFunction 'core/BlockRuns.c' 'Ext2BuildExtents' '') + "`n" +
-    (ProductionFunction 'fsd/FileWrite.c' 'Ext2WriteInode' 'Ext2WriteFile') + "`n" +
+    (ProductionFunction 'fsd/FileWrite.c' 'Ext2WriteInode' 'Ext2ThrottleWrite') + "`n" +
     (ProductionFunction 'fsd/ReparsePoints.c' 'Ext2WriteSymlink' 'Ext2SetReparsePoint')
 $generated = Join-Path $Output 'production-probe.c'
 [IO.File]::WriteAllText($generated,$source,[Text.UTF8Encoding]::new($false))

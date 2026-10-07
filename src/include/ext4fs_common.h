@@ -89,15 +89,18 @@ Ext2TraceIrpContext(BOOLEAN _n, PEXT2_IRP_CONTEXT IrpContext)
 #endif
 }
 
+/* one directory query as the entries are filled in (Ext2FillEntry) */
 typedef struct _EXT2_FILLDIR_CONTEXT {
     PEXT2_IRP_CONTEXT       efc_irp;
     PUCHAR                  efc_buf;
     ULONG                   efc_size;
-    ULONG                   efc_start;
-    ULONG                   efc_prev;
-    NTSTATUS                efc_status;
+    ULONG                   efc_start;      /* bytes filled */
+    ULONG                   efc_prev;       /* the last entry filled */
+    NTSTATUS                efc_status;     /* why the fill stopped, if it failed */
     FILE_INFORMATION_CLASS  efc_fi;
     BOOLEAN                 efc_single;
+    BOOLEAN                 efc_visible;    /* an entry Windows may see was met */
+    UNICODE_STRING          efc_name;       /* the entry's name, one buffer per query */
 } EXT2_FILLDIR_CONTEXT, *PEXT2_FILLDIR_CONTEXT;
 
 #endif /* _EXT4_EXT4FS_COMMON_H_ */

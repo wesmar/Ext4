@@ -261,7 +261,6 @@ Ext2PerformRegistryVolumeParams(IN PEXT2_VCB Vcb)
         }
 
         /* set the default codepage */
-        Vcb->Codepage.PageTable = Ext2Global->Codepage.PageTable;
         memcpy(Vcb->Codepage.AnsiName, Ext2Global->Codepage.AnsiName, CODEPAGE_MAXLEN);
         Vcb->Codepage.PageTable = Ext2Global->Codepage.PageTable;
 

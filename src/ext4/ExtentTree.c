@@ -269,6 +269,7 @@ static int __ext4_ext_check(const char *function, unsigned int line,
     UNREFERENCED_PARAMETER(function);
     UNREFERENCED_PARAMETER(line);
 	const char *error_msg;
+	int err = -EFSCORRUPTED;
 
 	if (eh->eh_magic != EXT4_EXT_MAGIC) {
 		error_msg = "invalid magic";
@@ -302,15 +303,17 @@ static int __ext4_ext_check(const char *function, unsigned int line,
 	   the inode's checksum: it has no tail. */
 	if (depth != ext_depth(inode) && !ext4_extent_block_csum_verify(inode, eh)) {
 		error_msg = "checksum does not match";
+		err = -EFSBADCRC;
 		goto corrupted;
 	}
 
 	return 0;
 
 corrupted:
-	DbgPrint("ext4: inode %u: extent node (block %I64u, depth %d): %s\n",
-		 (ULONG)inode->i_ino, (ULONGLONG)pblk, depth, error_msg);
-	return -EIO;
+	DEBUG(DL_ERR, ("inode %u: extent node at block %I64u, depth %d: %s\n",
+		       (ULONG)inode->i_ino, (ULONGLONG)pblk, depth, error_msg));
+	Ext2ReportCorruption((PEXT2_VCB)inode->i_sb->s_priv, (ULONG)inode->i_ino, pblk, err);
+	return err;
 }
 
 /*

@@ -215,7 +215,8 @@ typedef struct _EXT2_GLOBAL {
 #define EXT2_UNLOAD_PENDING     0x00000001
 #define EXT2_SUPPORT_WRITING    0x00000002
 #define EXT3_FORCE_WRITING      0x00000004
-#define EXT2_CHECKING_BITMAP    0x00000008
+                                            /* 0x00000008: was the mount-time bitmap "repair";
+                                               every bitmap is checked when read now */
 #define EXT2_AUTO_MOUNT         0x00000010
 #define EXT2_DEVICES_DELETED    0x00000020  /* control devices already gone (DeviceControl.c) */
 

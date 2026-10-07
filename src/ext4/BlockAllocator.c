@@ -44,6 +44,53 @@ Ext2GroupBlocks(IN PEXT2_VCB Vcb, IN ULONG Group)
 
 /* ---------------------------------------------------------------- one group */
 
+/* [Block, Block + Count) lies in the group the bitmap maps, all of it set */
+static BOOLEAN
+Ext2BlocksMarked(IN PRTL_BITMAP Bitmap, IN ULONGLONG First, IN ULONGLONG Block, IN ULONG Count)
+{
+    return Block >= First && Block - First + Count <= Bitmap->SizeOfBitMap &&
+           RtlAreBitsSet(Bitmap, (ULONG)(Block - First), Count);
+}
+
+/*
+ * A block bitmap from disk, checked once (Linux: ext4_validate_block_bitmap):
+ * its checksum, and - without flex_bg, where a group's bitmaps and inode
+ * table lie inside it - that it marks them in use. One that fails takes
+ * its group out of use for this mount: nothing is allocated there, nothing
+ * given back, it is reported once.
+ */
+static NTSTATUS
+Ext2CheckBlockBitmap(IN PEXT2_VCB Vcb, IN ULONG Group, IN struct ext4_group_desc *gd,
+                     IN struct buffer_head *bh)
+{
+    struct super_block *sb = &Vcb->sb;
+    RTL_BITMAP          Bitmap;
+    ULONGLONG           First = Ext2GroupFirst(Vcb, Group);
+    int                 Err = 0;
+
+    if (buffer_verified(bh)) {
+        return STATUS_SUCCESS;
+    }
+    if (!ext4_block_bitmap_csum_verify(sb, Group, gd, bh)) {
+        Err = -EFSBADCRC;
+    } else if (!EXT3_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_FLEX_BG)) {
+        RtlInitializeBitMap(&Bitmap, (PULONG)bh->b_data, Ext2GroupBlocks(Vcb, Group));
+        if (!Ext2BlocksMarked(&Bitmap, First, ext4_block_bitmap(sb, gd), 1) ||
+            !Ext2BlocksMarked(&Bitmap, First, ext4_inode_bitmap(sb, gd), 1) ||
+            !Ext2BlocksMarked(&Bitmap, First, ext4_inode_table(sb, gd), Vcb->sbi.s_itb_per_group)) {
+            Err = -EFSCORRUPTED;
+        }
+    }
+    if (Err != 0) {
+        if (Ext2MarkGroupCorrupt(Vcb, Group, EXT2_GROUP_BLOCK_BITMAP)) {
+            Ext2ReportCorruption(Vcb, 0, bh->b_blocknr, Err);
+        }
+        return STATUS_DISK_CORRUPT_ERROR;
+    }
+    set_buffer_verified(bh);
+    return STATUS_SUCCESS;
+}
+
 /* the block bitmap of Group; one lazy mkfs never wrote is built and published first */
 static NTSTATUS
 Ext2LoadBlockBitmap(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group,
@@ -51,6 +98,10 @@ Ext2LoadBlockBitmap(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG 
 {
     struct super_block *sb = &Vcb->sb;
     ext4_fsblk_t        Where = ext4_block_bitmap(sb, gd);
+
+    if (Ext2GroupCorrupt(Vcb, Group, EXT2_GROUP_BLOCK_BITMAP)) {
+        return STATUS_DISK_CORRUPT_ERROR;
+    }
 
     if (gd->bg_flags & cpu_to_le16(EXT4_BG_BLOCK_UNINIT)) {
         *Bh = sb_getblk_zero(sb, Where);
@@ -62,6 +113,7 @@ Ext2LoadBlockBitmap(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG 
            allocation ends up in this group */
         ext4_init_block_bitmap(sb, *Bh, Group, gd);
         set_buffer_uptodate(*Bh);
+        set_buffer_verified(*Bh);
         Ext2ClearGroupFlag(gd, EXT4_BG_BLOCK_UNINIT);
         ext4_block_bitmap_csum_set(sb, Group, gd, *Bh);
         mark_buffer_dirty(*Bh);
@@ -78,7 +130,7 @@ Ext2LoadBlockBitmap(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG 
             return Ext2WinntError(err);
         }
     }
-    return STATUS_SUCCESS;
+    return Ext2CheckBlockBitmap(Vcb, Group, gd, *Bh);
 }
 
 /*
@@ -109,7 +161,7 @@ Ext2RecountGroupBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULO
 /*
  * Allocate in Group, its stripe's BlockLock held: STATUS_SUCCESS with
  * *Block / *Number, STATUS_DISK_FULL when the group has nothing to give
- * (the next one is tried), anything else stops the search.
+ * or is out of use (the next one is tried), anything else stops the search.
  */
 static NTSTATUS
 Ext2AllocateInLockedGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group,
@@ -130,12 +182,13 @@ Ext2AllocateInLockedGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN 
     if (gd == NULL) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    if (ext4_free_blks_count(sb, gd) == 0) {
+    if (ext4_free_blks_count(sb, gd) == 0 || Ext2GroupCorrupt(Vcb, Group, EXT2_GROUP_BLOCK_BITMAP)) {
         return STATUS_DISK_FULL;
     }
     Status = Ext2LoadBlockBitmap(IrpContext, Vcb, Group, gd, Bh);
     if (!NT_SUCCESS(Status)) {
-        return Status;
+        /* a bitmap found corrupt just now: reported, and skipped like a full group */
+        return Status == STATUS_DISK_CORRUPT_ERROR ? STATUS_DISK_FULL : Status;
     }
 
     /* the caller's pointer width may leave only a prefix of the group */
@@ -161,10 +214,14 @@ Ext2AllocateInLockedGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN 
         return STATUS_DISK_FULL;
     }
 
-    /* a bitmap that marks metadata free is corrupt: nothing is handed out */
+    /* a bitmap that marks metadata free is corrupt: nothing is handed out
+       from it, and the search goes on in the other groups */
     ASSERT(Index < View.Bits && *Number <= View.Bits - Index);
     if (Ext2MetadataOverlaps(Vcb, First + Index, *Number)) {
-        return STATUS_DISK_CORRUPT_ERROR;
+        if (Ext2MarkGroupCorrupt(Vcb, Group, EXT2_GROUP_BLOCK_BITMAP)) {
+            Ext2ReportCorruption(Vcb, 0, First + Index, -EFSCORRUPTED);
+        }
+        return STATUS_DISK_FULL;
     }
 
     RtlInitializeBitMap(&Bitmap, (PULONG)(*Bh)->b_data, GroupBits);
@@ -208,7 +265,9 @@ Ext2AllocateInGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG 
 /*
  * Check (Apply FALSE) or release (Apply TRUE) blocks [Index, Index + Count)
  * of Group: every one must be taken on disk. A group lazy mkfs never
- * initialised has nothing allocated: a release there is corrupt.
+ * initialised has nothing allocated: a release there is corrupt. What the
+ * check finds is reported; the release finds it only when the bitmap
+ * changed in between.
  */
 static NTSTATUS
 Ext2ReleaseInGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group,
@@ -225,7 +284,10 @@ Ext2ReleaseInGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG G
     if (gd == NULL) {
         Status = STATUS_INSUFFICIENT_RESOURCES;
     } else if (gd->bg_flags & cpu_to_le16(EXT4_BG_BLOCK_UNINIT)) {
-        Status = STATUS_DISK_CORRUPT_ERROR;
+        Status = STATUS_DISK_CORRUPT_ERROR;         /* the owner's pointer is wrong */
+        if (!Apply) {
+            Ext2ReportCorruption(Vcb, 0, Ext2GroupFirst(Vcb, Group) + Index, -EFSCORRUPTED);
+        }
     } else {
         Status = Ext2LoadBlockBitmap(IrpContext, Vcb, Group, gd, &bh);
     }
@@ -233,7 +295,12 @@ Ext2ReleaseInGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG G
     if (NT_SUCCESS(Status)) {
         RtlInitializeBitMap(&Bitmap, (PULONG)bh->b_data, Ext2GroupBlocks(Vcb, Group));
         if (!RtlAreBitsSet(&Bitmap, Index, Count)) {
-            Status = STATUS_DISK_CORRUPT_ERROR;     /* freed already: a double free */
+            /* freed already: a double free, or a bitmap that lost them
+               (Linux takes the bitmap for corrupt, as here) */
+            Status = STATUS_DISK_CORRUPT_ERROR;
+            if (!Apply && Ext2MarkGroupCorrupt(Vcb, Group, EXT2_GROUP_BLOCK_BITMAP)) {
+                Ext2ReportCorruption(Vcb, 0, Ext2GroupFirst(Vcb, Group) + Index, -EFSCORRUPTED);
+            }
         }
     }
 
@@ -372,6 +439,7 @@ Ext2FreeBlock(
     /* 1. all of it taken, none of it metadata - checked before anything
           changes, so that a corrupt pointer frees nothing and revokes nothing */
     if (Ext2MetadataOverlaps(Vcb, Block, Number)) {
+        Ext2ReportCorruption(Vcb, 0, Block, -EFSCORRUPTED);
         return STATUS_DISK_CORRUPT_ERROR;
     }
     Status = Ext2ReleaseRange(IrpContext, Vcb, Block, Number, FALSE);
@@ -453,22 +521,27 @@ Ext2AllocateInodeBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN struct inode *Inode,
 }
 
 /*
- * Blocks of Inode given back. A release that fails leaves the owner's
- * pointer removed and the blocks still taken (or worse): the change that
- * removed the pointer must not commit, so the journal stops.
+ * Blocks of Inode given back. Ones found corrupt before anything changed
+ * (free already, metadata, a group out of use) are not the inode's to
+ * give back: reported, and let go of all the same, as Linux does - a leak
+ * at worst, which e2fsck reclaims. A release that fails otherwise leaves
+ * the owner's pointer removed and the blocks still taken: the change that
+ * removed the pointer must not commit, so the journal stops (a release
+ * that failed half way has stopped it already).
  */
 NTSTATUS
 Ext2ReleaseInodeBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN struct inode *Inode,
                        IN ULONGLONG Block, IN ULONG Count)
 {
     PEXT2_VCB   Vcb = Inode->i_sb->s_priv;
+    ULONGLONG   Sectors = Ext2BlocksToSectors(Vcb, Count);
     NTSTATUS    Status;
 
     Status = Ext2FreeBlock(IrpContext, Vcb, Block, Count);
-    if (!NT_SUCCESS(Status)) {
+    if (!NT_SUCCESS(Status) && Status != STATUS_DISK_CORRUPT_ERROR) {
         Ext2JournalAbandon(Vcb, Status);
         return Status;
     }
-    Inode->i_blocks -= Ext2BlocksToSectors(Vcb, Count);
+    Inode->i_blocks -= min(Inode->i_blocks, Sectors);
     return STATUS_SUCCESS;
 }

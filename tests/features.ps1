@@ -221,7 +221,7 @@ public static class EaFile {
         using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
             byte[] buf = new byte[256 * 1024];
             int st = NtQueryEaFile(fs.SafeFileHandle, new long[2], buf, (uint)buf.Length, false, IntPtr.Zero, 0, IntPtr.Zero, true);
-            if (st == unchecked((int)0x80000012)) return r;    // STATUS_NO_MORE_EAS
+            if (st == unchecked((int)0x80000012) || st == unchecked((int)0xC0000052)) return r;    // STATUS_NO_MORE_EAS, STATUS_NO_EAS_ON_FILE
             if (st != 0) throw new IOException(string.Format("NtQueryEaFile 0x{0:X8}", st));
             for (int off = 0; ; ) {
                 int next = BitConverter.ToInt32(buf, off); int nl = buf[off + 5]; int vl = BitConverter.ToUInt16(buf, off + 6);
@@ -331,6 +331,14 @@ if ($uv) {
     [IO.File]::Delete("$uv\slow-60")
     Check 'both deleted, their targets kept' (-not (Test-Path -LiteralPath "$uv\fast-xattr") -and -not (Test-Path -LiteralPath "$uv\slow-60") -and
                                              [IO.File]::Exists("$uv\target.txt") -and (Get-ChildItem -LiteralPath $uv -Filter 'tttt*').Count -eq 1)
+    # the label: 16 bytes fill the superblock's field exactly; 17 do not
+    # fit, and change nothing (features.sh reads it, e2fsck its checksum)
+    $drive = New-Object IO.DriveInfo $uv.Substring(0, 1)
+    try { $drive.VolumeLabel = 'win-label-16byte' } catch { }
+    Check 'a 16-byte label set' ((New-Object IO.DriveInfo $uv.Substring(0, 1)).VolumeLabel -eq 'win-label-16byte')
+    $refused = $false
+    try { $drive.VolumeLabel = 'win-label-17bytes' } catch { $refused = $true }
+    Check '... a 17-byte one refused, the label kept' ($refused -and (New-Object IO.DriveInfo $uv.Substring(0, 1)).VolumeLabel -eq 'win-label-16byte')
 }
 
 "FEATURES-WIN: $fail failed"

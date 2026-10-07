@@ -34,8 +34,78 @@ void ext3_warning (struct super_block * sb, const char * function,
 static struct buffer_head *ext3_bread_mapped(struct ext2_icb *icb, struct inode *inode,
                                              PEXT2_MCB Mcb, unsigned long block, int *err);
 
+/*
+ * The checks a directory block passes once, as Linux's ext4_read_dirblock
+ * makes them. A block asked for as an index node must look like one; with
+ * metadata_csum its dx tail checksum, or a leaf's tail checksum, must match.
+ * A block that may be either - an index root, a node whose one entry spans
+ * it - is checked only when the caller knows it reads an index node: an
+ * empty leaf looks the same. A view of an inline directory has no tail.
+ */
+static int ext3_check_dirblock(struct inode *inode, struct buffer_head *bh,
+                               unsigned long block, BOOLEAN index)
+{
+    struct ext4_dir_entry *de = (struct ext4_dir_entry *)bh->b_data;
+    BOOLEAN dx_block = FALSE;
+    int err;
+
+    if (buffer_virtual(bh))
+        return 0;
+    if (is_dx(inode))
+        dx_block = block == 0 ||
+                   ext3_rec_len_from_disk(de->rec_len) == inode->i_sb->s_blocksize;
+    if (index && !dx_block) {
+        err = -EFSCORRUPTED;        /* a leaf where an index node should be */
+    } else if (buffer_verified(bh) || !ext4_has_metadata_csum(inode->i_sb)) {
+        return 0;
+    } else if (index) {
+        err = ext4_dx_csum_verify(inode, de) ? 0 : -EFSBADCRC;
+    } else if (!dx_block) {
+        err = ext4_dirent_csum_verify(inode, de) ? 0 : -EFSBADCRC;
+    } else {
+        return 0;                   /* either kind: nothing known to check */
+    }
+    if (err) {
+        Ext2ReportCorruption((PEXT2_VCB)inode->i_sb->s_priv, (ULONG)inode->i_ino,
+                             (ULONGLONG)bh->b_blocknr, err);
+        return err;
+    }
+    set_buffer_verified(bh);
+    return 0;
+}
+
+static struct buffer_head *ext3_bread_block(struct ext2_icb *icb, struct inode *inode,
+                                            unsigned long block, int *err);
+
+/* a block of directory inode, checked as a leaf when it can only be one */
 struct buffer_head *ext3_bread(struct ext2_icb *icb, struct inode *inode,
                                            unsigned long block, int *err)
+{
+    struct buffer_head *bh = ext3_bread_block(icb, inode, block, err);
+
+    if (bh && (*err = ext3_check_dirblock(inode, bh, block, FALSE)) != 0) {
+        __brelse(bh);
+        return NULL;
+    }
+    return bh;
+}
+
+/* a block of an htree index: the root, or a node below it */
+struct buffer_head *ext3_bread_index(struct ext2_icb *icb, struct inode *inode,
+                                     unsigned long block, int *err)
+{
+    struct buffer_head *bh = ext3_bread_block(icb, inode, block, err);
+
+    if (bh && (*err = ext3_check_dirblock(inode, bh, block, TRUE)) != 0) {
+        __brelse(bh);
+        return NULL;
+    }
+    return bh;
+}
+
+/* a block of directory inode as it is: a new one is filled by its caller */
+static struct buffer_head *ext3_bread_block(struct ext2_icb *icb, struct inode *inode,
+                                            unsigned long block, int *err)
 {
     PEXT2_MCB           Mcb = (PEXT2_MCB) inode->i_priv;    /* a name of this inode */
     PEXT2_MCB           Target;
@@ -95,9 +165,11 @@ static struct buffer_head *ext3_bread_mapped(struct ext2_icb *icb, struct inode 
     /* A hole: no block behind this part of the directory. Block 0 is what
        the mapping reports for one, and it is the superblock's - a directory
        block read from it and written back destroyed the volume. Linux
-       refuses a hole in a directory the same way (ext4_read_dirblock). */
+       refuses a hole in a directory the same way, as corruption
+       (ext4_read_dirblock: "Directory hole found"); readdir passes it by. */
     if (lbn == 0) {
-        *err = -EIO;
+        *err = -EFSCORRUPTED;
+        Ext2ReportCorruption((PEXT2_VCB)inode->i_sb->s_priv, (ULONG)inode->i_ino, 0, *err);
         return NULL;
     }
 
@@ -154,7 +226,8 @@ struct buffer_head *ext3_append(struct ext2_icb *icb, struct inode *inode,
         return NULL;
     }
 
-    return ext3_bread(icb, inode, *block, err);
+    /* not checked: what is there now is the block's previous life */
+    return ext3_bread_block(icb, inode, *block, err);
 }
 
 /*

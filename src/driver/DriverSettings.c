@@ -9,7 +9,6 @@
  *
  *   WritingSupport    REG_DWORD  0: mount every volume read-only
  *   Ext3ForceWriting  REG_DWORD  0: mount journalled volumes read-only
- *   CheckingBitmap    REG_DWORD  1: verify the block bitmaps at mount
  *   AutoMount         REG_DWORD  0: do not mount volumes automatically
  *   CodePage          REG_SZ     code page of file names on disk (utf8)
  *   HidingPrefix      REG_SZ     names starting with it are reported hidden
@@ -34,7 +33,6 @@ typedef struct _EXT4_REG_SWITCH {
 static const EXT4_REG_SWITCH Ext4RegSwitches[] = {
     { WRITING_SUPPORT,   EXT2_SUPPORT_WRITING,                      EXT2_SUPPORT_WRITING | EXT3_FORCE_WRITING },
     { EXT3_FORCEWRITING, EXT3_FORCE_WRITING | EXT2_SUPPORT_WRITING, EXT3_FORCE_WRITING },
-    { CHECKING_BITMAP,   EXT2_CHECKING_BITMAP,                      EXT2_CHECKING_BITMAP },
     { AUTO_MOUNT,        EXT2_AUTO_MOUNT,                           EXT2_AUTO_MOUNT },
 };
 

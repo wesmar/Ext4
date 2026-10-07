@@ -203,6 +203,182 @@ Ext2FreeInodes(IN PEXT2_VCB Vcb)
     return (ULONG)min(Free, (LONGLONG)le32_to_cpu(SUPER_BLOCK->s_inodes_count));
 }
 
+/* ---------------------------------------------------------------- errors */
+
+#define EXT2_ERRORS_LOGGED      32      /* reports printed per mount; every one is counted */
+#define EXT2_ERROR_FUNC_CHARS   32      /* s_*_error_func, not terminated when full */
+
+static VOID
+Ext2RecordError(OUT __le32 *Time, OUT __u8 *TimeHi, OUT __le32 *Ino, OUT __le64 *Block,
+                OUT __u8 *Func, OUT __le32 *Line, OUT __u8 *Code, IN LONGLONG Now,
+                IN ULONG Inode, IN ULONGLONG Where, IN PCSTR Function, IN ULONG At,
+                IN __u8 ErrCode)
+{
+    size_t Length = strlen(Function);
+
+    *Time = cpu_to_le32((__u32)Now);
+    *TimeHi = (__u8)(Now >> 32);
+    *Ino = cpu_to_le32(Inode);
+    *Block = cpu_to_le64(Where);
+    RtlZeroMemory(Func, EXT2_ERROR_FUNC_CHARS);
+    RtlCopyMemory(Func, Function, min(Length, (size_t)EXT2_ERROR_FUNC_CHARS));
+    *Line = cpu_to_le32(At);
+    *Code = ErrCode;
+}
+
+static IO_WORKITEM_ROUTINE Ext2SuperWriteWorker;
+
+static VOID
+Ext2SuperWriteWorker(IN PDEVICE_OBJECT DeviceObject, IN PVOID Context)
+{
+    PEXT2_VCB Vcb = (PEXT2_VCB)DeviceObject->DeviceExtension;
+
+    /* what changes from here on queues the next write */
+    InterlockedExchange(&Vcb->SuperWritePending, FALSE);
+
+    /* A writable volume takes it as any superblock change: through the
+       journal, in order with the others, and into the volume's cached
+       copy - written past that copy, the copy's next flush would undo it.
+       A volume stopped by its errors (s_errors, a journal abort) is told
+       why straight on the disk, as Linux's ext4_commit_super does. A disk
+       gone, or another node's now, is not written. */
+    if (!FlagOn(Vcb->Flags, VCB_DEVICE_REMOVED | VCB_FOREIGN_OWNER)) {
+        BOOLEAN Saved = FALSE;
+
+        if (!IsVcbReadOnly(Vcb)) {
+            Ext2JournalEnterScope(Vcb);
+            Saved = Ext2SaveSuper(NULL, Vcb);
+            Ext2JournalLeaveScope(Vcb);
+        }
+        if (!Saved) {
+            (void)Ext2SaveSuperDirect(Vcb);     /* best effort: the memory copy has it either way */
+        }
+        Ext2JournalRecordAbort(Vcb);
+    }
+
+    IoFreeWorkItem((PIO_WORKITEM)Context);
+    ExReleaseRundownProtection(&Vcb->SuperWriteRundown);
+}
+
+/*
+ * The superblock in memory says what the disk must learn soon - errors
+ * found, a journal stopped - and the thread that found it may not write it
+ * itself: it may hold group locks, or be a paging read running with APCs
+ * disabled, where a synchronous IRP never completes (its completion is an
+ * APC to that very thread; the robustness run hung there). A system worker
+ * writes it, as Linux leaves it to s_sb_upd_work. Asked again while a write
+ * is queued, the queued one carries it. The volume's teardown waits for the
+ * write (Ext2DrainSuperWrites); asked after that, the teardown's own last
+ * superblock write carries it. Callable at IRQL <= APC_LEVEL.
+ */
+VOID
+Ext2QueueSuperWrite(IN PEXT2_VCB Vcb)
+{
+    PIO_WORKITEM Item;
+
+    if (InterlockedExchange(&Vcb->SuperWritePending, TRUE)) {
+        return;
+    }
+    if (!ExAcquireRundownProtection(&Vcb->SuperWriteRundown)) {
+        return;
+    }
+    Item = IoAllocateWorkItem(Vcb->DeviceObject);
+    if (Item == NULL) {
+        /* no memory: the next request or superblock write carries it */
+        InterlockedExchange(&Vcb->SuperWritePending, FALSE);
+        ExReleaseRundownProtection(&Vcb->SuperWriteRundown);
+        return;
+    }
+    IoQueueWorkItem(Item, Ext2SuperWriteWorker, DelayedWorkQueue, Item);
+}
+
+/* the volume goes: the write queued last is waited for. Once per Vcb. */
+VOID
+Ext2DrainSuperWrites(IN PEXT2_VCB Vcb)
+{
+    ExWaitForRundownProtectionRelease(&Vcb->SuperWriteRundown);
+}
+
+/*
+ * Corruption found on disk, as Linux's ext4_error handles it: the
+ * superblock says the volume has errors (EXT4_ERROR_FS: e2fsck checks it
+ * at the next boot) and where the first and the last were found; then the
+ * volume does what its superblock asks for (s_errors) - goes on, or stops
+ * writing; panic, which no file system on Windows does to the system,
+ * stops writing too. Every report reaches the disk through
+ * Ext2QueueSuperWrite. Callable inside the group locks and from paging I/O.
+ */
+VOID
+Ext2ReportCorruptionAt(IN PEXT2_VCB Vcb, IN ULONG Inode, IN ULONGLONG Block,
+                       IN int Err, IN PCSTR Function, IN ULONG Line)
+{
+    PEXT2_SUPER_BLOCK   sb = Vcb->SuperBlock;
+    LARGE_INTEGER       SysTime;
+    LONGLONG            Now;
+    LONG                Reports = InterlockedIncrement(&Vcb->ErrorReports);
+    __u8                Code;
+
+    if (Reports <= EXT2_ERRORS_LOGGED) {
+        DbgPrint("ext4: %s:%u: corrupt on disk (inode %u, block %I64u, error %d)%s\n",
+                 Function, Line, Inode, Block, Err,
+                 Reports == EXT2_ERRORS_LOGGED ? "; further reports are only counted" : "");
+    }
+    if (IsVcbReadOnly(Vcb)) {
+        return;     /* mounted read-only, or stopped writing already */
+    }
+
+    Code = Err == -EFSBADCRC ? EXT4_ERR_EFSBADCRC :
+           Err == -EIO ? EXT4_ERR_EIO : EXT4_ERR_EFSCORRUPTED;
+    KeQuerySystemTime(&SysTime);
+    Now = Ext2UnixTime(&SysTime);
+
+    /* the fields change under the superblock's lock, as its checksum
+       covers them; the error bit is one bit set, as the journal sets it */
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&Vcb->SuperLock, TRUE);
+    InterlockedOr16((volatile SHORT *)&sb->s_state, EXT4_ERROR_FS);
+    le32_add_cpu(&sb->s_error_count, 1);
+    if (sb->s_first_error_time == 0 && sb->s_first_error_time_hi == 0) {
+        Ext2RecordError(&sb->s_first_error_time, &sb->s_first_error_time_hi,
+                        &sb->s_first_error_ino, &sb->s_first_error_block,
+                        sb->s_first_error_func, &sb->s_first_error_line,
+                        &sb->s_first_error_errcode, Now, Inode, Block, Function, Line, Code);
+    }
+    Ext2RecordError(&sb->s_last_error_time, &sb->s_last_error_time_hi,
+                    &sb->s_last_error_ino, &sb->s_last_error_block,
+                    sb->s_last_error_func, &sb->s_last_error_line,
+                    &sb->s_last_error_errcode, Now, Inode, Block, Function, Line, Code);
+    ExReleaseResourceLite(&Vcb->SuperLock);
+    KeLeaveCriticalRegion();
+
+    /* stopped first, so that the write finds the volume as it will stay */
+    if (le16_to_cpu(sb->s_errors) == EXT4_ERRORS_RO || le16_to_cpu(sb->s_errors) == EXT4_ERRORS_PANIC) {
+        DbgPrint("ext4: the volume asks to stop writing on errors: read-only from now on\n");
+        Ext2JournalAbortQuiet(Vcb);
+    }
+    Ext2QueueSuperWrite(Vcb);
+}
+
+/*
+ * Inode, unlinked, goes on the orphan list: the superblock's s_last_orphan
+ * names it, its i_dtime the inode that headed the list before (Linux:
+ * ext4_orphan_add without the orphan file, whose list Linux and e2fsck
+ * still empty when the file exists). The caller writes the inode in the
+ * same transaction.
+ */
+BOOLEAN
+Ext2AddOrphan(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN struct inode *Inode)
+{
+    BOOLEAN Saved;
+
+    Ext2LockSuper(Vcb);
+    Inode->i_dtime = le32_to_cpu(Vcb->SuperBlock->s_last_orphan);
+    Vcb->SuperBlock->s_last_orphan = cpu_to_le32((__u32)Inode->i_ino);
+    Saved = Ext2SaveSuper(IrpContext, Vcb);
+    Ext2UnlockSuper(Vcb);
+    return Saved;
+}
+
 /* the totals into the superblock, written when they changed */
 VOID
 Ext2SyncSuperTotals(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb)

@@ -50,12 +50,6 @@ typedef struct _EXT4_MMP {
     ULONG               Seed;
 } EXT4_MMP, *PEXT4_MMP;
 
-static ULONG MmpChecksum(PEXT2_VCB Vcb, struct mmp_struct *Mmp)
-{
-    return ext4_chksum(EXT3_SB(&Vcb->sb), EXT3_SB(&Vcb->sb)->s_csum_seed,
-                       Mmp, (unsigned int)FIELD_OFFSET(struct mmp_struct, mmp_checksum));
-}
-
 /* the block from disk into Into, checked: magic, and checksum with metadata_csum */
 static NTSTATUS MmpRead(PEXT4_MMP M, struct mmp_struct *Into)
 {
@@ -68,8 +62,7 @@ static NTSTATUS MmpRead(PEXT4_MMP M, struct mmp_struct *Into)
         DbgPrint("ext4: MMP block %I64u has no MMP magic\n", M->Offset / M->Size);
         return STATUS_DISK_CORRUPT_ERROR;
     }
-    if (ext4_has_metadata_csum(&M->Vcb->sb) &&
-        le32_to_cpu(Into->mmp_checksum) != MmpChecksum(M->Vcb, Into)) {
+    if (!ext4_mmp_csum_verify(&M->Vcb->sb, Into)) {
         DbgPrint("ext4: MMP block %I64u: checksum invalid\n", M->Offset / M->Size);
         return STATUS_DISK_CORRUPT_ERROR;
     }
@@ -83,9 +76,7 @@ static NTSTATUS MmpWrite(PEXT4_MMP M)
 
     KeQuerySystemTime(&Now);
     M->Block->mmp_time = cpu_to_le64((__u64)Ext2UnixTime(&Now));
-    if (ext4_has_metadata_csum(&M->Vcb->sb)) {
-        M->Block->mmp_checksum = cpu_to_le32(MmpChecksum(M->Vcb, M->Block));
-    }
+    ext4_mmp_csum_set(&M->Vcb->sb, M->Block);
     return Ext2WriteDiskSync(M->Vcb, M->Offset, M->Size, M->Block, TRUE);
 }
 
@@ -172,6 +163,7 @@ static VOID MmpLose(PEXT4_MMP M, const char *Why)
     }
     DbgPrint("ext4: MMP: %s; the volume is mounted elsewhere (node \"%.64s\"), "
              "read-only here from now on\n", Why, M->Block->mmp_nodename);
+    SetLongFlag(Vcb->Flags, VCB_FOREIGN_OWNER);     /* not even a queued superblock write */
     SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
     Ext2JournalAbortQuiet(Vcb);
 }

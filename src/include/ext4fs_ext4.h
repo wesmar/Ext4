@@ -229,6 +229,40 @@ Ext2FreeInodes(IN PEXT2_VCB Vcb);
 VOID
 Ext2SyncSuperTotals(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb);
 
+/* corruption found on disk: the superblock records it, s_errors decides
+   whether the volume goes on writing (Linux: ext4_error). Err is a Linux
+   error: -EFSCORRUPTED, -EFSBADCRC, -EIO. */
+VOID
+Ext2ReportCorruptionAt(IN PEXT2_VCB Vcb, IN ULONG Inode, IN ULONGLONG Block,
+                       IN int Err, IN PCSTR Function, IN ULONG Line);
+#define Ext2ReportCorruption(Vcb, Inode, Block, Err) \
+    Ext2ReportCorruptionAt((Vcb), (Inode), (Block), (Err), __FUNCTION__, __LINE__)
+
+/* the superblock in memory to the disk soon, by a system worker: for a
+   caller that may not write it itself (group locks, paging I/O) */
+VOID
+Ext2QueueSuperWrite(IN PEXT2_VCB Vcb);
+
+/* the volume goes: wait for the write queued last (once per Vcb) */
+VOID
+Ext2DrainSuperWrites(IN PEXT2_VCB Vcb);
+
+/* an unlinked inode that still holds blocks onto the orphan list, for the
+   next Linux mount (or e2fsck) to finish; the caller writes the inode */
+BOOLEAN
+Ext2AddOrphan(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN struct inode *Inode);
+
+/* a group whose block or inode bitmap failed its check is not used again
+   this mount (Linux: EXT4_GROUP_INFO_BBITMAP_CORRUPT, _IBITMAP_CORRUPT) */
+#define EXT2_GROUP_BLOCK_BITMAP     0
+#define EXT2_GROUP_INODE_BITMAP     1
+#define EXT2_GROUP_BITMAPS          2
+
+NTSTATUS Ext2InitializeGroupHealth(IN PEXT2_VCB Vcb);
+VOID     Ext2FreeGroupHealth(IN PEXT2_VCB Vcb);
+BOOLEAN  Ext2GroupCorrupt(IN PEXT2_VCB Vcb, IN ULONG Group, IN ULONG Bitmap);
+BOOLEAN  Ext2MarkGroupCorrupt(IN PEXT2_VCB Vcb, IN ULONG Group, IN ULONG Bitmap);
+
 VOID
 Ext2LockSuper(IN PEXT2_VCB Vcb);
 
@@ -537,6 +571,15 @@ int ext3_dx_readdir(struct file *filp, filldir_t filldir, void * context);
 
 struct buffer_head *ext3_bread(struct ext2_icb *icb, struct inode *inode,
                                            unsigned long block, int *err);
+
+/* the MMP block's checksum, with metadata_csum (Linux mmp.c) */
+struct mmp_struct;
+int ext4_mmp_csum_verify(struct super_block *sb, struct mmp_struct *mmp);
+void ext4_mmp_csum_set(struct super_block *sb, struct mmp_struct *mmp);
+
+/* a block of an htree index, checked as one (ext4_read_dirblock INDEX) */
+struct buffer_head *ext3_bread_index(struct ext2_icb *icb, struct inode *inode,
+                                     unsigned long block, int *err);
 
 int add_dirent_to_buf(struct ext2_icb *icb, struct dentry *dentry,
                       struct inode *inode, struct ext3_dir_entry_2 *de,

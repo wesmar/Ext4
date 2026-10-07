@@ -88,6 +88,9 @@ Ext2JournalAbortQuiet(IN PEXT2_VCB Vcb)
     PEXT2_JOURNAL   J = Vcb->Journal;
     KIRQL           irql;
 
+    /* for good this mount, as Linux's aborted file system refuses a
+       remount read-write (Ext2ProcessVolumeProperty) */
+    SetLongFlag(Vcb->Flags, VCB_WRITE_STOPPED);
     SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
     if (J == NULL) {
         return;
@@ -118,11 +121,33 @@ Ext2JournalAbandon(IN PEXT2_VCB Vcb, IN NTSTATUS Status)
     }
     DbgPrint("ext4: a change could not be completed nor undone (status %08x), "
              "the volume is read-only from now on\n", Status);
+    Ext2JournalAbortQuiet(Vcb);
     if (Vcb->Journal == NULL) {
         InterlockedOr16((volatile SHORT *)&Vcb->SuperBlock->s_state, EXT4_ERROR_FS);
-        (void)Ext2SaveSuperDirect(Vcb);     /* best effort: the volume stops either way */
+        Ext2QueueSuperWrite(Vcb);   /* the caller holds group locks */
     }
-    Ext2JournalAbortQuiet(Vcb);
+}
+
+/*
+ * An aborted journal records why in its own superblock (Linux:
+ * jbd2_journal_update_sb_errno at the abort). Called by the superblock
+ * writer (Ext2QueueSuperWrite), never by the aborting thread, which may be
+ * unable to wait for a write. A journal stopped quietly (s_errors, MMP)
+ * has no error of its own to record.
+ */
+VOID
+Ext2JournalRecordAbort(IN PEXT2_VCB Vcb)
+{
+    PEXT2_JOURNAL   J = Vcb->Journal;
+    journal_t      *jbd;
+
+    if (J == NULL || J->jbd == NULL) {
+        return;
+    }
+    jbd = J->jbd;
+    if (jbd->j_errno != 0 && jbd->j_superblock->s_errno != cpu_to_be32(jbd->j_errno)) {
+        jbd2_journal_update_sb_errno(jbd);
+    }
 }
 
 VOID JnlAbort(PEXT2_JOURNAL J, NTSTATUS Status)
@@ -141,15 +166,17 @@ VOID JnlAbort(PEXT2_JOURNAL J, NTSTATUS Status)
     DEBUG(DL_ERR, ("Ext2Jnl: journal aborted (%xh), volume is now read-only\n", Status));
     DbgPrint("ext4: journal aborted (status %08x), volume is now read-only\n", Status);
 
+    SetLongFlag(J->Vcb->Flags, VCB_WRITE_STOPPED);
     SetLongFlag(J->Vcb->Flags, VCB_READ_ONLY);
     J->jbd->j_flags |= JBD2_ABORT;
     J->jbd->j_errno = -EIO;
 
-    /* let e2fsck know (Ext2SaveSuperDirect takes the superblock's lock;
-       the flag is one bit set, which a concurrent writer cannot lose) */
+    /* let e2fsck know: the flag is one bit set, which a concurrent writer
+       cannot lose. Both superblocks are written by a worker - this thread
+       may be joining a handle inside paging I/O, where it cannot wait for
+       a write (Ext2QueueSuperWrite). */
     InterlockedOr16((volatile SHORT *)&J->Vcb->SuperBlock->s_state, EXT4_ERROR_FS);
-    Ext2SaveSuperDirect(J->Vcb);
-    jbd2_journal_update_sb_errno(J->jbd);
+    Ext2QueueSuperWrite(J->Vcb);
 
     KeSetEvent(&J->UnlockedEvent, 0, FALSE);
     KeSetEvent(&J->UpdatesEvent, 0, FALSE);

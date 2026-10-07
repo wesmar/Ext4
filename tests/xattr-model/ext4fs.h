@@ -58,6 +58,14 @@ static void DbgPrint(const char *format, ...)
     assert(format);
     DiagnosticCalls++;
 }
+/* corruption is reported once, by the parser's entry point */
+static void ModelReportCorruption(PEXT2_VCB Vcb, ULONG Inode, ULONGLONG Block, int Err)
+{
+    assert(Vcb && Inode == 42 && (Err == -EFSCORRUPTED || Err == -EFSBADCRC));
+    (void)Block;
+    DiagnosticCalls++;
+}
+#define Ext2ReportCorruption(Vcb, Inode, Block, Err) ModelReportCorruption((Vcb), (Inode), (Block), (Err))
 static size_t LargestAllocation;
 static void *ModelAllocate(size_t size)
 {

@@ -22,7 +22,7 @@
 </div>
 > **Engineering status**
 >
-> `ext4.sys` provides native ext2/ext3/ext4 read/write access on bare-metal Windows systems and in virtual machines. The current release passed the full Windows/Linux matrix, dedicated ext2/ext3 and 16 TiB boundary tests, and production-code regression models. Validation also includes Driver Verifier and repeated unload testing. Refinements continue in checksum coverage and recovery bookkeeping, as described below. Microsoft production signing is pending; loading uses KVC or DrvLoader on systems you administer. Keep a backup of important data.
+> `ext4.sys` provides native ext2/ext3/ext4 read/write access on bare-metal Windows systems and in virtual machines. The current release passed the full Windows/Linux matrix, dedicated ext2/ext3 and 16 TiB boundary tests, and production-code regression models. Validation also includes Driver Verifier and repeated unload testing. Metadata checksums are verified on read; corruption found on disk is recorded in the superblock and handled as the volume's `errors=` setting asks. Microsoft production signing is pending; loading uses KVC or DrvLoader on systems you administer. Keep a backup of important data.
 
 > **Repository policy:** the release archive is not password-protected. Git tracks the active source, project files, tests and documentation. Build outputs, symbols, local tooling, virtual disks and test logs stay outside the repository. Test passphrase defaults in two PowerShell scripts are represented by `<TEST_LUKS_PASSPHRASE>`.
 
@@ -119,6 +119,7 @@ What changed on the way to `ext4.sys`, in short:
 - **Journal ownership.** The journal engine belongs to the volume control block. Stopping its session and freeing the engine are separate steps, so a late stream close cannot enter a freed journal during teardown.
 - **Drive letters** for partitions the mount manager treats as hidden (MBR type `0x83`, GPT "Linux filesystem").
 - **Dozens of fixes** found by the test suite: data exposure past a write into preallocated space, extents created one block at a time, a block allocator that started every file in group 0, registry buffer overruns, uninitialised return values, unload hangs, reapers polling on timers, extended attribute blocks written without their checksum, a Windows EA write that erased the Linux ACLs of the file, xattr blocks leaked on delete, lazily initialised block bitmaps that never reached the disk, and reference leaks - a refused open, a close cut short on a demoted symlink, a delete taken over by the wrong handle - that kept `sc stop` pending for ever.
+- **Request handlers in steps.** Create, read, write, cleanup, set and query information, directory queries, rename and link, volume I/O and extended attributes run as short steps over explicit request state, instead of single functions several hundred lines long. The split exposed faults those functions had hidden: dropped errors (an inode save, a file expansion, a directory index walk, a cache flush), a 30-second I/O timeout that freed its context under requests still in flight, dirty volume ranges forgotten while an asynchronous write was still in flight, a volume label written into the superblock without its lock, directory listings that skipped the volume's last inode, and extended attributes changed on immutable files.
 
 ---
 
@@ -220,8 +221,9 @@ Rules the engine keeps, each one learned from a failure it caused:
 
 7. **Freed file-data blocks wait for commit before reuse.** Per-group transaction overlays keep them unavailable to ordinary data allocation until the freeing transaction is committed on disk. Journaled metadata allocations have a separate path, protected by journal ownership and revoke rules. A space-pressure commit is requested outside active handles and group locks.
 8. **Failure follows the operation.** Required inode, buffer, revoke and device-sync failures propagate to the caller. If a mutation can neither finish nor roll back, the transaction is abandoned and the volume becomes read-only.
+9. **Corruption is recorded, as Linux records it.** A block that fails its checksum or its structural checks is refused before anything is written from it. The superblock then says the volume has errors (`e2fsck` checks it at the next boot), with the count and the first and last place found; the volume goes on or stops writing as its `errors=` setting asks (`tune2fs -e`). A group whose block or inode bitmap fails its check is left out of allocation for the rest of the mount, and blocks of a corrupt pointer are let go rather than freed. An inode whose blocks cannot all be released during deletion goes on the orphan list, which the next Linux mount or `e2fsck` empties. The superblock is written by a per-volume worker, never by the thread that found the damage: that thread may be a paging read, which cannot wait for I/O of its own. A volume that stopped writing on an error stays read-only until it is dismounted, as Linux refuses to remount an aborted file system read-write.
 
-The full matrix includes a dedicated free-and-reuse regression. Earlier crash-injection runs during metadata churn finished with clean Linux and driver replay. These checks cover specific scenarios; the remaining checksum and recovery gaps are listed in [Known Limitations](#known-limitations).
+The full matrix includes a dedicated free-and-reuse regression, and `corrupt-vm.ps1` plants damage on purpose and checks from Linux what the driver did with it. Earlier crash-injection runs during metadata churn finished with clean Linux and driver replay. These checks cover specific scenarios; the remaining gaps are listed in [Known Limitations](#known-limitations).
 
 ---
 
@@ -411,9 +413,9 @@ The driver and control tool are split by responsibility. LUKS header formats, ke
 
 ## Testing and Validation
 
-The current Release and Debug builds are warning-free under `/W4 /WX`. The packaged driver passed the full Windows/Linux matrix: **19 sections**, including **480 shrink/regrow cases** across plain and LUKS2 volumes, transaction-bound free/reuse checks, LUKS1/LUKS2, read-only LVM and Linux feature interoperability. Dedicated ext2/ext3 and fresh 16 TiB boundary fixtures also passed independent Linux read-back and clean `e2fsck` checks. Fixture preparation, host models and targeted regressions run separately.
+The current Release and Debug builds are warning-free under `/W4 /WX`. With Driver Verifier enabled, the current source passed the full Windows/Linux matrix: **19 sections**, including **480 shrink/regrow cases** across plain and LUKS2 volumes, transaction-bound free/reuse checks, LUKS1/LUKS2, read-only LVM and Linux feature interoperability. It also passed the dedicated ext2/ext3 fixture, the planted-corruption fixture and the **219 malformed-media fixtures** of the e2fsprogs corpus, with no crash, hang or harness error; rejected mounts and failed operations remain distinct outcomes. Fixture preparation, host models and targeted regressions run separately.
 
-The same review also covered **219 malformed-media fixtures**, ENOSPC with and without hole reuse, scaling through **1/2/4/8 threads in one process**, and **10 loaded stop/start cycles**. Those campaigns completed before the last indirect-run boundary correction and control-tool enumeration fix; the full matrix, legacy and wide-address checks above ran on the final binaries. The malformed-media run recorded no crash, hang or harness error; rejected mounts and failed operations remain distinct outcomes.
+Earlier campaigns on the previous release covered the fresh 16 TiB boundary fixtures, ENOSPC with and without hole reuse, scaling through **1/2/4/8 threads in one process** and **10 loaded stop/start cycles**.
 
 Earlier lifecycle campaigns covered **80 consecutive stop/start cycles**, **20 more cycles with concurrent open/read/close workers**, and **10 concurrent-access cycles with the larger-than-16-TiB fixture attached**. Written proof data survived, drive letters returned and no new bugcheck occurred in these runs. **Three clean Windows restarts** with mounted test volumes also preserved their proof data. Verifier remained enabled for these correctness checks.
 
@@ -439,6 +441,7 @@ I develop this driver as a solo project. The validation combines several hours o
 - **Run-map atomicity:** conflicting overlaps and failed split allocations leave the original mapping intact. Every deterministic seed checks tree structure and mapping contents.
 - **Resize correctness:** cached and uncached handles shrink and regrow files across sector and block boundaries. Every retained byte must match; every newly exposed byte must be zero.
 - **Unload:** teardown includes outstanding VCB destruction and replacement VPBs. A busy object remains owned until it can be reclaimed.
+- **Corruption records:** a block that fails its checksum or structure check is refused before use; the superblock record is written by a worker thread, never from inside paging I/O. A fixture checks the records, the `errors=` behaviour and allocation around the damaged group from Linux.
 - **Tester correctness:** child exit codes and completion summaries are both required. An unhandled exception counts as failure; an empty or interrupted run is rejected.
 
 ```mermaid
@@ -472,7 +475,10 @@ pwsh tests\journal-error-model.ps1 -Architecture x86
 pwsh tests\xattr-model.ps1
 
 # One dedicated ext2/ext3 write and independent Linux read-back run
-pwsh tests\legacy-vm.ps1
+pwsh tests\legacy-vm.ps1 -Image <new .vhdx>
+
+# Damage planted on purpose: refused, recorded in the superblock, contained
+pwsh tests\corrupt-vm.ps1 -Image <new .vhdx>
 
 # Clean Windows restarts in the configured guest, with persistent proof data
 pwsh tests\reboot-vm.ps1 -Roots 'D:\,U:\' -Cycles 3
@@ -495,6 +501,7 @@ Configure the disposable guest and test-image paths in `tests/testenv.local.psd1
 | Deterministic models | Production run map, bitmap search and VPB reclaimer; independent oracles, tree invariants, pending-free overlays, ownership and forced allocation failures |
 | Lifecycle | Repeated stop/start with concurrent file access, drive-letter restoration and clean guest restarts |
 | Malformed media | Bounded traversal and read-back, attempted writes, dismount and Verifier checks; mount refusal and read-only fallback are recorded separately |
+| Planted corruption | Bitmap, inode and directory-block checksum failures under `errors=continue` and `errors=remount-ro`: refused, recorded in the superblock, new data allocated around the damaged group; Linux checks the records and the data |
 
 Driver Verifier runs are correctness checks. Throughput measurements use a separate run with Verifier disabled.
 
@@ -508,13 +515,13 @@ Driver Verifier runs are correctness checks. Throughput measurements use a separ
 | `has_journal` (internal jbd2) | Read / write, journaled; replay at mount |
 | `dir_index` (htree), `filetype`, `dir_nlink`, `extra_isize` | Read / write; directory lookup and insertion honour signed and unsigned hash variants |
 | `large_dir` (three-level htree, directories past 2 GiB) | Read / write: index blocks split at every level and a level is added under the root when all are full, as in Linux; tested with a three-level index the kernel built and one this driver grew from empty (45 000 names), both checked by `e2fsck` and by the kernel looking every name up through the index |
-| `metadata_csum`, `gdt_csum`, `csum_seed` | Read / write; inode, external extent-node and external xattr-block checksums verified before use, with group-descriptor and journal checks. Remaining verification gaps are listed below. |
-| `orphan_file` (the `mkfs.ext4` default since e2fsprogs 1.47) | Read / write on clean volumes; `orphan_present` mounts read-only. Driver-side orphan tracking remains incomplete. |
+| `metadata_csum`, `gdt_csum`, `csum_seed` | Read / write; every checksum is verified before use - superblock, group descriptors, block and inode bitmaps, inodes, extent nodes, directory leaves and htree nodes, xattr blocks, MMP and journal - and a block that fails is refused and recorded as a superblock error |
+| `orphan_file` (the `mkfs.ext4` default since e2fsprogs 1.47) | Read / write on clean volumes; `orphan_present` mounts read-only. An inode the driver cannot finish releasing goes on the classic orphan list, which Linux and `e2fsck` empty with or without the orphan file; orphans Linux left behind are not processed by the driver |
 | `casefold` (`mkfs -O casefold`, `chattr +F`; SteamOS formats its microSD cards so) | Read / write. Names in a casefolded directory are folded as Linux folds them (NFD and full case folding, Unicode 12.1, with the kernel's own tables): the index is hashed on the folded names, `ŁÓDŹ.TXT` finds `Łódź.txt` and `STRASSE.TXT` finds `straße.txt`, a name that folds to an existing one is refused, strict mode refuses names that are not UTF-8, and directories made inside inherit the flag |
 | Unwritten (preallocated) extents | Read / write |
-| Extended attributes | Read / write, exposed as Windows EAs in the `user.` namespace, names matched without regard to case as Windows expects; other namespaces (POSIX ACLs, security labels, `trusted.`) are neither shown nor touched - replacing a file's EA set replaces its `user.` attributes only |
+| Extended attributes | Read / write, exposed as Windows EAs in the `user.` namespace, names matched without regard to case as Windows expects; other namespaces (POSIX ACLs, security labels, `trusted.`) are neither shown nor touched - replacing a file's EA set replaces its `user.` attributes only. A value longer than an EA can carry (65 535 bytes) is kept but not shown |
 | SELinux labels (`security.selinux`) | A file or directory made from Windows takes the label of its directory, as the kernel labels when the policy names no transition, so Fedora sees a labelled file, not `unlabeled_t` |
-| `chattr +i`, `+a` and the inherited flags | Honoured as on Linux: an immutable file is not written, truncated, renamed, deleted or linked, and shows as read-only; an append-only file only grows at its end; an immutable directory takes and loses no entries, an append-only one only takes them. New inodes inherit their directory's flags (`EXT4_FL_INHERITED`) |
+| `chattr +i`, `+a` and the inherited flags | Honoured as on Linux: an immutable file is not written, truncated, renamed, deleted or linked, its extended attributes are not changed, and it shows as read-only; an append-only file only grows at its end; an immutable directory takes and loses no entries, an append-only one only takes them. New inodes inherit their directory's flags (`EXT4_FL_INHERITED`) |
 | Symbolic links, hard links | Read / write; symlinks appear as reparse points |
 | Nanosecond timestamps and the epoch bits past 2038 | Read / write |
 | ext2, ext3 (indirect block maps) | Read / write |
@@ -536,9 +543,7 @@ The old 16 TiB volume ceiling is removed. Disk-format and per-file bounds are de
 3. **POSIX permissions are mapped, not enforced as ACLs.** Ownership can be overridden per volume (`uid`, `gid` in the registry); Windows security descriptors are not stored.
 4. **LUKS and LVM.** Ciphers other than AES-XTS are not supported. Logical volumes inside LUKS open read-only, linear (one stripe) and thin ones; striped, mirrored and RAID volumes, a volume group spanning several containers, and a partition table inside a volume (the root volumes of Qubes OS qubes) are not handled — the private volumes of Qubes OS qubes hold ext4 directly and open.
 5. **x64 only.** Only x64 is built and tested.
-6. **Checksum verification is not complete.** Block and inode bitmap checksums, directory/htree block checksums and MMP checksums are not yet verified on read. Inode, external extent-node and external xattr-block checksums are checked; a bad checksum is rejected before mutation.
-7. **Recovery bookkeeping remains incomplete.** Most detected corruption is reported to the caller without recording a persistent superblock error. Irrecoverable transactions are abandoned and the volume becomes read-only. There is no complete orphan-list implementation: an inode that cannot be released during deletion stays allocated for `e2fsck` to reclaim.
-8. **Directory listing skips unreadable inodes.** An entry whose inode cannot be loaded, including one with a bad checksum, is currently omitted rather than listed with an error deferred to open.
+6. **No repair.** Damage found on disk is refused, recorded and contained, never repaired: that remains `e2fsck`'s work. Orphans a Linux crash left behind are not processed at mount; Linux or `e2fsck` processes them. A file whose inode cannot be read is listed by name, as an empty read-only file, and opening it fails.
 
 ---
 
@@ -621,7 +626,7 @@ Do not move or replace `ext4.sys` while it is loaded. Stop the service first. Op
 
 The Linux partitions get drive letters within a second. `sc stop ext4` takes them away again and unloads the driver. LUKS partitions are opened with `ext4ctl unlock` (see [Encrypted Volumes — LUKS](#encrypted-volumes--luks)); copy `ext4ctl.exe` anywhere on the path.
 
-Optional settings live under `HKLM\SYSTEM\CurrentControlSet\Services\ext4\Parameters`: `WritingSupport`, `CheckingBitmap`, `Ext3ForceWriting`, `CodePage`, `HidingPrefix` / `HidingSuffix`, `AutoMount`, and per volume under `Volumes` — `Readonly`, `CodePage`, `MountPoint`, `uid`, `gid`.
+Optional settings live under `HKLM\SYSTEM\CurrentControlSet\Services\ext4\Parameters`: `WritingSupport`, `Ext3ForceWriting`, `CodePage`, `HidingPrefix` / `HidingSuffix`, `AutoMount`, and per volume under `Volumes` — `Readonly`, `CodePage`, `MountPoint`, `uid`, `gid`.
 
 > **Before unplugging a disk:** a surprise removal is handled, but the journal gives the guarantee only for what was committed. Eject the volume or stop the service first when you can.
 

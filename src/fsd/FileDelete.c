@@ -45,9 +45,10 @@ Ext2InodeType(PEXT2_MCB Mcb)
  * The inode behind the last name goes: its data, its extended attributes,
  * then the inode itself. The name is gone already, so what cannot be given
  * back does not fail the delete - the inode then stays, unlinked and
- * allocated with all it still holds: a leak e2fsck reclaims, never a block
- * that two owners would claim. Fails only when the volume stopped writing
- * or the inode bitmap disagrees (corruption).
+ * allocated with all it still holds, on the orphan list: Linux frees it at
+ * its next mount, e2fsck when it runs; never a block that two owners would
+ * claim. Fails only when the volume stopped writing or the inode bitmap
+ * disagrees (corruption).
  */
 static NTSTATUS
 Ext2ReleaseInode(
@@ -115,10 +116,16 @@ Ext2ReleaseInode(
     }
     Kept = Status;
 
-    /* i_dtime is 32 bits wide, as in Linux (it only orders orphans) */
+    /* i_dtime is 32 bits wide, as in Linux (it only orders orphans). An
+       inode that keeps what it holds goes on the orphan list instead, its
+       i_dtime naming the next one: the next Linux mount frees the rest
+       (Linux: ext4_orphan_add), or e2fsck does. */
     KeQuerySystemTime(&SysTime);
     Inode->i_nlink = 0;
     Inode->i_dtime = (__u32)Ext2UnixTime(&SysTime);
+    if (!NT_SUCCESS(Kept)) {
+        (void)Ext2AddOrphan(IrpContext, Vcb, Inode);    /* fails only once the volume stopped writing */
+    }
     Status = Ext2SaveInode(IrpContext, Vcb, Inode) ? STATUS_SUCCESS : STATUS_UNEXPECTED_IO_ERROR;
 
     /* Unhash BEFORE the number goes back to the bitmap: once it is free, a
@@ -131,7 +138,7 @@ Ext2ReleaseInode(
 
     if (!NT_SUCCESS(Kept)) {
         DbgPrint("ext4: inode %u lost its last name but keeps its blocks (status %08x); "
-                 "e2fsck reclaims them\n", Inode->i_ino, Kept);
+                 "it is on the orphan list\n", Inode->i_ino, Kept);
         return Status;
     }
     if (NT_SUCCESS(Status)) {

@@ -235,6 +235,15 @@ Ext2NotifyReportChange (
     IN ULONG             Action
 );
 
+/* Action on the name Mcb, reported as a directory's or a file's */
+VOID
+Ext2NotifyNameChange (
+    IN PEXT2_IRP_CONTEXT IrpContext,
+    IN PEXT2_VCB         Vcb,
+    IN PEXT2_MCB         Mcb,
+    IN ULONG             Action
+);
+
 NTSTATUS
 Ext2DirectoryControl (IN PEXT2_IRP_CONTEXT IrpContext);
 
@@ -258,6 +267,15 @@ Ext2IsEaNameValid(
 NTSTATUS
 Ext2SetEa(
 	IN PEXT2_IRP_CONTEXT    IrpContext
+);
+
+/* the size of a file's EAs as FileEaInformation reports it (0: none) */
+NTSTATUS
+Ext2EaListSize(
+	IN PEXT2_IRP_CONTEXT    IrpContext,
+	IN PEXT2_VCB            Vcb,
+	IN PEXT2_MCB            Mcb,
+	OUT PULONG              EaSize
 );
 
 NTSTATUS
@@ -671,13 +689,21 @@ Ext2WriteInode (
     OUT PULONG              dwReturn
 );
 
-BOOLEAN
+NTSTATUS
 Ext2ZeroData (
     IN PEXT2_IRP_CONTEXT IrpContext,
-    IN PEXT2_VCB Vcb,
     IN PFILE_OBJECT FileObject,
     IN PLARGE_INTEGER Start,
     IN PLARGE_INTEGER End );
+
+/* a cached write the cache manager cannot take yet: STATUS_PENDING, deferred */
+NTSTATUS
+Ext2ThrottleWrite(IN PEXT2_IRP_CONTEXT IrpContext, IN PFILE_OBJECT FileObject, IN ULONG Length);
+
+/* the cached copy of a range written back and purged, before a write past it */
+NTSTATUS
+Ext2FlushPurgeRange(IN PSECTION_OBJECT_POINTERS Section, IN PERESOURCE PagingIoResource,
+                    IN PLARGE_INTEGER Offset, IN ULONG Range, OUT PIO_STATUS_BLOCK IoStatus);
 
 NTSTATUS
 Ext2Write (IN PEXT2_IRP_CONTEXT IrpContext);

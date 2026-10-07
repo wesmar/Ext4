@@ -1088,6 +1088,11 @@ extern void ext4_set_bits(void *bm, int cur, int len);
 #define EXT4_ERRORS_PANIC		3	/* Panic */
 #define EXT4_ERRORS_DEFAULT		EXT4_ERRORS_CONTINUE
 
+/* s_first_error_errcode / s_last_error_errcode (Linux: ext4_errno_to_code) */
+#define EXT4_ERR_EIO			2
+#define EXT4_ERR_EFSBADCRC		4
+#define EXT4_ERR_EFSCORRUPTED		5
+
 /* Metadata checksum algorithm codes */
 #define EXT4_CRC32C_CHKSUM		1
 
