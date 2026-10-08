@@ -134,7 +134,8 @@ CTL_CODE(FILE_DEVICE_UNKNOWN, 2048, METHOD_NEITHER, FILE_WRITE_ACCESS)
 
 typedef IO_STACK_LOCATION EXTENDED_IO_STACK_LOCATION, *PEXTENDED_IO_STACK_LOCATION;
 
-#define IsFlagOn(a,b) ((BOOLEAN)(FlagOn(a,b) == b))
+/* every bit of b set; BooleanFlagOn asks for any of them */
+#define IsFlagOn(a,b) ((BOOLEAN)(FlagOn(a,b) == (b)))
 #ifndef FlagOn
 #define FlagOn(_F,_SF)        ((_F) & (_SF))
 #endif

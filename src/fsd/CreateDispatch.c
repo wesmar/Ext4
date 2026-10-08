@@ -137,12 +137,12 @@ errorout:
  * bulk of the waits under 8 threads, no longer queue on the volume.
  * The volume open stays exclusive, and so does the open of a rename's
  * target directory: rename and link still change the namespace with the
- * volume to themselves. So do removable media: the verify that runs
- * first updates the volume's media state.
+ * volume to themselves. Removable media need nothing more: the verify that
+ * runs first (Ext2VerifyVcb) only marks the device for verification, under
+ * the VPB spin lock.
  */
 static BOOLEAN
 Ext2CreateNeedsExclusiveVcb(
-    IN PEXT2_VCB            Vcb,
     IN PIO_STACK_LOCATION   IrpSp,
     IN PEXT2_FCBVCB         Xcb
 )
@@ -152,13 +152,7 @@ Ext2CreateNeedsExclusiveVcb(
         (Xcb && Xcb->Identifier.Type == EXT2VCB)) {
         return TRUE;                    /* the volume itself */
     }
-    if (IsFlagOn(IrpSp->Flags, SL_OPEN_TARGET_DIRECTORY)) {
-        return TRUE;                    /* a rename or link is on its way */
-    }
-    if (IsFlagOn(Vcb->Flags, (VCB_REMOVABLE_MEDIA | VCB_FLOPPY_DISK))) {
-        return TRUE;
-    }
-    return FALSE;
+    return IsFlagOn(IrpSp->Flags, SL_OPEN_TARGET_DIRECTORY);   /* a rename or link is on its way */
 }
 
 NTSTATUS
@@ -206,7 +200,7 @@ Ext2Create (IN PEXT2_IRP_CONTEXT IrpContext)
             __leave;
         }
 
-        if (Ext2CreateNeedsExclusiveVcb(Vcb, IrpSp, Xcb)) {
+        if (Ext2CreateNeedsExclusiveVcb(IrpSp, Xcb)) {
             ExAcquireResourceExclusiveLite(&Vcb->MainResource, TRUE);
         } else {
             ExAcquireResourceSharedLite(&Vcb->MainResource, TRUE);
