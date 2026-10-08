@@ -258,6 +258,22 @@ Ext2EaFillStatus(IN PEXT2_EA_FILL F, IN BOOLEAN ByIndex)
     return ByIndex ? STATUS_NONEXISTENT_EA_ENTRY : STATUS_NO_MORE_EAS;
 }
 
+/* EAs belong to files and directories: the control device and a volume
+   handle have none - their FsContext is no Fcb, and was used as one */
+static NTSTATUS
+Ext2EaHandle(IN PEXT2_IRP_CONTEXT IrpContext)
+{
+    PEXT2_FCB   Fcb = IrpContext->Fcb;
+
+    if (IsExt2FsDevice(IrpContext->DeviceObject)) {
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+    if (Fcb == NULL || Fcb->Identifier.Type != EXT2FCB || IrpContext->Ccb == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS
 Ext2QueryEa (IN PEXT2_IRP_CONTEXT IrpContext)
 {
@@ -274,11 +290,15 @@ Ext2QueryEa (IN PEXT2_IRP_CONTEXT IrpContext)
     BOOLEAN             XattrRefAcquired = FALSE;
     NTSTATUS            Status = STATUS_UNSUCCESSFUL;
 
-    ASSERT((Ccb->Identifier.Type == EXT2CCB) && (Ccb->Identifier.Size == sizeof(EXT2_CCB)));
-
     __try {
 
         Irp->IoStatus.Information = 0;
+
+        Status = Ext2EaHandle(IrpContext);
+        if (!NT_SUCCESS(Status)) {
+            __leave;
+        }
+        ASSERT((Ccb->Identifier.Type == EXT2CCB) && (Ccb->Identifier.Size == sizeof(EXT2_CCB)));
 
         Buffer = Ext2GetUserBuffer(Irp);
         if (Buffer == NULL) {
@@ -464,12 +484,16 @@ Ext2SetEa (IN PEXT2_IRP_CONTEXT IrpContext)
     BOOLEAN             XattrRefAcquired = FALSE;
     NTSTATUS            Status = STATUS_UNSUCCESSFUL;
 
-    ASSERT((IrpContext->Ccb->Identifier.Type == EXT2CCB) &&
-           (IrpContext->Ccb->Identifier.Size == sizeof(EXT2_CCB)));
-
     __try {
 
         Irp->IoStatus.Information = 0;
+
+        Status = Ext2EaHandle(IrpContext);
+        if (!NT_SUCCESS(Status)) {
+            __leave;
+        }
+        ASSERT((IrpContext->Ccb->Identifier.Type == EXT2CCB) &&
+               (IrpContext->Ccb->Identifier.Size == sizeof(EXT2_CCB)));
 
         if (IsVcbReadOnly(Vcb)) {
             Status = STATUS_MEDIA_WRITE_PROTECTED;

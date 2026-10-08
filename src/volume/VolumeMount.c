@@ -493,6 +493,12 @@ Ext2IsVolumeMounted (IN PEXT2_IRP_CONTEXT IrpContext)
            (IrpContext->Identifier.Size == sizeof(EXT2_IRP_CONTEXT)));
 
     DeviceObject = IrpContext->DeviceObject;
+
+    /* the control device has no Vcb behind it */
+    if (IsExt2FsDevice(DeviceObject)) {
+        Ext2CompleteIrpContext(IrpContext, STATUS_INVALID_DEVICE_REQUEST);
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
     Vcb = (PEXT2_VCB) DeviceObject->DeviceExtension;
 
     if (!IsMounted(Vcb) || IsFlagOn(Vcb->Flags, VCB_DISMOUNT_PENDING)) {

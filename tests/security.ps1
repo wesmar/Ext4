@@ -2,7 +2,8 @@
 # security.ps1 - the driver's private IOCTLs against callers that must not use them (guest).
 #
 # As administrator: the kernel-only unload IOCTL is refused, empty or short
-# buffers are refused instead of read, a legitimate query still works.
+# buffers are refused instead of read, a legitimate query still works, a file
+# handle neither locks nor dismounts the volume.
 # FSCTL_GET_RETRIEVAL_POINTERS (raw user pointers): bad VCNs and an unmapped
 # output buffer are refused, holes are reported as LCN -1. EAs are found by
 # name in any case, a missing name comes back empty. Reparse points: no volume
@@ -209,6 +210,14 @@ Check 'unload IOCTL from user mode refused'         5  ([SecIo]::Ioctl('\\.\ext4
 Check 'volume property with no buffer refused'      87 ([SecIo]::Ioctl($file, 2147483648, 0x221F40, 0, 2))
 Check 'volume property with a short buffer refused' 87 ([SecIo]::Ioctl($file, 2147483648, 0x221F40, 8, 2))
 Check 'volume property query still works'           0  ([SecIo]::Ioctl("\\.\$Drive`:", 2147483648, 0x221F40, 64, 2))
+# FSCTL_LOCK_VOLUME, FSCTL_DISMOUNT_VOLUME, FSCTL_ALLOW_EXTENDED_DASD_IO take no access of their own:
+# a file handle - any user can have one - must not lock or dismount the volume
+Check 'lock through a file handle refused'         87 ([SecIo]::Ioctl($file, 2147483648, 0x90018, 0, 0))
+Check 'dismount through a file handle refused'     87 ([SecIo]::Ioctl($file, 2147483648, 0x90020, 0, 0))
+Check 'extended DASD I/O on a file handle refused' 87 ([SecIo]::Ioctl($file, 2147483648, 0x90083, 0, 0))
+# requests with no volume behind them: EAs of a volume handle, FSCTL_IS_VOLUME_MOUNTED on the control device
+Check 'EAs of a volume handle refused'       'C000000D' ([SecIo]::GetEaList("\\.\$Drive`:", $true))
+Check 'mounted query on the control device refused' 1 ([SecIo]::Ioctl('\\.\ext4', 3221225472, 0x90028, 0, 0))
 
 "-- LUKS control (IOCTL_APP_CRYPT_*, 0x221F68..70)"
 Check 'unlocked volumes can be listed'            0     ([SecIo]::Crypt(0x221F70, 8192))
