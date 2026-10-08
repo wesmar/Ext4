@@ -136,6 +136,11 @@ Ext2LockVolume (IN PEXT2_IRP_CONTEXT IrpContext)
             __leave;
         }
 
+        /* from a handle to the volume only (Ext2IsVolumeHandle) */
+        if (!Ext2IsVolumeHandle(IrpContext)) {
+            Status = STATUS_INVALID_PARAMETER;
+            __leave;
+        }
         Vcb = (PEXT2_VCB) DeviceObject->DeviceExtension;
 
         ASSERT(Vcb != NULL);
@@ -240,6 +245,11 @@ Ext2UnlockVolume (
             __leave;
         }
 
+        /* from a handle to the volume only (Ext2IsVolumeHandle) */
+        if (!Ext2IsVolumeHandle(IrpContext)) {
+            Status = STATUS_INVALID_PARAMETER;
+            __leave;
+        }
         Vcb = (PEXT2_VCB) DeviceObject->DeviceExtension;
         ASSERT(Vcb != NULL);
         ASSERT((Vcb->Identifier.Type == EXT2VCB) &&

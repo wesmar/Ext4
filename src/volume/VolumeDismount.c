@@ -38,6 +38,11 @@ Ext2DismountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
             __leave;
         }
 
+        /* from a handle to the volume only (Ext2IsVolumeHandle) */
+        if (!Ext2IsVolumeHandle(IrpContext)) {
+            Status = STATUS_INVALID_PARAMETER;
+            __leave;
+        }
         Vcb = (PEXT2_VCB) DeviceObject->DeviceExtension;
 
         ASSERT(Vcb != NULL);

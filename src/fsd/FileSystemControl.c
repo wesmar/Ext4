@@ -117,39 +117,32 @@ Ext2InvalidateVolumes ( IN PEXT2_IRP_CONTEXT IrpContext )
     return Status;
 }
 
+/* FSCTL_ALLOW_EXTENDED_DASD_IO: this volume handle may read and write past
+   the file system's end. The control device and a file handle have no Vcb
+   in FsContext: refused before anything is read through it (the Vcb used
+   to be taken from FsContext whatever the handle was). */
 NTSTATUS
 Ext2AllowExtendedDasdIo(IN PEXT2_IRP_CONTEXT IrpContext)
 {
-    PIO_STACK_LOCATION IrpSp;
-    PEXT2_VCB Vcb;
-    PEXT2_CCB Ccb;
-    NTSTATUS  status;
+    PEXT2_VCB   Vcb;
+    NTSTATUS    Status;
 
-    IrpSp = IoGetCurrentIrpStackLocation(IrpContext->Irp);
-
-    Vcb = (PEXT2_VCB) IrpSp->FileObject->FsContext;
-    Ccb = (PEXT2_CCB) IrpSp->FileObject->FsContext2;
-
-    ASSERT(Vcb != NULL);
-
-    ASSERT((Vcb->Identifier.Type == EXT2VCB) &&
-           (Vcb->Identifier.Size == sizeof(EXT2_VCB)));
-
-    if (!IsMounted(Vcb) || IsFlagOn(Vcb->Flags, VCB_DISMOUNT_PENDING)) {
-        status = STATUS_VOLUME_DISMOUNTED;
-        Ext2CompleteIrpContext(IrpContext, status);
-        return status;
-    }
-
-    if (Ccb) {
-        SetLongFlag(Ccb->Flags, CCB_ALLOW_EXTENDED_DASD_IO);
-        status = STATUS_SUCCESS;
+    if (IsExt2FsDevice(IrpContext->DeviceObject)) {
+        Status = STATUS_INVALID_DEVICE_REQUEST;
+    } else if (!Ext2IsVolumeHandle(IrpContext)) {
+        Status = STATUS_INVALID_PARAMETER;
     } else {
-        status = STATUS_INVALID_PARAMETER;
+        Vcb = (PEXT2_VCB)IrpContext->Fcb;
+        if (!IsMounted(Vcb) || IsFlagOn(Vcb->Flags, VCB_DISMOUNT_PENDING)) {
+            Status = STATUS_VOLUME_DISMOUNTED;
+        } else {
+            SetLongFlag(IrpContext->Ccb->Flags, CCB_ALLOW_EXTENDED_DASD_IO);
+            Status = STATUS_SUCCESS;
+        }
     }
 
-    Ext2CompleteIrpContext(IrpContext, status);
-    return status;
+    Ext2CompleteIrpContext(IrpContext, Status);
+    return Status;
 }
 
 /*
@@ -259,17 +252,23 @@ Ext2OplockRequest (
         case FSCTL_REQUEST_OPLOCK_LEVEL_2:
         case FSCTL_REQUEST_BATCH_OPLOCK:
 
+            /* The counts an oplock is granted on are read under the locks.
+               The Fcb is never waited for - its holder may be waiting for
+               a break of this very file's oplock - and an oplock that
+               cannot be decided now is not granted. Both used to be read
+               without the locks when one could not be had. */
             VcbResourceAcquired =
                 ExAcquireResourceSharedLite(
                     &Vcb->MainResource,
                     IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT) );
-
-            ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
-
-            FcbResourceAcquired =
-                ExAcquireResourceExclusiveLite (
-                    &Fcb->MainResource,
-                    IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT));
+            if (VcbResourceAcquired) {
+                FcbResourceAcquired =
+                    ExAcquireResourceExclusiveLite(&Fcb->MainResource, FALSE);
+            }
+            if (!FcbResourceAcquired) {
+                Status = STATUS_OPLOCK_NOT_GRANTED;
+                __leave;
+            }
 
             if (FsCtrlCode == FSCTL_REQUEST_OPLOCK_LEVEL_2) {
                 OplockCount = (ULONG) FsRtlAreThereCurrentFileLocks(&Fcb->FileLockAnchor);
@@ -284,6 +283,8 @@ Ext2OplockRequest (
         case FSCTL_OPLOCK_BREAK_NOTIFY:
         case FSCTL_OPLOCK_BREAK_ACK_NO_2:
 
+            /* an acknowledgement goes through either way: the oplock
+               package orders it, a breaker waits for it */
             FcbResourceAcquired =
                 ExAcquireResourceSharedLite (
                     &Fcb->MainResource,
@@ -293,7 +294,9 @@ Ext2OplockRequest (
 
         default:
 
-            Ext2BugCheck(EXT2_BUGCHK_FSCTL, FsCtrlCode, 0, 0);
+            /* Ext2UserFsRequest sends only the codes above */
+            Status = STATUS_INVALID_DEVICE_REQUEST;
+            __leave;
         }
 
         /* Call the FsRtl routine to grant/acknowledge oplock. */

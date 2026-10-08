@@ -215,31 +215,10 @@ typedef IO_STACK_LOCATION EXTENDED_IO_STACK_LOCATION, *PEXTENDED_IO_STACK_LOCATI
 
 #define EXT2_FILE_SYSTEM   (FILE_SYSTEM)
 
+/* the two places that stop the system on purpose: an exception the filter
+   cannot place, a block request cut short with I/O still at the disk */
 #define EXT2_BUGCHK_BLOCK               (0x00010000)
-#define EXT2_BUGCHK_CLEANUP             (0x00020000)
-#define EXT2_BUGCHK_CLOSE               (0x00030000)
-#define EXT2_BUGCHK_CMCB                (0x00040000)
-#define EXT2_BUGCHK_CREATE              (0x00050000)
-#define EXT2_BUGCHK_DEBUG               (0x00060000)
-#define EXT2_BUGCHK_DEVCTL              (0x00070000)
-#define EXT2_BUGCHK_DIRCTL              (0x00080000)
-#define EXT2_BUGCHK_DISPATCH            (0x00090000)
 #define EXT2_BUGCHK_EXCEPT              (0x000A0000)
-#define EXT2_BUGCHK_EXT2                (0x000B0000)
-#define EXT2_BUGCHK_FASTIO              (0x000C0000)
-#define EXT2_BUGCHK_FILEINFO            (0x000D0000)
-#define EXT2_BUGCHK_FLUSH               (0x000E0000)
-#define EXT2_BUGCHK_FSCTL               (0x000F0000)
-#define EXT2_BUGCHK_INIT                (0x00100000)
-#define EXT2_BUGCHK_LOCK                (0x0011000)
-#define EXT2_BUGCHK_MEMORY              (0x0012000)
-#define EXT2_BUGCHK_MISC                (0x0013000)
-#define EXT2_BUGCHK_READ                (0x00140000)
-#define EXT2_BUGCHK_SHUTDOWN            (0x00150000)
-#define EXT2_BUGCHK_VOLINFO             (0x00160000)
-#define EXT2_BUGCHK_WRITE               (0x00170000)
-
-#define EXT2_BUGCHK_LAST                (0x00170000)
 
 #define Ext2BugCheck(A,B,C,D) { KeBugCheckEx(EXT2_FILE_SYSTEM, A | __LINE__, B, C, D ); }
 
