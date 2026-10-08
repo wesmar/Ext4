@@ -16,6 +16,9 @@
 #pragma alloc_text(PAGE, Ext2GetRetrievalPointers)
 #endif
 
+/* the map of a file is built this many bytes at a time (a ULONG length) */
+#define EXT2_MAP_CHUNK  0x80000000UL
+
 NTSTATUS
 Ext2QueryExtentMappings(
     IN PEXT2_IRP_CONTEXT   IrpContext,
@@ -407,11 +410,12 @@ Ext2GetRetrievalPointers (
             __leave;
         }
 
-        if (!ExAcquireResourceExclusiveLite (
-                    &Fcb->MainResource, Ext2CanIWait())) {
-            Status = STATUS_PENDING;
-            __leave;
-        }
+        /* Never posted: the buffers are the caller's own addresses
+           (METHOD_NEITHER), valid in its process only - a system worker
+           would probe and fill those of another. The map is only read:
+           shared. */
+        SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
+        ExAcquireResourceSharedLite(&Fcb->MainResource, TRUE);
         FcbResourceAcquired = TRUE;
 
         SVIB = (PSTARTING_VCN_INPUT_BUFFER)
@@ -454,7 +458,7 @@ Ext2GetRetrievalPointers (
         while (Vbn < Fcb->Header.AllocationSize.QuadPart) {
 
             ASSERT(Chain == NULL);
-            Length = 0x80000000; /* the map is built in 2 GB chunks */
+            Length = EXT2_MAP_CHUNK;
             if (Fcb->Header.AllocationSize.QuadPart < Vbn + Length) {
                 Length = (ULONG)(Fcb->Header.AllocationSize.QuadPart - Vbn);
             }
@@ -517,11 +521,7 @@ Ext2GetRetrievalPointers (
         }
 
         if (!AbnormalTermination()) {
-            if (Status == STATUS_PENDING || Status == STATUS_CANT_WAIT) {
-                Status = Ext2QueueRequest(IrpContext);
-            } else {
-                Ext2CompleteIrpContext(IrpContext, Status);
-            }
+            Ext2CompleteIrpContext(IrpContext, Status);
         }
     }
 

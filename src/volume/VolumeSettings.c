@@ -230,8 +230,11 @@ Ext2PerformRegistryVolumeParams(IN PEXT2_VCB Vcb)
     Status = Ext2QueryVolumeParams(Vcb, &VolumeParams);
     if (NT_SUCCESS(Status)) {
 
-        /* set Vcb settings from registery */
+        /* set Vcb settings from registery; a code page they do not name
+           (or one there is no table for) is the driver's */
         EXT2_VOLUME_PROPERTY3  Property;
+        memcpy(Vcb->Codepage.AnsiName, Ext2Global->Codepage.AnsiName, CODEPAGE_MAXLEN);
+        Vcb->Codepage.PageTable = Ext2Global->Codepage.PageTable;
         Ext2ParseRegistryVolumeParams(&VolumeParams, &Property);
         Ext2ProcessVolumeProperty(Vcb, &Property, sizeof(Property));
 
@@ -264,23 +267,12 @@ Ext2PerformRegistryVolumeParams(IN PEXT2_VCB Vcb)
         memcpy(Vcb->Codepage.AnsiName, Ext2Global->Codepage.AnsiName, CODEPAGE_MAXLEN);
         Vcb->Codepage.PageTable = Ext2Global->Codepage.PageTable;
 
-        if (Vcb->bHidingPrefix == Ext2Global->bHidingPrefix) {
-            RtlCopyMemory( Vcb->sHidingPrefix,
-                           Ext2Global->sHidingPrefix,
-                           HIDINGPAT_LEN);
-        } else {
-            RtlZeroMemory( Vcb->sHidingPrefix,
-                           HIDINGPAT_LEN);
-        }
-
-        if (Vcb->bHidingSuffix == Ext2Global->bHidingSuffix) {
-            RtlCopyMemory( Vcb->sHidingSuffix,
-                           Ext2Global->sHidingSuffix,
-                           HIDINGPAT_LEN);
-        } else {
-            RtlZeroMemory( Vcb->sHidingSuffix,
-                           HIDINGPAT_LEN);
-        }
+        /* the driver's hiding patterns: taken, not compared - compared with
+           the volume's own (FALSE), they were never taken at all */
+        Vcb->bHidingPrefix = Ext2Global->bHidingPrefix;
+        RtlCopyMemory(Vcb->sHidingPrefix, Ext2Global->sHidingPrefix, HIDINGPAT_LEN);
+        Vcb->bHidingSuffix = Ext2Global->bHidingSuffix;
+        RtlCopyMemory(Vcb->sHidingSuffix, Ext2Global->sHidingSuffix, HIDINGPAT_LEN);
     }
 
 errorout:

@@ -117,6 +117,105 @@ Ext2DeviceControlNormal (IN PEXT2_IRP_CONTEXT IrpContext)
     return Status;
 }
 
+/*
+ * The property commands come in three levels, each structure starting with
+ * the one below it (EXT2_VOLUME_PROPERTY3 with 2, 2 with 1): a level-3 set
+ * sets levels 3, 2 and 1. Returns the level, 0 for no property command, and
+ * whether it sets or queries.
+ */
+static ULONG
+Ext2PropertyLevel(IN ULONG Command, OUT PBOOLEAN Set)
+{
+    switch (Command) {
+    case APP_CMD_SET_PROPERTY:      *Set = TRUE;  return 1;
+    case APP_CMD_QUERY_PROPERTY:    *Set = FALSE; return 1;
+    case APP_CMD_SET_PROPERTY2:     *Set = TRUE;  return 2;
+    case APP_CMD_QUERY_PROPERTY2:   *Set = FALSE; return 2;
+    case APP_CMD_SET_PROPERTY3:     *Set = TRUE;  return 3;
+    case APP_CMD_QUERY_PROPERTY3:   *Set = FALSE; return 3;
+    default:                        *Set = FALSE; return 0;
+    }
+}
+
+/* the structure a level reads and writes, index = level */
+static const ULONG Ext2PropertySize[] = {
+    0,
+    sizeof(EXT2_VOLUME_PROPERTY),
+    sizeof(EXT2_VOLUME_PROPERTY2),
+    sizeof(EXT2_VOLUME_PROPERTY3)
+};
+
+/* the header every command has, Command included */
+#define EXT2_PROPERTY_HEADER    RTL_SIZEOF_THROUGH_FIELD(EXT2_VOLUME_PROPERTY, Command)
+
+/* a hiding pattern from user mode: off, or the text ended inside the field */
+static VOID
+Ext2TakePattern(OUT PBOOLEAN On, OUT PCHAR Pattern, IN BOOLEAN GivenOn, IN const CHAR *Given)
+{
+    *On = GivenOn;
+    RtlZeroMemory(Pattern, HIDINGPAT_LEN);
+    if (GivenOn) {
+        RtlCopyMemory(Pattern, Given, HIDINGPAT_LEN - 1);
+    }
+}
+
+/* a code page by name, NULL for one the driver has no table for - which
+   changes nothing (it used to take a volume off UTF-8). The name comes
+   from user mode: it is ended inside its field first. */
+static struct nls_table *
+Ext2FindCodepage(IN OUT PCHAR Name)
+{
+    Name[CODEPAGE_MAXLEN - 1] = 0;
+    return load_nls(Name);
+}
+
+/* level 3 of the driver: automount */
+static VOID
+Ext2SetGlobalProperty3(IN PEXT2_VOLUME_PROPERTY3 Property3)
+{
+    if (Property3->Flags2 & EXT2_VPROP3_AUTOMOUNT) {
+        if (Property3->AutoMount) {
+            SetLongFlag(Ext2Global->Flags, EXT2_AUTO_MOUNT);
+        } else {
+            ClearLongFlag(Ext2Global->Flags, EXT2_AUTO_MOUNT);
+        }
+    }
+}
+
+/* level 2 of the driver: the hiding patterns new volumes start with */
+static VOID
+Ext2SetGlobalProperty2(IN PEXT2_VOLUME_PROPERTY2 Property2)
+{
+    Ext2TakePattern(&Ext2Global->bHidingPrefix, Ext2Global->sHidingPrefix,
+                    Property2->bHidingPrefix, Property2->sHidingPrefix);
+    Ext2TakePattern(&Ext2Global->bHidingSuffix, Ext2Global->sHidingSuffix,
+                    Property2->bHidingSuffix, Property2->sHidingSuffix);
+}
+
+/* level 1 of the driver: writing, and the code page new volumes start with */
+static VOID
+Ext2SetGlobalProperty1(IN PEXT2_VOLUME_PROPERTY Property)
+{
+    struct nls_table *PageTable;
+
+    if (Property->bReadonly) {
+        ClearLongFlag(Ext2Global->Flags, EXT2_SUPPORT_WRITING);
+        ClearLongFlag(Ext2Global->Flags, EXT3_FORCE_WRITING);
+    } else {
+        SetLongFlag(Ext2Global->Flags, EXT2_SUPPORT_WRITING);
+        if (Property->bExt3Writable) {
+            SetLongFlag(Ext2Global->Flags, EXT3_FORCE_WRITING);
+        } else {
+            ClearLongFlag(Ext2Global->Flags, EXT3_FORCE_WRITING);
+        }
+    }
+    PageTable = Ext2FindCodepage(Property->Codepage);
+    if (PageTable != NULL) {
+        RtlCopyMemory(Ext2Global->Codepage.AnsiName, Property->Codepage, CODEPAGE_MAXLEN);
+        Ext2Global->Codepage.PageTable = PageTable;
+    }
+}
+
 NTSTATUS
 Ext2ProcessGlobalProperty(
     IN  PDEVICE_OBJECT  DeviceObject,
@@ -124,129 +223,227 @@ Ext2ProcessGlobalProperty(
     IN  ULONG Length
 )
 {
-    UNREFERENCED_PARAMETER(DeviceObject);
-    PEXT2_VOLUME_PROPERTY3 Property2 = (PVOID)Property3;
-    PEXT2_VOLUME_PROPERTY  Property = (PVOID)Property3;
-    struct nls_table * PageTable = NULL;
+    PEXT2_VOLUME_PROPERTY   Property = (PVOID)Property3;
+    ULONG                   Level;
+    BOOLEAN                 Set;
 
-    NTSTATUS        Status = STATUS_SUCCESS;
-    BOOLEAN         GlobalDataResourceAcquired = FALSE;
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    if (Length < EXT2_PROPERTY_HEADER || !IsFlagOn(Property->Flags, EXT2_FLAG_VP_SET_GLOBAL)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    /* the version, terminated; no build date or time - the same source
+       builds to the same bytes */
+    if (Property->Command == APP_CMD_QUERY_VERSION) {
+        PEXT2_VOLUME_PROPERTY_VERSION PVPV = (PEXT2_VOLUME_PROPERTY_VERSION)Property;
+
+        if (Length < sizeof(EXT2_VOLUME_PROPERTY_VERSION)) {
+            return STATUS_INVALID_PARAMETER;
+        }
+        RtlZeroMemory(PVPV->Version, sizeof(PVPV->Version));
+        RtlZeroMemory(PVPV->Time, sizeof(PVPV->Time));
+        RtlZeroMemory(PVPV->Date, sizeof(PVPV->Date));
+        RtlCopyMemory(PVPV->Version, EXT4_VERSION_STRING4,
+                      min(sizeof(EXT4_VERSION_STRING4), sizeof(PVPV->Version)) - 1);
+        return STATUS_SUCCESS;
+    }
+
+    /* the driver's settings are only set here; a query goes to a volume */
+    Level = Ext2PropertyLevel(Property->Command, &Set);
+    if (Level == 0 || !Set || Length < Ext2PropertySize[Level]) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
+    if (Level >= 3) {
+        Ext2SetGlobalProperty3(Property3);
+    }
+    if (Level >= 2) {
+        Ext2SetGlobalProperty2((PEXT2_VOLUME_PROPERTY2)Property3);
+    }
+    Ext2SetGlobalProperty1(Property);
+    ExReleaseResourceLite(&Ext2Global->Resource);
+
+    return STATUS_SUCCESS;
+}
+
+/* level 3 of a volume: automount, and the ids files are made with */
+static VOID
+Ext2SetVolumeProperty3(IN PEXT2_VCB Vcb, IN PEXT2_VOLUME_PROPERTY3 Property3)
+{
+    Ext2SetGlobalProperty3(Property3);
+
+    if (Property3->Flags2 & EXT2_VPROP3_USERIDS) {
+        SetLongFlag(Vcb->Flags, VCB_USER_IDS);
+        Vcb->uid = Property3->uid;
+        Vcb->gid = Property3->gid;
+        if (Property3->EIDS) {
+            Vcb->euid = Property3->euid;
+            Vcb->egid = Property3->egid;
+            SetLongFlag(Vcb->Flags, VCB_USER_EIDS);
+        } else {
+            Vcb->euid = Vcb->egid = 0;
+            ClearLongFlag(Vcb->Flags, VCB_USER_EIDS);
+        }
+    } else {
+        ClearLongFlag(Vcb->Flags, VCB_USER_IDS);
+        ClearLongFlag(Vcb->Flags, VCB_USER_EIDS);
+        Vcb->uid = Vcb->gid = 0;
+        Vcb->euid = Vcb->egid = 0;
+    }
+}
+
+/* level 2 of a volume: the names its listings leave out, its letter */
+static VOID
+Ext2SetVolumeProperty2(IN PEXT2_VCB Vcb, IN PEXT2_VOLUME_PROPERTY2 Property2)
+{
+    /* the flags were compared with the volume's, never taken: hiding was
+       off on every volume whatever the settings said */
+    Ext2TakePattern(&Vcb->bHidingPrefix, Vcb->sHidingPrefix,
+                    Property2->bHidingPrefix, Property2->sHidingPrefix);
+    Ext2TakePattern(&Vcb->bHidingSuffix, Vcb->sHidingSuffix,
+                    Property2->bHidingSuffix, Property2->sHidingSuffix);
+    Vcb->DrvLetter = Property2->DrvLetter;
+}
+
+/*
+ * Level 1 of a volume: read-only or writable, and the code page. A change
+ * happens only when the state does - asked to be what it is, the volume is
+ * left alone (writable again it used to go through the transition once
+ * more). A volume that stopped writing on an error stays read-only until
+ * it is dismounted, as Linux refuses to remount an aborted file system
+ * read-write.
+ */
+static NTSTATUS
+Ext2SetVolumeProperty1(IN PEXT2_VCB Vcb, IN PEXT2_VOLUME_PROPERTY Property)
+{
+    struct nls_table *PageTable;
+    BOOLEAN     ReadOnly = IsFlagOn(Vcb->Flags, VCB_READ_ONLY);
+    BOOLEAN     TransitionOwned = FALSE;
+    NTSTATUS    Status = STATUS_SUCCESS;
 
     __try {
 
-        if (Length < 8 || !IsFlagOn(Property->Flags, EXT2_FLAG_VP_SET_GLOBAL)) {
-            Status = STATUS_INVALID_PARAMETER;
-            __leave;
-        }
+        if (Property->bReadonly) {
 
-        /* query Ext2Fsd's version and built date/time*/
-        if (Property->Command == APP_CMD_QUERY_VERSION) {
-            PEXT2_VOLUME_PROPERTY_VERSION PVPV =
-                (PEXT2_VOLUME_PROPERTY_VERSION) Property;
-
-            if (Length < sizeof(EXT2_VOLUME_PROPERTY_VERSION)) {
-                Status = STATUS_INVALID_PARAMETER;
-                __leave;
-            }
-
-            /* the version, terminated; no build date or time - the same
-               source builds to the same bytes */
-            RtlZeroMemory(PVPV->Version, sizeof(PVPV->Version));
-            RtlZeroMemory(PVPV->Time, sizeof(PVPV->Time));
-            RtlZeroMemory(PVPV->Date, sizeof(PVPV->Date));
-            RtlCopyMemory(PVPV->Version, EXT4_VERSION_STRING4,
-                          min(sizeof(EXT4_VERSION_STRING4), sizeof(PVPV->Version)) - 1);
-            __leave;
-        }
-
-        /* must be property query/set commands */
-        if (Property->Command == APP_CMD_SET_PROPERTY) {
-            if (Length < sizeof(EXT2_VOLUME_PROPERTY)) {
-                Status = STATUS_INVALID_PARAMETER;
-                __leave;
-            }
-        } else if (Property->Command == APP_CMD_SET_PROPERTY2) {
-            if (Length < sizeof(EXT2_VOLUME_PROPERTY2)) {
-                Status = STATUS_INVALID_PARAMETER;
-                __leave;
-            }
-        } else if (Property->Command == APP_CMD_SET_PROPERTY3) {
-            if (Length < sizeof(EXT2_VOLUME_PROPERTY3)) {
-                Status = STATUS_INVALID_PARAMETER;
-                __leave;
-            }
-        } else {
-            Status = STATUS_INVALID_PARAMETER;
-            __leave;
-        }
-
-        ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
-        GlobalDataResourceAcquired = TRUE;
-
-
-        switch (Property->Command) {
-
-            case APP_CMD_SET_PROPERTY3:
-
-            if (Property3->Flags2 & EXT2_VPROP3_AUTOMOUNT) {
-                if (Property3->AutoMount)
-                    SetLongFlag(Ext2Global->Flags, EXT2_AUTO_MOUNT);
-                else
-                    ClearLongFlag(Ext2Global->Flags, EXT2_AUTO_MOUNT);
-            }
-
-            case APP_CMD_SET_PROPERTY2:
-
-            RtlZeroMemory(Ext2Global->sHidingPrefix, HIDINGPAT_LEN);
-            if ((Ext2Global->bHidingPrefix = Property2->bHidingPrefix)) {
-                RtlCopyMemory( Ext2Global->sHidingPrefix,
-                               Property2->sHidingPrefix,
-                               HIDINGPAT_LEN - 1);
-            }
-            RtlZeroMemory(Ext2Global->sHidingSuffix, HIDINGPAT_LEN);
-            if ((Ext2Global->bHidingSuffix = Property2->bHidingSuffix)) {
-                RtlCopyMemory( Ext2Global->sHidingSuffix,
-                               Property2->sHidingSuffix,
-                               HIDINGPAT_LEN - 1);
-            }
-
-            case APP_CMD_SET_PROPERTY:
-
-            if (Property->bReadonly) {
-                ClearLongFlag(Ext2Global->Flags, EXT2_SUPPORT_WRITING);
-                ClearLongFlag(Ext2Global->Flags, EXT3_FORCE_WRITING);
-            } else {
-                SetLongFlag(Ext2Global->Flags, EXT2_SUPPORT_WRITING);
-                if (Property->bExt3Writable) {
-                    SetLongFlag(Ext2Global->Flags, EXT3_FORCE_WRITING);
-                } else {
-                    ClearLongFlag(Ext2Global->Flags, EXT3_FORCE_WRITING);
+            if (!ReadOnly && IsFlagOn(Vcb->Flags, VCB_INITIALIZED)) {
+                (void)Ext2FlushFiles(NULL, Vcb, FALSE);
+                (void)Ext2FlushVolume(NULL, Vcb, FALSE);
+                /* going read-only: leave the fs clean, like unmount */
+                if (Vcb->Journal) {
+                    Ext2JournalStop(Vcb, TRUE);
                 }
+                Ext4MmpStop(Vcb, !IsFlagOn(Vcb->Flags, VCB_DEVICE_REMOVED));
+            }
+            SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
+
+        } else if (IsFlagOn(Vcb->Flags, VCB_WRITE_STOPPED)) {
+
+            Status = STATUS_MEDIA_WRITE_PROTECTED;
+
+        } else {
+
+            if (Property->bExt3Writable) {
+                SetLongFlag(Vcb->Flags, VCB_FORCE_WRITING);
             }
 
-            /* the name comes from user mode: end it inside the field
-               before anything compares it */
-            Property->Codepage[CODEPAGE_MAXLEN - 1] = 0;
-            PageTable = load_nls(Property->Codepage);
-            if (PageTable) {
-                memcpy(Ext2Global->Codepage.AnsiName, Property->Codepage, CODEPAGE_MAXLEN);
-                Ext2Global->Codepage.PageTable = PageTable;
+            if (!Vcb->IsExt3fs) {
+                if (Ext4MmpHold(Vcb)) {
+                    ClearLongFlag(Vcb->Flags, VCB_READ_ONLY);
+                }
+            } else if (!Property->bExt3Writable) {
+                SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
+            } else if (ReadOnly && IsFlagOn(Vcb->Flags, VCB_INITIALIZED)) {
+                /* going writable: replay if needed and start logging;
+                   without a working journal the volume stays read-only */
+                SetLongFlag(Vcb->Flags, VCB_WRITE_TRANSITION);
+                TransitionOwned = TRUE;
+                ClearLongFlag(Vcb->Flags, VCB_READ_ONLY);
+                if (!Ext4MmpHold(Vcb) ||
+                    Ext2RecoverJournal(NULL, Vcb) != 0 ||
+                    IsFlagOn(Vcb->Flags, VCB_JOURNAL_RECOVER)) {
+                    SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
+                }
+                ClearLongFlag(Vcb->Flags, VCB_WRITE_TRANSITION);
+                TransitionOwned = FALSE;
+            } else {
+                ClearLongFlag(Vcb->Flags, VCB_READ_ONLY);
             }
+        }
 
-            break;
-
-            default:
-            break;
+        PageTable = Ext2FindCodepage(Property->Codepage);
+        if (PageTable != NULL) {
+            RtlCopyMemory(Vcb->Codepage.AnsiName, Property->Codepage, CODEPAGE_MAXLEN);
+            Vcb->Codepage.PageTable = PageTable;
+            Ext2InitializeLabel(Vcb, Vcb->SuperBlock);
         }
 
     } __finally {
 
-        if (GlobalDataResourceAcquired) {
-            ExReleaseResourceLite(&Ext2Global->Resource);
+        /* a transition cut short leaves the volume read-only */
+        if (TransitionOwned) {
+            SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
+            ClearLongFlag(Vcb->Flags, VCB_WRITE_TRANSITION);
         }
     }
 
     return Status;
+}
+
+/* level 3 of a volume, read back */
+static VOID
+Ext2QueryVolumeProperty3(IN PEXT2_VCB Vcb, OUT PEXT2_VOLUME_PROPERTY3 Property3)
+{
+    if (IsFlagOn(Ext2Global->Flags, EXT2_AUTO_MOUNT)) {
+        SetFlag(Property3->Flags2, EXT2_VPROP3_AUTOMOUNT);
+        Property3->AutoMount = TRUE;
+    } else {
+        ClearFlag(Property3->Flags2, EXT2_VPROP3_AUTOMOUNT);
+        Property3->AutoMount = FALSE;
+    }
+
+    if (IsFlagOn(Vcb->Flags, VCB_USER_IDS)) {
+        SetFlag(Property3->Flags2, EXT2_VPROP3_USERIDS);
+        Property3->uid = Vcb->uid;
+        Property3->gid = Vcb->gid;
+        if (IsFlagOn(Vcb->Flags, VCB_USER_EIDS)) {
+            Property3->EIDS = TRUE;
+            Property3->euid = Vcb->euid;
+            Property3->egid = Vcb->egid;
+        } else {
+            Property3->EIDS = FALSE;
+        }
+    } else {
+        ClearFlag(Property3->Flags2, EXT2_VPROP3_USERIDS);
+    }
+}
+
+/* level 2 of a volume, read back */
+static VOID
+Ext2QueryVolumeProperty2(IN PEXT2_VCB Vcb, OUT PEXT2_VOLUME_PROPERTY2 Property2)
+{
+    RtlCopyMemory(Property2->UUID, Vcb->SuperBlock->s_uuid, sizeof(Property2->UUID));
+    Property2->DrvLetter = Vcb->DrvLetter;
+    Property2->bHidingPrefix = Vcb->bHidingPrefix;
+    RtlCopyMemory(Property2->sHidingPrefix, Vcb->sHidingPrefix, HIDINGPAT_LEN);
+    Property2->bHidingSuffix = Vcb->bHidingSuffix;
+    RtlCopyMemory(Property2->sHidingSuffix, Vcb->sHidingSuffix, HIDINGPAT_LEN);
+}
+
+/* level 1 of a volume, read back */
+static VOID
+Ext2QueryVolumeProperty1(IN PEXT2_VCB Vcb, OUT PEXT2_VOLUME_PROPERTY Property)
+{
+    Property->bExt2 = TRUE;
+    Property->bExt3 = Vcb->IsExt3fs;
+    Property->bReadonly = IsFlagOn(Vcb->Flags, VCB_READ_ONLY);
+    Property->bExt3Writable = !Property->bReadonly && Vcb->IsExt3fs;
+
+    RtlZeroMemory(Property->Codepage, CODEPAGE_MAXLEN);
+    strncpy(Property->Codepage,
+            Vcb->Codepage.PageTable ? Vcb->Codepage.PageTable->charset : "default",
+            CODEPAGE_MAXLEN - 1);
 }
 
 NTSTATUS
@@ -256,229 +453,41 @@ Ext2ProcessVolumeProperty(
     IN  ULONG Length
 )
 {
-    struct nls_table * PageTable = NULL;
-    PEXT2_VOLUME_PROPERTY2 Property2 = (PVOID)Property3;
-    PEXT2_VOLUME_PROPERTY  Property = (PVOID)Property3;
-    NTSTATUS Status = STATUS_SUCCESS;
-    BOOLEAN VcbResourceAcquired = FALSE;
-    BOOLEAN WriteTransitionOwned = FALSE;
+    PEXT2_VOLUME_PROPERTY2  Property2 = (PVOID)Property3;
+    PEXT2_VOLUME_PROPERTY   Property = (PVOID)Property3;
+    NTSTATUS                Status = STATUS_SUCCESS;
+    ULONG                   Level;
+    BOOLEAN                 Set;
 
+    if (Length < EXT2_PROPERTY_HEADER) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    Level = Ext2PropertyLevel(Property->Command, &Set);
+    if (Level == 0 || Length < Ext2PropertySize[Level]) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    ExAcquireResourceExclusiveLite(&Vcb->MainResource, TRUE);
     __try {
-
-        ExAcquireResourceExclusiveLite(&Vcb->MainResource, TRUE);
-        VcbResourceAcquired = TRUE;
-
-        if (Property->Command == APP_CMD_SET_PROPERTY ||
-            Property->Command == APP_CMD_QUERY_PROPERTY) {
-            if (Length < sizeof(EXT2_VOLUME_PROPERTY)) {
-                Status = STATUS_INVALID_PARAMETER;
-                __leave;
+        if (Set) {
+            if (Level >= 3) {
+                Ext2SetVolumeProperty3(Vcb, Property3);
             }
-        } else if (Property->Command == APP_CMD_SET_PROPERTY2 ||
-                   Property->Command == APP_CMD_QUERY_PROPERTY2) {
-            if (Length < sizeof(EXT2_VOLUME_PROPERTY2)) {
-                Status = STATUS_INVALID_PARAMETER;
-                __leave;
+            if (Level >= 2) {
+                Ext2SetVolumeProperty2(Vcb, Property2);
             }
-        } else if (Property->Command == APP_CMD_SET_PROPERTY3 ||
-                   Property->Command == APP_CMD_QUERY_PROPERTY3) {
-            if (Length < sizeof(EXT2_VOLUME_PROPERTY3)) {
-                Status = STATUS_INVALID_PARAMETER;
-                __leave;
+            Status = Ext2SetVolumeProperty1(Vcb, Property);
+        } else {
+            if (Level >= 3) {
+                Ext2QueryVolumeProperty3(Vcb, Property3);
             }
+            if (Level >= 2) {
+                Ext2QueryVolumeProperty2(Vcb, Property2);
+            }
+            Ext2QueryVolumeProperty1(Vcb, Property);
         }
-
-        switch (Property->Command) {
-
-        case APP_CMD_SET_PROPERTY3:
-
-            if (Property3->Flags2 & EXT2_VPROP3_AUTOMOUNT) {
-                if (Property3->AutoMount)
-                    SetLongFlag(Ext2Global->Flags, EXT2_AUTO_MOUNT);
-                else
-                    ClearLongFlag(Ext2Global->Flags, EXT2_AUTO_MOUNT);
-            }
-            if (Property3->Flags2 & EXT2_VPROP3_USERIDS) {
-                SetLongFlag(Vcb->Flags, VCB_USER_IDS);
-                Vcb->uid = Property3->uid;
-                Vcb->gid = Property3->gid;
-                if (Property3->EIDS) {
-                    Vcb->euid = Property3->euid;
-                    Vcb->egid = Property3->egid;
-                    SetLongFlag(Vcb->Flags, VCB_USER_EIDS);
-                } else {
-                    Vcb->euid = Vcb->egid = 0;
-                    ClearLongFlag(Vcb->Flags, VCB_USER_EIDS);
-                }
-            } else {
-                ClearLongFlag(Vcb->Flags, VCB_USER_IDS);
-                ClearLongFlag(Vcb->Flags, VCB_USER_EIDS);
-                Vcb->uid = Vcb->gid = 0;
-                Vcb->euid = Vcb->egid = 0;
-            }
-
-        case APP_CMD_SET_PROPERTY2:
-
-            RtlZeroMemory(Vcb->sHidingPrefix, HIDINGPAT_LEN);
-            if (Vcb->bHidingPrefix == Property2->bHidingPrefix) {
-                RtlCopyMemory( Vcb->sHidingPrefix,
-                               Property2->sHidingPrefix,
-                               HIDINGPAT_LEN - 1);
-            }
-
-            RtlZeroMemory(Vcb->sHidingSuffix, HIDINGPAT_LEN);
-            if (Vcb->bHidingSuffix == Property2->bHidingSuffix) {
-                RtlCopyMemory( Vcb->sHidingSuffix,
-                               Property2->sHidingSuffix,
-                               HIDINGPAT_LEN - 1);
-            }
-            Vcb->DrvLetter = Property2->DrvLetter;
-
-        case APP_CMD_SET_PROPERTY:
-
-            if (Property->bReadonly) {
-                if (IsFlagOn(Vcb->Flags, VCB_INITIALIZED)) {
-                    (void)Ext2FlushFiles(NULL, Vcb, FALSE);
-                    (void)Ext2FlushVolume(NULL, Vcb, FALSE);
-                    /* going read-only: leave the fs clean, like unmount */
-                    if (Vcb->Journal) {
-                        Ext2JournalStop(Vcb, TRUE);
-                    }
-                    Ext4MmpStop(Vcb, !IsFlagOn(Vcb->Flags, VCB_DEVICE_REMOVED));
-                }
-                SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
-
-            } else if (IsFlagOn(Vcb->Flags, VCB_WRITE_STOPPED)) {
-
-                /* stopped on an error - a journal abort, errors=remount-ro,
-                   a change neither finished nor undone, another MMP node:
-                   read-only until dismount, as Linux refuses to remount an
-                   aborted file system read-write (it used to be writable
-                   again at the asking) */
-                Status = STATUS_MEDIA_WRITE_PROTECTED;
-
-            } else {
-
-                if (Property->bExt3Writable) {
-                    SetLongFlag(Vcb->Flags, VCB_FORCE_WRITING);
-                }
-
-                if (!Vcb->IsExt3fs) {
-                    if (Ext4MmpHold(Vcb)) {
-                        ClearLongFlag(Vcb->Flags, VCB_READ_ONLY);
-                    }
-                } else if (!Property->bExt3Writable) {
-                    SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
-                } else if (IsFlagOn(Vcb->Flags, VCB_INITIALIZED)) {
-                    /* going writable: replay if needed and start logging;
-                       without a working journal the volume stays read-only */
-                    SetLongFlag(Vcb->Flags, VCB_WRITE_TRANSITION);
-                    WriteTransitionOwned = TRUE;
-                    ClearLongFlag(Vcb->Flags, VCB_READ_ONLY);
-                    if (!Ext4MmpHold(Vcb) ||
-                        Ext2RecoverJournal(NULL, Vcb) != 0 ||
-                        IsFlagOn(Vcb->Flags, VCB_JOURNAL_RECOVER)) {
-                        SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
-                    }
-                    ClearLongFlag(Vcb->Flags, VCB_WRITE_TRANSITION);
-                    WriteTransitionOwned = FALSE;
-                } else {
-                    ClearLongFlag(Vcb->Flags, VCB_READ_ONLY);
-                }
-            }
-
-            /* the name comes from user mode: end it inside the field */
-            Property->Codepage[CODEPAGE_MAXLEN - 1] = 0;
-            PageTable = load_nls(Property->Codepage);
-            memcpy(Vcb->Codepage.AnsiName, Property->Codepage, CODEPAGE_MAXLEN);
-            Vcb->Codepage.PageTable = PageTable;
-            if (Vcb->Codepage.PageTable) {
-                Ext2InitializeLabel(Vcb, Vcb->SuperBlock);
-            }
-
-            break;
-
-        case APP_CMD_QUERY_PROPERTY3:
-
-            if (IsFlagOn(Ext2Global->Flags, EXT2_AUTO_MOUNT)) {
-                SetFlag(Property3->Flags2, EXT2_VPROP3_AUTOMOUNT);
-                Property3->AutoMount = TRUE;
-            } else {
-                ClearFlag(Property3->Flags2, EXT2_VPROP3_AUTOMOUNT);
-                Property3->AutoMount = FALSE;
-            }
-
-            if (IsFlagOn(Vcb->Flags, VCB_USER_IDS)) {
-                SetFlag(Property3->Flags2, EXT2_VPROP3_USERIDS);
-                Property3->uid = Vcb->uid;
-                Property3->gid = Vcb->gid;
-                if (IsFlagOn(Vcb->Flags, VCB_USER_EIDS)) {
-                    Property3->EIDS = TRUE;
-                    Property3->euid = Vcb->euid;
-                    Property3->egid = Vcb->egid;
-                } else {
-                    Property3->EIDS = FALSE;
-                }
-            } else {
-                ClearFlag(Property3->Flags2, EXT2_VPROP3_USERIDS);
-            }
-
-        case APP_CMD_QUERY_PROPERTY2:
-
-            RtlCopyMemory(Property2->UUID, Vcb->SuperBlock->s_uuid, 16);
-            Property2->DrvLetter = Vcb->DrvLetter;
-
-            if (Property2->bHidingPrefix == Vcb->bHidingPrefix) {
-                RtlCopyMemory( Property2->sHidingPrefix,
-                               Vcb->sHidingPrefix,
-                               HIDINGPAT_LEN);
-            } else {
-                RtlZeroMemory( Property2->sHidingPrefix,
-                               HIDINGPAT_LEN);
-            }
-
-            if (Property2->bHidingSuffix == Vcb->bHidingSuffix) {
-                RtlCopyMemory( Property2->sHidingSuffix,
-                               Vcb->sHidingSuffix,
-                               HIDINGPAT_LEN);
-            } else {
-                RtlZeroMemory( Property2->sHidingSuffix,
-                               HIDINGPAT_LEN);
-            }
-
-        case APP_CMD_QUERY_PROPERTY:
-
-            Property->bExt2 = TRUE;
-            Property->bExt3 = Vcb->IsExt3fs;
-            Property->bReadonly = IsFlagOn(Vcb->Flags, VCB_READ_ONLY);
-            if (!Property->bReadonly && Vcb->IsExt3fs) {
-                Property->bExt3Writable = TRUE;
-            } else {
-                Property->bExt3Writable = FALSE;
-            }
-
-            RtlZeroMemory(Property->Codepage, CODEPAGE_MAXLEN);
-            if (Vcb->Codepage.PageTable) {
-                strncpy(Property->Codepage, Vcb->Codepage.PageTable->charset, CODEPAGE_MAXLEN);
-            } else {
-                strncpy(Property->Codepage, "default", CODEPAGE_MAXLEN);
-            }
-            break;
-
-        default:
-            Status = STATUS_INVALID_PARAMETER;
-            break;
-        }
-
     } __finally {
-
-        if (VcbResourceAcquired) {
-            if (WriteTransitionOwned) {
-                SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
-                ClearLongFlag(Vcb->Flags, VCB_WRITE_TRANSITION);
-            }
-            ExReleaseResourceLite(&Vcb->MainResource);
-        }
+        ExReleaseResourceLite(&Vcb->MainResource);
     }
 
     return Status;

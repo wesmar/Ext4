@@ -8,7 +8,8 @@
 # name in any case, a missing name comes back empty. Reparse points: no volume
 # handle reads one, a short buffer gets the header and ERROR_MORE_DATA, data
 # and directory entries are never given up for a link, DELETE takes the link;
-# no attribute makes a file a directory. As a
+# no attribute makes a file a directory. A hiding prefix leaves names out of
+# listings and lets them open. As a
 # restricted token of this thread (Administrators deny-only, as for a standard user): the control
 # device cannot be opened, and volume settings cannot be changed or mount
 # points created through a handle on a plain file.
@@ -153,6 +154,21 @@ public static class SecIo {
             return DeviceIoControl(h, 0x900AC, b, 8, null, 0, out r, IntPtr.Zero) ? 0 : Marshal.GetLastWin32Error();
         }
     }
+    // --- IOCTL_APP_VOLUME_PROPERTY level 2 (132 bytes): read the volume's, write it back
+    //     with a hiding prefix (null: none), every other field as it was read
+    public static int HidePrefix(string vol, string prefix) {
+        using (var h = CreateFile(vol, 0x80000000, 7, IntPtr.Zero, 3, 0, IntPtr.Zero)) {
+            if (h.IsInvalid) return -Marshal.GetLastWin32Error();
+            var b = new byte[132]; int r;
+            BitConverter.GetBytes(0x4556504Du).CopyTo(b, 0); BitConverter.GetBytes(4u).CopyTo(b, 8);
+            if (!DeviceIoControl(h, 0x221F40, b, b.Length, b, b.Length, out r, IntPtr.Zero)) return Marshal.GetLastWin32Error();
+            BitConverter.GetBytes(5u).CopyTo(b, 8);
+            b[66] = (byte)(prefix != null ? 1 : 0);
+            Array.Clear(b, 68, 32);
+            if (prefix != null) System.Text.Encoding.ASCII.GetBytes(prefix).CopyTo(b, 68);
+            return DeviceIoControl(h, 0x221F40, b, b.Length, b, b.Length, out r, IntPtr.Zero) ? 0 : Marshal.GetLastWin32Error();
+        }
+    }
     // --- a standard user's view: this thread impersonates a restricted copy of
     //     its own token (Administrators deny-only, no privileges) and runs the probes
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr p, uint a, out IntPtr t);
@@ -241,6 +257,20 @@ Check '... and stays a file'                      $true   ([IO.File]::Exists($fi
 Check 'DELETE takes the link'                      0       ([SecIo]::DeleteReparse($link, 2684354572))
 Check '... gone once closed, target kept'          'False True' ("$([IO.File]::Exists($link)) $([IO.File]::Exists($file))")
 
+"-- names left out of listings by a hiding prefix (volume property, level 2)"
+$hide = "$dir\hide"; $vol = "\\.\$Drive`:"
+[void][IO.Directory]::CreateDirectory($hide)
+[IO.File]::WriteAllText("$hide\zzhide-a.txt", 'h'); [IO.File]::WriteAllText("$hide\shown.txt", 's')
+function Listed { (([IO.Directory]::GetFiles($hide) | ForEach-Object { Split-Path $_ -Leaf } | Sort-Object) -join ',') }
+try {
+    Check 'hiding prefix set'                      0       ([SecIo]::HidePrefix($vol, 'zzhide'))
+    Check 'a name with it is left out'       'shown.txt'   (Listed)
+    Check '... and still opens by name'            'h'     ([IO.File]::ReadAllText("$hide\zzhide-a.txt"))
+    Check 'hiding prefix cleared'                  0       ([SecIo]::HidePrefix($vol, $null))
+    Check 'the name is listed again' 'shown.txt,zzhide-a.txt' (Listed)
+} finally {
+    [void][SecIo]::HidePrefix($vol, $null)
+}
 "-- as a standard user (restricted token: Administrators deny-only)"
 try {
     $res = @{}
@@ -251,7 +281,7 @@ try {
     Check 'mount points closed to users'            5  $res['mountpoint-via-file']
     Check 'symlink needs the symlink privilege'     1314 $res['symlink']
 } finally {
-    foreach ($x in $file, "$file.lnk", "$dir\runs.bin", "$dir\sparse.bin", $link, "$full\x.txt") { if ([IO.File]::Exists($x)) { [IO.File]::Delete($x) } }
-    foreach ($x in $full, $dir) { if ([IO.Directory]::Exists($x)) { [IO.Directory]::Delete($x) } }
+    foreach ($x in $file, "$file.lnk", "$dir\runs.bin", "$dir\sparse.bin", $link, "$full\x.txt", "$hide\zzhide-a.txt", "$hide\shown.txt") { if ([IO.File]::Exists($x)) { [IO.File]::Delete($x) } }
+    foreach ($x in $full, $hide, $dir) { if ([IO.Directory]::Exists($x)) { [IO.Directory]::Delete($x) } }
 }
 "security: $fail failed"
