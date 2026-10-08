@@ -67,7 +67,17 @@ Ext2ReleaseInode(
     /* a short symlink keeps its target inside i_block: no blocks to free
        (a 60 byte one has a block, which used to be left behind) */
     Size.QuadPart = 0;
-    if (!ext4_inode_is_fast_symlink(Inode)) {
+    if (S_ISDIR(Inode->i_mode)) {
+        /* A lookup that found the directory a moment before it went may be
+           reading its blocks (Ext2ScanDir, under the shared EntryResource):
+           they go with that kept off, and the size with them, so a lookup
+           reads them whole or finds none - never a block freed under it,
+           which it took for a hole, and recorded as corruption. */
+        ExAcquireResourceExclusiveLite(&Mcb->Icb->EntryResource, TRUE);
+        Status = Ext2TruncateFile(IrpContext, Vcb, Mcb, &Size);
+        Inode->i_size = 0;
+        ExReleaseResourceLite(&Mcb->Icb->EntryResource);
+    } else if (!ext4_inode_is_fast_symlink(Inode)) {
         Status = Ext2TruncateFile(IrpContext, Vcb, Mcb, &Size);
     }
 
