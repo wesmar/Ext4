@@ -5,10 +5,12 @@
 #   partition 1 (errcont, s_errors continue, two groups): group 0's block
 #     bitmap disagrees with its checksum, badinode.txt's inode checksum is
 #     wrong, the one leaf of /baddir has a wrong tail checksum;
-#   partition 2 (errro, s_errors remount-ro): badinode.txt as above.
+#   partition 2 (errro, s_errors remount-ro): badinode.txt as above;
+#   partition 3 (badsb): the superblock fails its checksum.
 # prepare builds it; check verifies from Linux what Windows did: the
 # superblock records the errors, new data went around the corrupt group,
-# the deleted file is gone, nothing was written after remount-ro.
+# the deleted file is gone, nothing was written after remount-ro, and
+# not a byte of the volume whose superblock fails its checksum.
 # Never repairs anything. The disk is found by its size.
 # e2fsck -fn passes a volume whose only fault is an error the driver
 # recorded in the superblock (EXT4_ERROR_FS, s_error_count), so a false
@@ -29,6 +31,8 @@ dev=/dev/$(lsblk -b -o NAME,SIZE,TYPE -n -d | awk -v s="$size" '$2==s && $3=="di
 [ "$dev" != "/dev/" ] || { echo "disk not found"; exit 2; }
 p1=${dev}1
 p2=${dev}2
+p3=${dev}3
+sbsum=/var/tmp/corrupt-badsb-$size.sha256   # the damaged superblock as left
 
 corrupt() {     # corrupt <partition>: plant the damage of that partition
     python3 - "$1" "$2" <<'PY'
@@ -75,13 +79,14 @@ PY
 
 if [ "$mode" = prepare ]; then
     [ -z "$(wipefs -n "$dev")" ] || { echo "refusing a non-blank disk"; exit 2; }
-    printf 'label: gpt\nsize=200MiB, type=linux\ntype=linux\n' | sfdisk -q "$dev"
+    printf 'label: gpt\nsize=200MiB, type=linux\nsize=100MiB, type=linux\ntype=linux\n' | sfdisk -q "$dev"
     udevadm settle
     mkfs.ext4 -q -F -L errcont "$p1"
     mkfs.ext4 -q -F -L errro "$p2"
+    mkfs.ext4 -q -F -L badsb "$p3"
     tune2fs -e continue "$p1" > /dev/null
     tune2fs -e remount-ro "$p2" > /dev/null
-    for p in "$p1" "$p2"; do
+    for p in "$p1" "$p2" "$p3"; do
         m=$(mktemp -d)
         mount "$p" "$m"
         printf 'good\n' > "$m/good.txt"
@@ -93,6 +98,19 @@ if [ "$mode" = prepare ]; then
     done
     corrupt "$p1" cont
     corrupt "$p2" ro
+    # a byte of s_last_mounted (in the checksum, harmless otherwise) changed
+    # without the checksum: the superblock fails it
+    python3 - "$p3" <<'PY'
+import os, sys
+with open(sys.argv[1], 'r+b', buffering=0) as f:
+    f.seek(1024 + 0x88 + 63)
+    b = f.read(1)
+    f.seek(1024 + 0x88 + 63)
+    f.write(bytes([b[0] ^ 0x5A]))
+    os.fsync(f.fileno())
+PY
+    dd if="$p3" bs=1024 skip=1 count=1 status=none | sha256sum > "$sbsum"
+    echo "planted on $p3: superblock checksum"
     echo "CORRUPT-LINUX: prepare passed"
     exit 0
 fi
@@ -128,5 +146,11 @@ debugfs -n -R "stat /good.txt" "$p1" 2>/dev/null | grep -q '^Inode:' && { echo "
 e2fsck -fn "$p1" 2>&1 | grep -q 'zero dtime' && { echo "  a failed create left an inode e2fsck calls deleted with zero dtime"; fail=1; } || echo "  failed creates left no stray inode"
 # partition 2: nothing written once it stopped writing
 debugfs -n -R "stat /after-error.txt" "$p2" 2>/dev/null | grep -q '^Inode:' && { echo "  errro was written after its error"; fail=1; } || echo "  errro: no write after the error"
+# partition 3: not a byte written over the superblock that fails its checksum
+if dd if="$p3" bs=1024 skip=1 count=1 status=none | sha256sum | cmp -s - "$sbsum"; then
+    echo "  badsb: superblock untouched"
+else
+    echo "  badsb: the superblock was written"; fail=1
+fi
 echo "CORRUPT-LINUX: $fail"
 exit $fail

@@ -2865,6 +2865,7 @@ ext3_group_first_block_no(struct super_block *sb, unsigned long group_no)
 
 __u32 ext4_chksum(struct ext4_sb_info *sbi, __u32 crc,
 			      const void *buffer, unsigned int length);
+int ext4_superblock_csum_ok(struct ext4_super_block *es);
 int ext4_superblock_csum_verify(struct super_block *sb,
 				       struct ext4_super_block *es);
 void ext4_superblock_csum_set(struct super_block *sb);

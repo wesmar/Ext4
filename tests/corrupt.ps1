@@ -4,7 +4,8 @@
 # listed and refused, a directory block that fails its checksum is refused,
 # new data goes around a group whose block bitmap is corrupt, a file whose
 # blocks lie there can still be deleted; a volume that asks for remount-ro
-# stops writing at the first error and goes on reading.
+# stops writing at the first error and goes on reading; one whose superblock
+# fails its checksum is read and never written.
 #
 #   powershell -File corrupt.ps1
 $ErrorActionPreference = 'Continue'
@@ -51,6 +52,14 @@ if ($r) {
     Check 'the corrupt inode refused' (Fails { [IO.File]::ReadAllText("$r\badinode.txt") })
     Check '... and the volume stopped writing' (Fails { [IO.File]::WriteAllText("$r\after-error.txt", 'x') })
     Check '... while reads go on' ([IO.File]::ReadAllText("$r\good.txt") -eq "good`n")
+}
+
+$b = Volume 'badsb'
+Check 'the volume whose superblock fails its checksum mounted' ($b -ne $null) "($b)"
+if ($b) {
+    "-- superblock checksum"
+    Check 'a good file read' ([IO.File]::ReadAllText("$b\good.txt") -eq "good`n")
+    Check '... and nothing written' (Fails { [IO.File]::WriteAllText("$b\new.txt", 'x') })
 }
 
 "CORRUPT-WIN: $fail failed"

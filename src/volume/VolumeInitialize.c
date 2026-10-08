@@ -152,6 +152,16 @@ Ext2CheckSuperBlock(IN PEXT2_VCB Vcb, IN PEXT2_SUPER_BLOCK sb)
         return Status;
     }
 
+    /* A superblock that fails its checksum is not trusted to write by:
+       Linux refuses the mount (ext4_fill_super). Here the volume is read
+       but nothing is written - not a journal replay, not a single record;
+       refused, Windows would offer to format it. e2fsck repairs it from a
+       backup superblock. It used to be mounted writable, with a message. */
+    if (!ext4_superblock_csum_ok(sb)) {
+        DbgPrint("ext4: the superblock fails its checksum: mounted read-only, run e2fsck\n");
+        SetLongFlag(Vcb->Flags, VCB_RO_COMPAT_READ_ONLY);
+    }
+
     /* Reject mounting volume if we encounter unsupported incompat features */
     if (FlagOn(sb->s_feature_incompat,
                ~(EXT4_FEATURE_INCOMPAT_SUPP | EXT4_FEATURE_INCOMPAT_READ_ONLY))) {

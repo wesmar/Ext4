@@ -243,6 +243,16 @@ int ext4_superblock_csum_verify(struct super_block *sb,
 	return es->s_checksum == ext4_superblock_csum(sb, es);
 }
 
+/* the superblock as read from the disk, before a super_block is built on it */
+int ext4_superblock_csum_ok(struct ext4_super_block *es)
+{
+	if (!(le32_to_cpu(es->s_feature_ro_compat) & EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+		return 1;
+
+	return es->s_checksum ==
+	       cpu_to_le32(crc32c(~0U, (const __u8 *)es, offsetof(struct ext4_super_block, s_checksum)));
+}
+
 void ext4_superblock_csum_set(struct super_block *sb)
 {
 	struct ext4_super_block *es = EXT4_SB(sb)->s_es;

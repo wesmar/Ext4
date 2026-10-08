@@ -80,8 +80,8 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
     PDEVICE_OBJECT              TargetDeviceObject;
     NTSTATUS                    Status = STATUS_UNRECOGNIZED_VOLUME;
     PDEVICE_OBJECT              VolumeDeviceObject = NULL;
-    PEXT2_VCB                   Vcb = NULL, OldVcb = NULL;
-    PVPB                        OldVpb = NULL, Vpb = NULL;
+    PEXT2_VCB                   Vcb = NULL;
+    PVPB                        Vpb = NULL;
     PEXT2_SUPER_BLOCK           Ext2Sb = NULL;
     ULONG                       dwBytes;
     DISK_GEOMETRY               DiskGeometry;
@@ -156,28 +156,11 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
         INC_MEM_COUNT(PS_VCB, VolumeDeviceObject, sizeof(EXT2_VCB));
 
 
+        /* the volume device keeps the default buffer alignment: the target's
+           would refuse requests callers align to sectors only */
         VolumeDeviceObject->StackSize = (CCHAR)(TargetDeviceObject->StackSize + 1);
         ClearFlag(VolumeDeviceObject->Flags, DO_DEVICE_INITIALIZING);
 
-/*
-        These are for buffer-address alignment requirements.
-        Never do this check, unless you want fail user requests :)
-
-        if (TargetDeviceObject->AlignmentRequirement >
-                VolumeDeviceObject->AlignmentRequirement) {
-
-            VolumeDeviceObject->AlignmentRequirement =
-                TargetDeviceObject->AlignmentRequirement;
-        }
-
-        if (DiskGeometry.BytesPerSector - 1 >
-                VolumeDeviceObject->AlignmentRequirement) {
-            VolumeDeviceObject->AlignmentRequirement =
-                DiskGeometry.BytesPerSector - 1;
-            TargetDeviceObject->AlignmentRequirement =
-                DiskGeometry.BytesPerSector - 1;
-        }
-*/
         (IoStackLocation->Parameters.MountVolume.Vpb)->DeviceObject =
             VolumeDeviceObject;
         Vpb = IoStackLocation->Parameters.MountVolume.Vpb;
@@ -217,8 +200,6 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 
         if (NT_SUCCESS(Status))  {
 
-            PLIST_ENTRY List;
-
             ExAcquireResourceExclusiveLite(&(Ext2Global->Resource), TRUE);
             GlobalDataResourceAcquired = TRUE;
 
@@ -226,35 +207,6 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
                 IsFlagOn(Ext2Global->Flags, EXT2_UNLOAD_PENDING)) {
                 Status = STATUS_UNRECOGNIZED_VOLUME;
                 __leave;
-            }
-
-            for (List = Ext2Global->VcbList.Flink;
-                    List != &Ext2Global->VcbList;
-                    List = List->Flink) {
-
-                OldVcb = CONTAINING_RECORD(List, EXT2_VCB, Next);
-                OldVpb = OldVcb->Vpb;
-
-                /* in case we are already in the queue, should not happen */
-                if (OldVpb == Vpb) {
-                    continue;
-                }
-
-                if ( (OldVpb->SerialNumber == Vpb->SerialNumber) &&
-                        (!IsMounted(OldVcb)) && (IsFlagOn(OldVcb->Flags, VCB_NEW_VPB)) &&
-                        (OldVpb->RealDevice == TargetDeviceObject) &&
-                        (OldVpb->VolumeLabelLength == Vpb->VolumeLabelLength) &&
-                        (RtlEqualMemory(&OldVpb->VolumeLabel[0],
-                                        &Vpb->VolumeLabel[0],
-                                        Vpb->VolumeLabelLength)) &&
-                        (RtlEqualMemory(&OldVcb->SuperBlock->s_uuid[0],
-                                        &Vcb->SuperBlock->s_uuid[0], 16)) ) {
-                    ClearLongFlag(OldVcb->Flags, VCB_MOUNTED);
-                }
-            }
-
-            if (!ext4_superblock_csum_verify(&Vcb->sb, Ext2Sb)) {
-                DEBUG(DL_ERR, ( "Found ext4 filesystem with invalid superblock checksum. Run e2fsck?\n"));
             }
 
             /* update fs mount time */
@@ -286,10 +238,8 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 
         if (!NT_SUCCESS(Status)) {
 
-            if (!NT_SUCCESS(Status)) {
-                if ( Vpb != NULL ) {
-                    Vpb->DeviceObject = NULL;
-                }
+            if (Vpb != NULL) {
+                Vpb->DeviceObject = NULL;
             }
 
             if (Vcb) {
