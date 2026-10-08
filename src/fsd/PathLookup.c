@@ -66,16 +66,10 @@ Ext2FollowLink (
 
     UNICODE_STRING UniName = { 0 };
     OEM_STRING OemName = { 0 };
-    BOOLEAN         bOemBuffer = FALSE;
 
     PEXT2_MCB       Target = NULL;
 
-    USHORT          i;
-
     __try {
-
-        RtlZeroMemory(&UniName, sizeof(UNICODE_STRING));
-        RtlZeroMemory(&OemName, sizeof(OEM_STRING));
 
         /* exit if we jump into a possible symlink forever loop */
         if ((Linkdep + 1) > EXT2_MAX_NESTED_LINKS ||
@@ -83,44 +77,14 @@ Ext2FollowLink (
             __leave;
         }
 
-        /* read the symlink target path: kept in i_block, or in a block */
-        if (ext4_inode_is_fast_symlink(Mcb->Inode)) {
-
-            OemName.Buffer = (PCHAR)&Mcb->Inode->i_block[0];
-            OemName.Length = (USHORT)Mcb->Inode->i_size;
-            OemName.MaximumLength = OemName.Length + 1;
-
-        } else {
-
-            OemName.Length = (USHORT)Mcb->Inode->i_size;
-            OemName.MaximumLength = OemName.Length + 1;
-            OemName.Buffer = Ext2AllocatePool(PagedPool,
-                                              OemName.MaximumLength,
-                                              'NL2E');
-            if (OemName.Buffer == NULL) {
-                Status = STATUS_INSUFFICIENT_RESOURCES;
-                __leave;
-            }
-            bOemBuffer = TRUE;
-            RtlZeroMemory(OemName.Buffer, OemName.MaximumLength);
-
-            Status = Ext2ReadSymlink(
-                         IrpContext,
-                         Vcb,
-                         Mcb,
-                         OemName.Buffer,
-                         (ULONG)(Mcb->Inode->i_size),
-                         NULL);
-            if (!NT_SUCCESS(Status)) {
-                __leave;
-            }
-        }
-
-        /* convert Linux slash to Windows backslash */
-        for (i=0; i < OemName.Length; i++) {
-            if (OemName.Buffer[i] == '/') {
-                OemName.Buffer[i] = '\\';
-            }
+        /* the target with Windows separators, in a copy of its own; one
+           that cannot be read leaves the link unresolved */
+        Status = Ext2ReadLinkText(IrpContext, Vcb, Mcb, &OemName);
+        if (!NT_SUCCESS(Status)) {
+            ClearLongFlag(Mcb->Flags, MCB_TYPE_SYMLINK);
+            SetLongFlag(Mcb->Flags, MCB_TYPE_SPECIAL);
+            Mcb->Target = NULL;
+            __leave;
         }
 
         /* convert oem string to unicode string */
@@ -198,7 +162,7 @@ Ext2FollowLink (
 
     } __finally {
 
-        if (bOemBuffer) {
+        if (OemName.Buffer) {
             Ext2FreePool(OemName.Buffer, 'NL2E');
         }
 

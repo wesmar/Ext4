@@ -733,6 +733,13 @@ Ext2CreateAttachCcb(IN PEXT2_VCB Vcb, IN OUT PEXT2_CREATE C)
     }
     C->Ccb = Ccb;
 
+    /* what the open asked for and what a privilege granted it already
+       (backup and restore move the rights they cover there) */
+    Ccb->Access = C->DesiredAccess;
+    if (C->IrpSp->Parameters.Create.SecurityContext->AccessState) {
+        Ccb->Access |= C->IrpSp->Parameters.Create.SecurityContext->AccessState->PreviouslyGrantedAccess;
+    }
+
     if (C->DeleteOnClose) {
         SetLongFlag(Ccb->Flags, CCB_DELETE_ON_CLOSE);
     }

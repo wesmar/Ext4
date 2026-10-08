@@ -73,6 +73,13 @@ Ext2SetTimeIf(IN PLARGE_INTEGER Given, OUT __u32 *Time, OUT __u32 *Extra, OUT PL
     return TRUE;
 }
 
+/* what a caller sets; the others - directory, reparse point - say what the
+   file is, and stay as they are (MS-FSA, FileBasicInformation) */
+#define EXT2_SETTABLE_ATTRIBUTES    (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN |      \
+                                     FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_ARCHIVE |       \
+                                     FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_TEMPORARY |     \
+                                     FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED)
+
 /* FileBasicInformation: the times and the attributes */
 static NTSTATUS
 Ext2SetBasicInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE_OBJECT FileObject,
@@ -82,6 +89,15 @@ Ext2SetBasicInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE_OBJ
     struct inode   *Inode = Mcb->Inode;
     PEXT2_ICB       Icb = Mcb->Icb;
     ULONG           Changed = 0;
+    BOOLEAN         Directory = IsDirectory(Fcb);
+
+    /* refused before anything changes, as NTFS and FAT refuse it: a file
+       called a directory - taken in, it was read as one, its data as
+       entries - or a directory called temporary */
+    if ((!Directory && IsFlagOn(FBI->FileAttributes, FILE_ATTRIBUTE_DIRECTORY)) ||
+        (Directory && IsFlagOn(FBI->FileAttributes, FILE_ATTRIBUTE_TEMPORARY))) {
+        return STATUS_INVALID_PARAMETER;
+    }
 
     if (Ext2SetTimeIf(&FBI->CreationTime, &Inode->i_crtime, &Inode->i_crtime_extra, &Icb->CreationTime)) {
         Changed |= FILE_NOTIFY_CHANGE_CREATION;
@@ -98,13 +114,6 @@ Ext2SetBasicInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE_OBJ
     }
 
     if (FBI->FileAttributes != 0) {
-        /* what the file is, read before the caller's attributes replace the
-           cached ones: robocopy and Explorer set a new directory's
-           attributes without FILE_ATTRIBUTE_DIRECTORY, and read after,
-           the directory lost it - every name made in it then failed with
-           STATUS_NOT_A_DIRECTORY */
-        BOOLEAN Directory = IsDirectory(Fcb);
-
         Changed |= FILE_NOTIFY_CHANGE_ATTRIBUTES;
 
         /* Read-only is the owner's write permission - for a file. On a
@@ -125,9 +134,13 @@ Ext2SetBasicInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE_OBJ
             ClearFlag(FileObject->Flags, FO_TEMPORARY_FILE);
         }
 
-        Mcb->FileAttr = FBI->FileAttributes;
-        if (Directory) {
-            SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_DIRECTORY);
+        /* robocopy and Explorer set a new directory's attributes without
+           FILE_ATTRIBUTE_DIRECTORY: taken as they came, the directory lost
+           it, and every name made in it failed with STATUS_NOT_A_DIRECTORY.
+           NORMAL stands alone. */
+        Mcb->FileAttr = (Mcb->FileAttr & ~EXT2_SETTABLE_ATTRIBUTES) |
+                        (FBI->FileAttributes & EXT2_SETTABLE_ATTRIBUTES);
+        if (Mcb->FileAttr != FILE_ATTRIBUTE_NORMAL) {
             ClearFlag(Mcb->FileAttr, FILE_ATTRIBUTE_NORMAL);
         }
     }
@@ -967,7 +980,14 @@ Ext2SetDispositionInfo(
        the target's delete-pending state on a file that is not going. */
     if (Ccb->SymLink) {
         if (bDelete) {
-            SetLongFlag(Ccb->SymLink->Flags, MCB_DELETE_PENDING);
+            PEXT2_MCB Link = Ccb->SymLink;
+
+            /* chattr +i / +a on the link or its directory, as below */
+            if (Ext4IsSealed(Link->Inode) ||
+                (Link->Parent && Link->Parent->Inode && Ext4IsSealed(Link->Parent->Inode))) {
+                return STATUS_CANNOT_DELETE;
+            }
+            SetLongFlag(Link->Flags, MCB_DELETE_PENDING);
         } else {
             ClearLongFlag(Ccb->SymLink->Flags, MCB_DELETE_PENDING);
         }
@@ -980,11 +1000,9 @@ Ext2SetDispositionInfo(
         DEBUG(DL_INF, ( "Ext2SetDispositionInformation: Removing %wZ.\n",
                         &Mcb->FullName));
 
-        if (IsInodeSymLink(Mcb->Inode)) {
-            /* the link itself (opened as a reparse point): always allowed */
-        } else {
-            status = Ext2IsFileRemovable(IrpContext, Vcb, Fcb, Ccb);
-        }
+        /* a link opened as a reparse point too: Linux keeps it in a sealed
+           directory as it keeps a file */
+        status = Ext2IsFileRemovable(IrpContext, Vcb, Fcb, Ccb);
 
         if (NT_SUCCESS(status)) {
             /* the file goes only with its last name; Ext2Cleanup decides

@@ -119,6 +119,8 @@ for part in $(lsblk -rno NAME,FSTYPE "/dev/$dev" | awk '$2=="ext4" || $2=="ext3"
         check "linux renamed by windows"       "target data"    "$(cat "$L/renamed.txt" 2>&1)"
         check "linux hard link count after delete" "2"          "$(stat -c %h "$L/hard1" 2>&1)"
         check "linux symlink still a link"     "target.txt"     "$(readlink "$L/rel-link" 2>&1)"
+        check "linux symlink touched by windows" "1577836800"   "$(stat -c %Y "$L/rel-deep-link" 2>&1)"
+        check "linux symlink text after touch" "sub/deep/file.txt" "$(readlink "$L/rel-deep-link" 2>&1)"
     fi
     umount "$m"; rmdir "$m"
     if [ "$mode" = check ]; then

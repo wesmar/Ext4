@@ -29,6 +29,15 @@ public static class IO2 {
         return h;
     }
     public static uint Links(string p) { using (var h = Open(p, 0)) { BHFI i; GetFileInformationByHandle(h, out i); return i.links; } }
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetFileTime(SafeFileHandle h, IntPtr c, IntPtr a, ref long w);
+    // the link itself, not its target (FILE_FLAG_OPEN_REPARSE_POINT): its inode is written back
+    public static bool TouchLink(string p, DateTime t) {
+        long ft = t.ToFileTimeUtc();
+        using (var h = CreateFile(p, 0x100, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+            if (h.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            return SetFileTime(h, IntPtr.Zero, IntPtr.Zero, ref ft);
+        }
+    }
     public static int SetEa(string p, string name, string value) {
         byte[] n = Encoding.ASCII.GetBytes(name), v = Encoding.ASCII.GetBytes(value);
         var b = new byte[8 + n.Length + 1 + v.Length];
@@ -63,6 +72,8 @@ foreach ($d in $DriveList) {
 
     Check 'relative symlink resolves'      "target data"     (Try { [IO.File]::ReadAllText("$L\rel-link").Trim() })
     Check 'deep relative symlink resolves' "deep data"       (Try { [IO.File]::ReadAllText("$L\rel-deep-link").Trim() })
+    # resolved above, then written back: its text must still be the one Linux wrote
+    Check 'deep relative symlink touched'  $true             (Try { [IO2]::TouchLink("$L\rel-deep-link", [DateTime]::SpecifyKind([DateTime]'2020-01-01', 'Utc')) })
     Check 'symlink chain resolves'         "target data"     (Try { [IO.File]::ReadAllText("$L\chain-link").Trim() })
     Check 'symlink with .. resolves'       "target data"     (Try { [IO.File]::ReadAllText("$L\up-link").Trim() })
     Check 'directory symlink lists'        "deep,hard3"      (Try { ([IO.Directory]::GetFileSystemEntries("$L\dir-link") | ForEach-Object { Split-Path $_ -Leaf } | Sort-Object) -join ',' })

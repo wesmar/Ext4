@@ -99,6 +99,7 @@ $idir = Join-Path $attr 'idir'
 Check '+i dir: no new file' (Refused { [IO.File]::WriteAllText((Join-Path $idir 'new.txt'), 'x') })
 Check '+i dir: no delete inside' (Refused { [IO.File]::Delete((Join-Path $idir 'inner.txt')) })
 Check '+i dir: no rename inside' (Refused { [IO.File]::Move((Join-Path $idir 'inner.txt'), (Join-Path $idir 'x.txt')) })
+Check '+i dir: no symlink deleted inside' (Refused { [IO.File]::Delete((Join-Path $idir 'inner-link')) })
 [IO.File]::WriteAllText((Join-Path $idir 'inner.txt'), "changed`n")
 Check '+i dir: a file in it still changes' ([IO.File]::ReadAllText((Join-Path $idir 'inner.txt')) -eq "changed`n")
 $adir = Join-Path $attr 'adir'
@@ -106,6 +107,7 @@ $adir = Join-Path $attr 'adir'
 Check '+a dir: a new file goes in' ([IO.File]::Exists((Join-Path $adir 'added.txt')))
 Check '+a dir: no delete inside' (Refused { [IO.File]::Delete((Join-Path $adir 'inner.txt')) })
 Check '+a dir: no rename inside' (Refused { [IO.File]::Move((Join-Path $adir 'inner.txt'), (Join-Path $adir 'x.txt')) })
+Check '+a dir: no symlink deleted inside' (Refused { [IO.File]::Delete((Join-Path $adir 'inner-link')) })
 
 "-- Linux extended attributes: SELinux labels inherited, kept on overwrite"
 [IO.File]::WriteAllText((Join-Path $attr 'secdir\new.txt'), 'labelled')

@@ -663,7 +663,9 @@ Ext2IsDirectoryEmpty (
 )
 {
     UNREFERENCED_PARAMETER(Vcb);
-    if (!IsMcbDirectory(Mcb) || IsMcbSymLink(Mcb)) {
+    /* the inode decides: a link to a directory shows the directory
+       attribute, and its i_block holds a target, not entries */
+    if (!S_ISDIR(Mcb->Inode->i_mode)) {
         return TRUE;
     }
 

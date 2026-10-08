@@ -9,70 +9,66 @@
 #include "ext4fs.h"
 #include "fsctl_internal.h"
 
-NTSTATUS
-Ext2InspectReparseData(
-    IN PREPARSE_DATA_BUFFER RDB,
-    IN ULONG InputBufferLength
-)
+/* what goes before an absolute target for the I/O manager */
+static const WCHAR Ext2NtPrefix[] = L"\\??\\";
+#define EXT2_NT_PREFIX_BYTES    (sizeof(Ext2NtPrefix) - sizeof(WCHAR))
+
+/* the symlink data before its names */
+#define EXT2_SYMLINK_HEADER     ((ULONG)FIELD_OFFSET(REPARSE_DATA_BUFFER, SymbolicLinkReparseBuffer.PathBuffer))
+
+static_assert(offsetof(REPARSE_DATA_BUFFER, SymbolicLinkReparseBuffer.SubstituteNameOffset) ==
+              REPARSE_DATA_BUFFER_HEADER_SIZE, "symlink data follows the reparse header");
+
+/*
+ * A symlink reparse buffer as FSCTL_SET_REPARSE_POINT hands it over: the
+ * data it declares is there, both names lie inside that data and hold
+ * whole UTF-16 characters, and there is a target. Other tags have nowhere
+ * to go on ext4.
+ */
+static NTSTATUS
+Ext2InspectReparseData(IN PREPARSE_DATA_BUFFER RDB, IN ULONG InputBufferLength)
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    ULONG   Names;      /* bytes of PathBuffer the data declares */
 
-    if (!RDB) {
-        Status = STATUS_INVALID_PARAMETER;
-        goto out;
-    }
-
-    if (InputBufferLength < sizeof(REPARSE_DATA_BUFFER)) {
-        Status = STATUS_BUFFER_OVERFLOW;
-        goto out;
-    }
-
-    /* ReparseDataLength counts what follows the 8-byte header */
-    if (InputBufferLength < (ULONG)RDB->ReparseDataLength + REPARSE_DATA_BUFFER_HEADER_SIZE) {
-        Status = STATUS_BUFFER_OVERFLOW;
-        goto out;
+    if (RDB == NULL || InputBufferLength < REPARSE_DATA_BUFFER_HEADER_SIZE ||
+        InputBufferLength < (ULONG)RDB->ReparseDataLength + REPARSE_DATA_BUFFER_HEADER_SIZE) {
+        return STATUS_IO_REPARSE_DATA_INVALID;
     }
 
     if (RDB->ReparseTag != IO_REPARSE_TAG_SYMLINK) {
-        Status = STATUS_NOT_IMPLEMENTED;
-        goto out;
+        return STATUS_NOT_IMPLEMENTED;
     }
 
-    /* names are UTF-16: an odd offset or length would split a character */
+    if ((ULONG)RDB->ReparseDataLength + REPARSE_DATA_BUFFER_HEADER_SIZE < EXT2_SYMLINK_HEADER) {
+        return STATUS_IO_REPARSE_DATA_INVALID;
+    }
+    Names = (ULONG)RDB->ReparseDataLength + REPARSE_DATA_BUFFER_HEADER_SIZE - EXT2_SYMLINK_HEADER;
+
+    /* an odd offset or length would split a character */
     if ((RDB->SymbolicLinkReparseBuffer.SubstituteNameOffset |
          RDB->SymbolicLinkReparseBuffer.SubstituteNameLength |
          RDB->SymbolicLinkReparseBuffer.PrintNameOffset |
          RDB->SymbolicLinkReparseBuffer.PrintNameLength) & (sizeof(WCHAR) - 1)) {
-        Status = STATUS_INVALID_PARAMETER;
-        goto out;
+        return STATUS_IO_REPARSE_DATA_INVALID;
     }
-
-    if ((PUCHAR)RDB->SymbolicLinkReparseBuffer.PathBuffer
-          + RDB->SymbolicLinkReparseBuffer.SubstituteNameOffset
-          + RDB->SymbolicLinkReparseBuffer.SubstituteNameLength
-        > (PUCHAR)RDB + InputBufferLength ) {
-        Status = STATUS_BUFFER_OVERFLOW;
-        goto out;
+    if ((ULONG)RDB->SymbolicLinkReparseBuffer.SubstituteNameOffset +
+               RDB->SymbolicLinkReparseBuffer.SubstituteNameLength > Names ||
+        (ULONG)RDB->SymbolicLinkReparseBuffer.PrintNameOffset +
+               RDB->SymbolicLinkReparseBuffer.PrintNameLength > Names) {
+        return STATUS_IO_REPARSE_DATA_INVALID;
     }
-
-    if ((PUCHAR)RDB->SymbolicLinkReparseBuffer.PathBuffer
-          + RDB->SymbolicLinkReparseBuffer.PrintNameOffset
-          + RDB->SymbolicLinkReparseBuffer.PrintNameLength
-        > (PUCHAR)RDB + InputBufferLength) {
-        Status = STATUS_BUFFER_OVERFLOW;
-        goto out;
+    if (RDB->SymbolicLinkReparseBuffer.SubstituteNameLength == 0) {
+        return STATUS_IO_REPARSE_DATA_INVALID;
     }
 
     /* relative links map 1:1; absolute ones are accepted when they point
-       into this volume (checked in Ext2SetReparsePoint) */
+       into this volume (Ext2AbsoluteLinkToVolumePath) */
     if (RDB->SymbolicLinkReparseBuffer.Flags != SYMLINK_FLAG_RELATIVE &&
         RDB->SymbolicLinkReparseBuffer.Flags != 0) {
-        Status = STATUS_NOT_IMPLEMENTED;
-        goto out;
+        return STATUS_NOT_IMPLEMENTED;
     }
 
-out:
-    return Status;
+    return STATUS_SUCCESS;
 }
 
 /*
@@ -164,19 +160,15 @@ Ext2AbsoluteLinkToVolumePath(IN PEXT2_VCB Vcb, IN OUT PUNICODE_STRING Path)
     return STATUS_SUCCESS;
 }
 
-static_assert(offsetof(REPARSE_DATA_BUFFER, SymbolicLinkReparseBuffer.SubstituteNameOffset) ==
-              REPARSE_DATA_BUFFER_HEADER_SIZE, "symlink data follows the reparse header");
-
 /* symlink reparse header: print name first, substitute name after it,
    both lengths in bytes (as the REPARSE_DATA_BUFFER contract wants) */
-VOID
+static VOID
 Ext2InitializeReparseData(IN PREPARSE_DATA_BUFFER RDB, USHORT PrintLength,
                           USHORT SubstLength, ULONG Flags)
 {
     RDB->ReparseTag = IO_REPARSE_TAG_SYMLINK;
-    RDB->ReparseDataLength = FIELD_OFFSET(REPARSE_DATA_BUFFER, SymbolicLinkReparseBuffer.PathBuffer) -
-                             REPARSE_DATA_BUFFER_HEADER_SIZE +
-                             PrintLength + SubstLength;
+    RDB->ReparseDataLength = (USHORT)(EXT2_SYMLINK_HEADER - REPARSE_DATA_BUFFER_HEADER_SIZE +
+                                      PrintLength + SubstLength);
     RDB->Reserved = 0;
     RDB->SymbolicLinkReparseBuffer.PrintNameOffset = 0;
     RDB->SymbolicLinkReparseBuffer.PrintNameLength = PrintLength;
@@ -186,127 +178,271 @@ Ext2InitializeReparseData(IN PREPARSE_DATA_BUFFER RDB, USHORT PrintLength,
     RtlZeroMemory(&RDB->SymbolicLinkReparseBuffer.PathBuffer, PrintLength + SubstLength);
 }
 
+/*
+ * The target of symlink Mcb in the Windows form - '\' for every '/' - still
+ * in the volume's code page, NUL-terminated, in a pool buffer the caller
+ * frees (Ext2FreePool, 'NL2E'). Always a copy: a fast symlink keeps its
+ * target in i_block, and the inode is written back as it is in memory. A
+ * length Linux never writes - none, or not under a block - is corruption,
+ * refused before any buffer is sized from it.
+ */
 NTSTATUS
-Ext2ReadSymlink (
+Ext2ReadLinkText(
     IN PEXT2_IRP_CONTEXT    IrpContext,
     IN PEXT2_VCB            Vcb,
     IN PEXT2_MCB            Mcb,
-    IN PVOID                Buffer,
-    IN ULONG                Size,
-    OUT PULONG              BytesRead
-    )
+    OUT POEM_STRING         Text
+)
 {
-    return Ext2ReadInode (  IrpContext,
-                            Vcb,
-                            Mcb,
-                            0,
-                            Buffer,
-                            Size,
-                            FALSE,
-                            BytesRead);
+    struct inode   *Inode = Mcb->Inode;
+    ULONG           Length, i;
+    NTSTATUS        Status;
+
+    RtlZeroMemory(Text, sizeof(OEM_STRING));
+
+    if (Inode->i_size == 0 || Inode->i_size >= BLOCK_SIZE || Inode->i_size >= MAXUSHORT) {
+        return STATUS_FILE_CORRUPT_ERROR;
+    }
+    Length = (ULONG)Inode->i_size;
+
+    Text->Buffer = Ext2AllocatePool(NonPagedPool, Length + 1, 'NL2E');
+    if (Text->Buffer == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    Text->Length = (USHORT)Length;
+    Text->MaximumLength = (USHORT)(Length + 1);
+
+    if (ext4_inode_is_fast_symlink(Inode)) {
+        if (Length >= EXT2_LINKLEN_IN_INODE) {
+            Status = STATUS_FILE_CORRUPT_ERROR;
+        } else {
+            RtlCopyMemory(Text->Buffer, Inode->i_block, Length);
+            Status = STATUS_SUCCESS;
+        }
+    } else {
+        Status = Ext2ReadInode(IrpContext, Vcb, Mcb, 0, Text->Buffer, Length, FALSE, NULL);
+    }
+    if (!NT_SUCCESS(Status)) {
+        Ext2FreePool(Text->Buffer, 'NL2E');
+        RtlZeroMemory(Text, sizeof(OEM_STRING));
+        return Status;
+    }
+
+    Text->Buffer[Length] = '\0';
+    for (i = 0; i < Length; i++) {
+        if (Text->Buffer[i] == '/') {
+            Text->Buffer[i] = '\\';
+        }
+    }
+    return STATUS_SUCCESS;
 }
 
+/*
+ * The handle a reparse request came on: a file or a directory of a mounted
+ * volume. The control device and a volume handle have no inode behind them;
+ * a request on them is refused here, before anything is read through them.
+ */
+static NTSTATUS
+Ext2ReparseHandle(IN PEXT2_IRP_CONTEXT IrpContext, OUT PEXT2_VCB *Vcb)
+{
+    PEXT2_FCB   Fcb = IrpContext->Fcb;
+
+    if (IsExt2FsDevice(IrpContext->DeviceObject)) {
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+    *Vcb = (PEXT2_VCB)IrpContext->DeviceObject->DeviceExtension;
+    if (!IsMounted(*Vcb) || IsFlagOn((*Vcb)->Flags, VCB_DISMOUNT_PENDING)) {
+        return STATUS_VOLUME_DISMOUNTED;
+    }
+
+    /* a volume handle carries the Vcb, whose header has the same layout */
+    if (Fcb == NULL || Fcb->Identifier.Type != EXT2FCB || IrpContext->Ccb == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (IsInodeDeleted(Fcb)) {
+        return STATUS_FILE_DELETED;
+    }
+    return STATUS_SUCCESS;
+}
+
+/*
+ * May this handle change what its file is? Asked under the exclusive volume
+ * resource. As NTFS asks (MS-FSA): a volume that is written to, a handle
+ * granted write access to the data or to the attributes. As Linux asks:
+ * the caller may write the inode (its mode bits), and neither the file nor
+ * its directory is sealed (chattr +i / +a) - the directory entry changes as
+ * well. The root never becomes a link.
+ */
+static NTSTATUS
+Ext2ReparseMayChange(IN PEXT2_VCB Vcb, IN PEXT2_FCB Fcb, IN PEXT2_CCB Ccb)
+{
+    PEXT2_MCB   Mcb = Fcb->Mcb;
+
+    if (!IsMounted(Vcb) || IsFlagOn(Vcb->Flags, VCB_DISMOUNT_PENDING)) {
+        return STATUS_VOLUME_DISMOUNTED;
+    }
+    if (IsVcbReadOnly(Vcb)) {
+        return STATUS_MEDIA_WRITE_PROTECTED;
+    }
+    if (IsFlagOn(Vcb->Flags, VCB_VOLUME_LOCKED)) {
+        return STATUS_ACCESS_DENIED;
+    }
+    if (!BooleanFlagOn(Ccb->Access, FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | MAXIMUM_ALLOWED)) {
+        return STATUS_ACCESS_DENIED;
+    }
+    if (Mcb->Parent == NULL || Mcb->Inode->i_ino == EXT2_ROOT_INO) {
+        return STATUS_ACCESS_DENIED;
+    }
+    if (!Ext2CheckFileAccess(Vcb, Mcb, Ext2FileCanWrite) || Ext4IsSealed(Mcb->Inode) ||
+        (Mcb->Parent->Inode && Ext4IsSealed(Mcb->Parent->Inode))) {
+        return STATUS_ACCESS_DENIED;
+    }
+    return STATUS_SUCCESS;
+}
+
+/*
+ * What the inode may be before it becomes a link. ext4 keeps the target
+ * where a file keeps its data, and the type of a name in its directory
+ * entry: a link takes the place of another link, of an empty directory -
+ * mklink /D makes one first - or of an empty file with one name, since the
+ * entries of its other names would go on saying "file". Data is never
+ * thrown away for a link, nor the entries of a directory.
+ */
+static NTSTATUS
+Ext2ReparseMayBecomeLink(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb)
+{
+    struct inode *Inode = Mcb->Inode;
+
+    if (S_ISLNK(Inode->i_mode)) {
+        return STATUS_SUCCESS;
+    }
+    if (S_ISDIR(Inode->i_mode)) {
+        return Ext2IsDirectoryEmpty(IrpContext, Vcb, Mcb) ? STATUS_SUCCESS :
+                                                            STATUS_DIRECTORY_NOT_EMPTY;
+    }
+    if (!S_ISREG(Inode->i_mode) || Inode->i_nlink > 1 || Inode->i_size != 0) {
+        return STATUS_NOT_SUPPORTED;
+    }
+    return STATUS_SUCCESS;
+}
+
+/*
+ * The target as ext4 keeps it, from the substitute name: in the volume's
+ * code page, '/' for '\', an absolute target made a path from this
+ * volume's root ("\??\D:\dir" is "/dir"). A NUL inside is refused - Linux
+ * would read the link to it, e2fsck calls such a link invalid - and so is a
+ * target that fills a block. The caller frees Target->Buffer.
+ */
+static NTSTATUS
+Ext2ReparseTarget(IN PEXT2_VCB Vcb, IN PREPARSE_DATA_BUFFER RDB, OUT POEM_STRING Target)
+{
+    UNICODE_STRING  Name;
+    ULONG           Length;
+    USHORT          i;
+    NTSTATUS        Status;
+
+    RtlZeroMemory(Target, sizeof(OEM_STRING));
+
+    Name.Length = RDB->SymbolicLinkReparseBuffer.SubstituteNameLength;
+    Name.MaximumLength = Name.Length;
+    Name.Buffer = (PWCHAR)((PUCHAR)RDB->SymbolicLinkReparseBuffer.PathBuffer +
+                           RDB->SymbolicLinkReparseBuffer.SubstituteNameOffset);
+
+    if (RDB->SymbolicLinkReparseBuffer.Flags != SYMLINK_FLAG_RELATIVE) {
+        Status = Ext2AbsoluteLinkToVolumePath(Vcb, &Name);
+        if (!NT_SUCCESS(Status)) {
+            return Status;
+        }
+    }
+
+    /* an estimate, a terminator possibly included */
+    Length = Ext2UnicodeToOEMSize(Vcb, &Name);
+    if (Length >= MAXUSHORT) {
+        return STATUS_NAME_TOO_LONG;
+    }
+    Target->MaximumLength = (USHORT)(Length + 1);
+    Target->Buffer = Ext2AllocatePool(PagedPool, Target->MaximumLength, 'NL2E');
+    if (Target->Buffer == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    /* the converter sets the exact byte count: a link's i_size is the
+       length of its text, or e2fsck declares it invalid */
+    Status = Ext2UnicodeToOEM(Vcb, Target, &Name);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+    if (Target->Length == 0 || Target->Length >= BLOCK_SIZE) {
+        return STATUS_NAME_TOO_LONG;
+    }
+
+    Target->Buffer[Target->Length] = '\0';
+    for (i = 0; i < Target->Length; i++) {
+        if (Target->Buffer[i] == '\0') {
+            return STATUS_OBJECT_NAME_INVALID;
+        }
+        if (Target->Buffer[i] == '\\') {
+            Target->Buffer[i] = '/';
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
+/*
+ * FSCTL_GET_REPARSE_POINT: the link as Windows reads it. A relative target
+ * goes as it is; a Linux absolute path ("/etc/passwd") is on this volume,
+ * so it becomes "\??\D:\etc\passwd" for the I/O manager and
+ * "D:\etc\passwd" for people (the print name). As MS-FSA has it, a buffer
+ * too small for the whole of it takes what fits - the header says the size
+ * needed - with STATUS_BUFFER_OVERFLOW, and one too small for the header
+ * takes nothing.
+ */
 NTSTATUS
 Ext2GetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
 {
-    PIRP                        Irp = NULL;
-    PIO_STACK_LOCATION          IrpSp;
-
-    PDEVICE_OBJECT      DeviceObject;
-
-    PEXT2_VCB           Vcb = NULL;
-    PEXT2_CCB           Ccb = NULL;
-    PEXT2_MCB           Mcb = NULL;
-
-    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
-
-    PVOID               OutputBuffer;
-    ULONG               OutputBufferLength;
-    ULONG               BytesRead = 0;
-
-    PREPARSE_DATA_BUFFER RDB;
-
-    UNICODE_STRING  UniName = { 0 };
-    UNICODE_STRING  Dos = { 0 };
-    OEM_STRING      OemName;
-
-    PCHAR           OemNameBuffer = NULL;
-    int             OemNameLength = 0, i;
-    ULONG           UniLength, Needed;
-    USHORT          PrintLength, SubstLength;
-    BOOLEAN         Absolute;
-    PUCHAR          Print, Subst;
-
-    Ccb = IrpContext->Ccb;
-    ASSERT(Ccb != NULL);
-    ASSERT((Ccb->Identifier.Type == EXT2CCB) &&
-           (Ccb->Identifier.Size == sizeof(EXT2_CCB)));
-    DeviceObject = IrpContext->DeviceObject;
-    Vcb = (PEXT2_VCB) DeviceObject->DeviceExtension;
-    Mcb = IrpContext->Fcb->Mcb;
-    Irp = IrpContext->Irp;
-    IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    PIRP                    Irp = IrpContext->Irp;
+    PIO_STACK_LOCATION      IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    ULONG                   OutputLength = IrpSp->Parameters.FileSystemControl.OutputBufferLength;
+    PEXT2_VCB               Vcb = NULL;
+    PEXT2_FCB               Fcb = IrpContext->Fcb;
+    PREPARSE_DATA_BUFFER    Reparse = NULL;
+    OEM_STRING              Text = { 0 };
+    UNICODE_STRING          Dos = { 0 };
+    UNICODE_STRING          Name;
+    ULONG                   NameLength, PrintLength, SubstLength, Needed;
+    BOOLEAN                 FcbAcquired = FALSE;
+    BOOLEAN                 Absolute;
+    PUCHAR                  Print, Subst;
+    NTSTATUS                Status = STATUS_UNSUCCESSFUL;
 
     __try {
 
-        if (!Mcb || !IsInodeSymLink(Mcb->Inode) ||
-            !IsFlagOn(Ccb->Flags, CCB_OPEN_REPARSE_POINT)) {
-            Status = STATUS_NOT_A_REPARSE_POINT;
-            __leave;
-        }
-        
-        OutputBuffer  = (PVOID)Irp->AssociatedIrp.SystemBuffer;
-        OutputBufferLength = IrpSp->Parameters.FileSystemControl.OutputBufferLength;
-
-        RDB = (PREPARSE_DATA_BUFFER)OutputBuffer;
-        if (!RDB) {
-            Status = STATUS_INVALID_PARAMETER;
-            __leave;
-        }
-        if (OutputBufferLength < sizeof(REPARSE_DATA_BUFFER)) {
-            Status = STATUS_BUFFER_OVERFLOW;
-            __leave;
-        }
-
-        OemNameLength = (ULONG)Mcb->Inode->i_size;
-        if (OemNameLength > USHRT_MAX) {
-            Status = STATUS_INVALID_PARAMETER;
-            __leave;
-        }
-        OemName.Length = (USHORT)OemNameLength;
-        OemName.MaximumLength = (USHORT)(OemNameLength + 1);
-        OemNameBuffer = OemName.Buffer = Ext2AllocatePool(NonPagedPool,
-                                          OemName.MaximumLength,
-                                          'NL2E');
-        if (!OemNameBuffer) {
-            Status = STATUS_INSUFFICIENT_RESOURCES;
-            __leave;
-        }
-
-        Status = Ext2ReadSymlink(IrpContext,
-                                 Vcb,
-                                 Mcb,
-                                 OemNameBuffer,
-                                 OemNameLength,
-                                 &BytesRead
-                                );
+        Status = Ext2ReparseHandle(IrpContext, &Vcb);
         if (!NT_SUCCESS(Status)) {
             __leave;
         }
-        OemName.Buffer[OemName.Length] = '\0';
-        for (i = 0;i < OemName.Length;i++) {
-            if (OemName.Buffer[i] == '/') {
-                OemName.Buffer[i] = '\\';
-            }
+        if (!IsInodeSymLink(Fcb->Inode) ||
+            !IsFlagOn(IrpContext->Ccb->Flags, CCB_OPEN_REPARSE_POINT)) {
+            Status = STATUS_NOT_A_REPARSE_POINT;
+            __leave;
+        }
+        if (Irp->AssociatedIrp.SystemBuffer == NULL ||
+            OutputLength < REPARSE_DATA_BUFFER_HEADER_SIZE) {
+            Status = STATUS_BUFFER_TOO_SMALL;
+            __leave;
         }
 
-        /*
-         * The Windows view of the link text. A relative target is handed
-         * over as it is; a Linux absolute path ("/etc/passwd") lives on this
-         * volume, so it becomes "\??\D:\etc\passwd" for the I/O manager and
-         * "D:\etc\passwd" for people (print name).
-         */
-        Absolute = (OemName.Length > 0 && OemName.Buffer[0] == '\\');
+        /* the text under the Fcb: a new target is written under it */
+        ExAcquireResourceSharedLite(&Fcb->MainResource, TRUE);
+        FcbAcquired = TRUE;
+        Status = Ext2ReadLinkText(IrpContext, Vcb, Fcb->Mcb, &Text);
+        ExReleaseResourceLite(&Fcb->MainResource);
+        FcbAcquired = FALSE;
+        if (!NT_SUCCESS(Status)) {
+            __leave;
+        }
+
+        Absolute = (Text.Buffer[0] == '\\');
         if (Absolute) {
             Status = Ext2VolumeDosName(Vcb, &Dos);
             if (!NT_SUCCESS(Status)) {
@@ -314,73 +450,79 @@ Ext2GetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
             }
         }
 
-        UniLength = Ext2OEMToUnicodeSize(Vcb, &OemName);       /* bytes */
-        if (UniLength == 0 || UniLength > USHRT_MAX) {
-            Status = STATUS_INVALID_PARAMETER;
+        NameLength = Ext2OEMToUnicodeSize(Vcb, &Text);       /* bytes */
+        if (NameLength == 0 || NameLength > MAXUSHORT) {
+            Status = STATUS_UNMAPPABLE_CHARACTER;
             __leave;
         }
-        PrintLength = (USHORT)UniLength + (Absolute ? Dos.Length : 0);
-        SubstLength = PrintLength + (Absolute ? 4 * sizeof(WCHAR) : 0);
-        Needed = FIELD_OFFSET(REPARSE_DATA_BUFFER, SymbolicLinkReparseBuffer.PathBuffer)
-                 + PrintLength + SubstLength;
-        if (OutputBufferLength < Needed) {
-            Status = STATUS_BUFFER_TOO_SMALL;
+        PrintLength = Dos.Length + NameLength;
+        SubstLength = PrintLength + (Absolute ? EXT2_NT_PREFIX_BYTES : 0);
+        Needed = EXT2_SYMLINK_HEADER + PrintLength + SubstLength;
+        if (Needed - REPARSE_DATA_BUFFER_HEADER_SIZE > MAXUSHORT) {
+            Status = STATUS_NAME_TOO_LONG;
             __leave;
         }
 
-        UniName.Length = 0;
-        UniName.MaximumLength = (USHORT)UniLength;
-        UniName.Buffer = Ext2AllocatePool(PagedPool, UniName.MaximumLength, 'NL2E');
-        if (!UniName.Buffer) {
+        Reparse = Ext2AllocatePool(PagedPool, Needed, 'NL2E');
+        if (Reparse == NULL) {
             Status = STATUS_INSUFFICIENT_RESOURCES;
             __leave;
         }
-        Status = Ext2OEMToUnicode(Vcb, &UniName, &OemName);
+        Ext2InitializeReparseData(Reparse, (USHORT)PrintLength, (USHORT)SubstLength,
+                                  Absolute ? 0 : SYMLINK_FLAG_RELATIVE);
+        Print = (PUCHAR)Reparse->SymbolicLinkReparseBuffer.PathBuffer;
+        Subst = Print + PrintLength;
+
+        /* the print name: "D:" before an absolute target, then the text */
+        if (Absolute) {
+            RtlCopyMemory(Print, Dos.Buffer, Dos.Length);
+        }
+        /* RtlOemStringToUnicodeString, the converter for a text the code
+           page cannot map, wants room for a terminator: it lands on the
+           substitute name, written next */
+        Name.Buffer = (PWCHAR)(Print + Dos.Length);
+        Name.Length = 0;
+        Name.MaximumLength = (USHORT)(NameLength + sizeof(WCHAR));
+        Status = Ext2OEMToUnicode(Vcb, &Name, &Text);
         if (!NT_SUCCESS(Status)) {
             __leave;
         }
-
-        Ext2InitializeReparseData(RDB, PrintLength, SubstLength,
-                                  Absolute ? 0 : SYMLINK_FLAG_RELATIVE);
-        Print = (PUCHAR)RDB->SymbolicLinkReparseBuffer.PathBuffer
-                + RDB->SymbolicLinkReparseBuffer.PrintNameOffset;
-        Subst = (PUCHAR)RDB->SymbolicLinkReparseBuffer.PathBuffer
-                + RDB->SymbolicLinkReparseBuffer.SubstituteNameOffset;
-        if (Absolute) {
-            RtlCopyMemory(Print, Dos.Buffer, Dos.Length);
-            RtlCopyMemory(Print + Dos.Length, UniName.Buffer, UniName.Length);
-            RtlCopyMemory(Subst, L"\\??\\", 4 * sizeof(WCHAR));
-            RtlCopyMemory(Subst + 4 * sizeof(WCHAR), Dos.Buffer, Dos.Length);
-            RtlCopyMemory(Subst + 4 * sizeof(WCHAR) + Dos.Length, UniName.Buffer, UniName.Length);
-        } else {
-            RtlCopyMemory(Print, UniName.Buffer, UniName.Length);
-            RtlCopyMemory(Subst, UniName.Buffer, UniName.Length);
+        if (Name.Length != NameLength) {
+            Status = STATUS_UNMAPPABLE_CHARACTER;
+            __leave;
         }
 
-        Irp->IoStatus.Information = Needed;
-        Status = STATUS_SUCCESS;
+        /* the substitute name: the same, "\??\" before an absolute one */
+        if (Absolute) {
+            RtlCopyMemory(Subst, Ext2NtPrefix, EXT2_NT_PREFIX_BYTES);
+            Subst += EXT2_NT_PREFIX_BYTES;
+        }
+        RtlCopyMemory(Subst, Print, PrintLength);
+
+        Irp->IoStatus.Information = min(Needed, OutputLength);
+        RtlCopyMemory(Irp->AssociatedIrp.SystemBuffer, Reparse, Irp->IoStatus.Information);
+        Status = (OutputLength < Needed) ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
 
     } __finally {
 
-        if (OemNameBuffer) {
-            Ext2FreePool(OemNameBuffer, 'NL2E');
+        if (FcbAcquired) {
+            ExReleaseResourceLite(&Fcb->MainResource);
         }
-        if (UniName.Buffer) {
-            Ext2FreePool(UniName.Buffer, 'NL2E');
+        if (Reparse) {
+            Ext2FreePool(Reparse, 'NL2E');
+        }
+        if (Text.Buffer) {
+            Ext2FreePool(Text.Buffer, 'NL2E');
         }
         if (Dos.Buffer) {
             ExFreePool(Dos.Buffer);
         }
 
         if (!AbnormalTermination()) {
-            if (Status == STATUS_PENDING || Status == STATUS_CANT_WAIT) {
-                Status = Ext2QueueRequest(IrpContext);
-            } else {
-                Ext2CompleteIrpContext(IrpContext, Status);
-            }
+            Ext2CompleteIrpContext(IrpContext, Status);
         }
     }
-    
+
     return Status;
 }
 
@@ -530,56 +672,39 @@ out:
     return Status;
 }
 
+/*
+ * FSCTL_SET_REPARSE_POINT: the file becomes a symlink, or a link gets a new
+ * target. Turning a file into a link changes what its name resolves to - a
+ * namespace change, made under the exclusive volume resource like create,
+ * delete and rename (order: Vcb -> FcbLock -> Fcb), so that no open
+ * resolves the name halfway through. Never posted: the privilege is the
+ * caller's own, checked in its thread.
+ */
 NTSTATUS
 Ext2SetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
 {
-    PIRP                Irp = NULL;
-    PIO_STACK_LOCATION  IrpSp;
-
-    PDEVICE_OBJECT      DeviceObject;
-
+    PIRP                Irp = IrpContext->Irp;
+    PIO_STACK_LOCATION  IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    PREPARSE_DATA_BUFFER RDB = Irp->AssociatedIrp.SystemBuffer;
     PEXT2_VCB           Vcb = NULL;
-    PEXT2_FCB           Fcb = NULL;
-    PEXT2_CCB           Ccb = NULL;
+    PEXT2_FCB           Fcb = IrpContext->Fcb;
     PEXT2_MCB           Mcb = NULL;
-
+    PEXT2_FCB           ParentDcb = NULL;
+    OEM_STRING          Target = { 0 };
+    BOOLEAN             VcbAcquired = FALSE;
+    BOOLEAN             FcbAcquired = FALSE;
     NTSTATUS            Status = STATUS_UNSUCCESSFUL;
-
-    PVOID               InputBuffer;
-    ULONG               InputBufferLength;
-
-    PEXT2_FCB           ParentDcb = NULL;   /* Dcb of it's current parent */
-    PEXT2_MCB           ParentMcb = NULL;
-
-    PREPARSE_DATA_BUFFER RDB;
-
-    UNICODE_STRING      UniName;
-    OEM_STRING          OemName;
-    
-    PCHAR               OemNameBuffer = NULL;
-    int                 OemNameLength = 0, i;
-
-    BOOLEAN             MainResourceAcquired = FALSE;
-    BOOLEAN             FcbLockAcquired = FALSE;
-    BOOLEAN             VcbResourceAcquired = FALSE;
 
     __try {
 
-        Ccb = IrpContext->Ccb;
-        ASSERT(Ccb != NULL);
-        ASSERT((Ccb->Identifier.Type == EXT2CCB) &&
-               (Ccb->Identifier.Size == sizeof(EXT2_CCB)));
-        DeviceObject = IrpContext->DeviceObject;
-        Vcb = (PEXT2_VCB) DeviceObject->DeviceExtension;
-        Fcb = IrpContext->Fcb;
+        Status = Ext2ReparseHandle(IrpContext, &Vcb);
+        if (!NT_SUCCESS(Status)) {
+            __leave;
+        }
         Mcb = Fcb->Mcb;
-        Irp = IrpContext->Irp;
-        IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
         /* as on NTFS, a symlink needs SeCreateSymbolicLinkPrivilege (an
-           elevated administrator holds it). Checked first, still in the
-           caller's thread: a posted request runs in a system worker, whose
-           token would pass any check */
+           elevated administrator holds it) */
         if (Irp->RequestorMode != KernelMode &&
             !SeSinglePrivilegeCheck(RtlConvertLongToLuid(SE_CREATE_SYMBOLIC_LINK_PRIVILEGE),
                                     UserMode)) {
@@ -587,98 +712,41 @@ Ext2SetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
             __leave;
         }
 
-        /* turning a file into a symlink, or back, changes what its name
-           resolves to: a namespace change, made under the exclusive volume
-           resource like create, delete and rename (order: Vcb -> FcbLock
-           -> Fcb), so no open can resolve the name halfway through */
-        ExAcquireResourceExclusiveLite(&Vcb->MainResource, TRUE);
-        VcbResourceAcquired = TRUE;
-
-        ExAcquireResourceExclusiveLite(&Vcb->FcbLock, TRUE);
-        FcbLockAcquired = TRUE;
-
-        ParentMcb = Mcb->Parent;
-        ParentDcb = ParentMcb->Icb->Fcb;
-        if (ParentDcb == NULL) {
-            ParentDcb = Ext2AllocateFcb(Vcb, ParentMcb);
-        }
-        if (ParentDcb) {
-            Ext2ReferXcb(&ParentDcb->ReferenceCount);
-        }
-
-        if (!Mcb)
-            __leave;
-
-        if (FcbLockAcquired) {
-            ExReleaseResourceLite(&Vcb->FcbLock);
-            FcbLockAcquired = FALSE;
-        }
-
-        /* exclusive: the file data is truncated and rewritten below */
-        if (!ExAcquireResourceExclusiveLite(
-                    &Fcb->MainResource,
-                    IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT) )) {
-            Status = STATUS_PENDING;
-            __leave;
-        }
-        MainResourceAcquired = TRUE;
-        
-        InputBuffer  = Irp->AssociatedIrp.SystemBuffer;
-        InputBufferLength = IrpSp->Parameters.FileSystemControl.InputBufferLength;
-
-        RDB = (PREPARSE_DATA_BUFFER)InputBuffer;
-        Status = Ext2InspectReparseData(RDB, InputBufferLength);
+        Status = Ext2InspectReparseData(RDB, IrpSp->Parameters.FileSystemControl.InputBufferLength);
         if (!NT_SUCCESS(Status)) {
             __leave;
         }
 
-        UniName.Length = RDB->SymbolicLinkReparseBuffer.SubstituteNameLength;
-        UniName.MaximumLength = UniName.Length;
-        UniName.Buffer =
-            (PWCHAR)((PUCHAR)&RDB->SymbolicLinkReparseBuffer.PathBuffer
-             + RDB->SymbolicLinkReparseBuffer.SubstituteNameOffset);
-
-        if (RDB->SymbolicLinkReparseBuffer.Flags != SYMLINK_FLAG_RELATIVE) {
-            Status = Ext2AbsoluteLinkToVolumePath(Vcb, &UniName);
-            if (!NT_SUCCESS(Status)) {
-                __leave;
-            }
-        }
-
-        OemNameLength = Ext2UnicodeToOEMSize(Vcb, &UniName);
-        if (OemNameLength > USHRT_MAX) {
-            Status = STATUS_INVALID_PARAMETER;
+        /* before any lock: an absolute target asks the mount manager for
+           the letter of this volume */
+        Status = Ext2ReparseTarget(Vcb, RDB, &Target);
+        if (!NT_SUCCESS(Status)) {
             __leave;
         }
-        OemName.Length = (USHORT)OemNameLength;
-        OemName.MaximumLength = (USHORT)(OemNameLength + 1);
-        OemNameBuffer = OemName.Buffer = Ext2AllocatePool(PagedPool,
-                                          OemName.MaximumLength,
-                                          'NL2E');
-        if (!OemNameBuffer) {
+
+        ExAcquireResourceExclusiveLite(&Vcb->MainResource, TRUE);
+        VcbAcquired = TRUE;
+
+        Status = Ext2ReparseMayChange(Vcb, Fcb, IrpContext->Ccb);
+        if (!NT_SUCCESS(Status)) {
+            __leave;
+        }
+        Status = Ext2ReparseMayBecomeLink(IrpContext, Vcb, Mcb);
+        if (!NT_SUCCESS(Status)) {
+            __leave;
+        }
+
+        /* the parent's entry takes the new type; no rename moves the name
+           under the exclusive volume resource */
+        ParentDcb = Ext2ReferDcb(Vcb, Mcb->Parent);
+        if (ParentDcb == NULL) {
             Status = STATUS_INSUFFICIENT_RESOURCES;
             __leave;
         }
 
-        Status = Ext2UnicodeToOEM(Vcb, &OemName, &UniName);
-        if (!NT_SUCCESS(Status)) {
-            __leave;
-        }
-        /* the converter sets the exact byte count; the size estimate above
-           may include room for a terminator, and a symlink's i_size must
-           be the text length or e2fsck declares it invalid */
-        OemNameLength = OemName.Length;
-        /* Reject before truncating or changing the original inode. */
-        if (OemNameLength <= 0 || (ULONG)OemNameLength >= BLOCK_SIZE) {
-            Status = STATUS_NAME_TOO_LONG;
-            __leave;
-        }
-        OemName.Buffer[OemName.Length] = '\0';
-        for (i = 0;i < OemName.Length;i++) {
-            if (OemName.Buffer[i] == '\\') {
-                OemName.Buffer[i] = '/';
-            }
-        }
+        /* exclusive: the file data is truncated and rewritten below */
+        ExAcquireResourceExclusiveLite(&Fcb->MainResource, TRUE);
+        FcbAcquired = TRUE;
 
         /* From the truncate on the inode is neither what it was nor yet a
            link: a directory without "." or a file whose i_block holds the
@@ -686,7 +754,7 @@ Ext2SetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
            past this point leaves such a one: the transaction must not
            commit. */
         Status = Ext2MakeSymlink(IrpContext, Vcb, ParentDcb, Mcb,
-                                 OemNameBuffer, (ULONG)OemNameLength);
+                                 Target.Buffer, Target.Length);
         if (!NT_SUCCESS(Status)) {
             Ext2JournalAbandon(Vcb, Status);
             __leave;
@@ -699,207 +767,106 @@ Ext2SetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
            special when dangling), or the next open reads the link text as
            file data. A target that cannot be resolved leaves it special. */
         ClearLongFlag(Mcb->Flags, MCB_TYPE_SPECIAL);
-        (void)Ext2FollowLink(IrpContext, Vcb, ParentMcb, Mcb, 0);
+        (void)Ext2FollowLink(IrpContext, Vcb, Mcb->Parent, Mcb, 0);
 
     } __finally {
 
-        if (FcbLockAcquired) {
-            ExReleaseResourceLite(&Vcb->FcbLock);
-            FcbLockAcquired = FALSE;
-        }
-
-        if (MainResourceAcquired) {
+        if (FcbAcquired) {
             ExReleaseResourceLite(&Fcb->MainResource);
         }
-
-        if (VcbResourceAcquired) {
+        if (VcbAcquired) {
             ExReleaseResourceLite(&Vcb->MainResource);
         }
-        
-        if (OemNameBuffer) {
-            Ext2FreePool(OemNameBuffer, 'NL2E');
-        }
-        
-        if (NT_SUCCESS(Status)) {
-            Ext2NotifyReportChange(
-                IrpContext,
-                Vcb,
-                Mcb,
-                FILE_NOTIFY_CHANGE_ATTRIBUTES,
-                FILE_ACTION_MODIFIED );
-        }
-
-        if (!AbnormalTermination()) {
-            if (Status == STATUS_PENDING || Status == STATUS_CANT_WAIT) {
-                Status = Ext2QueueRequest(IrpContext);
-            } else {
-                Ext2CompleteIrpContext(IrpContext, Status);
-            }
-        }
-
         if (ParentDcb) {
             Ext2ReleaseFcb(ParentDcb);
         }
+        if (Target.Buffer) {
+            Ext2FreePool(Target.Buffer, 'NL2E');
+        }
+
+        if (NT_SUCCESS(Status)) {
+            Ext2NotifyReportChange(IrpContext, Vcb, Mcb,
+                                   FILE_NOTIFY_CHANGE_ATTRIBUTES,
+                                   FILE_ACTION_MODIFIED);
+        }
+
+        if (!AbnormalTermination()) {
+            Ext2CompleteIrpContext(IrpContext, Status);
+        }
     }
-    
+
     return Status;
 }
 
-NTSTATUS
-Ext2TruncateSymlink(
-    PEXT2_IRP_CONTEXT IrpContext,
-    PEXT2_VCB         Vcb,
-    PEXT2_MCB         Mcb,
-    ULONG             Size
-    )
-{
-    PUCHAR   data = (PUCHAR)&Mcb->Inode->i_block;
-    LARGE_INTEGER NewSize;
-
-    /* the target in i_block: the tail is cleared, nothing is freed */
-    if (ext4_inode_is_fast_symlink(Mcb->Inode)) {
-        if (Size < EXT2_LINKLEN_IN_INODE) {
-            RtlZeroMemory(data + Size, EXT2_LINKLEN_IN_INODE - Size);
-        }
-        if (Mcb->Inode->i_size > Size) {
-            Mcb->Inode->i_size = Size;
-        }
-        return Ext2SaveInode(IrpContext, Vcb, Mcb->Inode) ?
-               STATUS_SUCCESS : STATUS_UNEXPECTED_IO_ERROR;
-    }
-
-    NewSize.QuadPart = Size;
-    return Ext2TruncateFile(IrpContext, Vcb, Mcb, &NewSize);
-}
-
-/* A file carries at most one reparse point here: the symlink target, stored as the file data. */
+/*
+ * FSCTL_DELETE_REPARSE_POINT. On NTFS the file stays, without its reparse
+ * point; an ext4 symlink is nothing but its target, so the link itself
+ * goes - set to be deleted, as a disposition sets it, and removed when the
+ * handle closes. Until then it is the link it was: nothing is written now,
+ * and nothing half made is left behind if the removal never comes.
+ */
 NTSTATUS
 Ext2DeleteReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
 {
-    PIRP                        Irp = NULL;
-
-    PDEVICE_OBJECT      DeviceObject;
-
+    PIRP                Irp = IrpContext->Irp;
+    PIO_STACK_LOCATION  IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    PREPARSE_DATA_BUFFER RDB = Irp->AssociatedIrp.SystemBuffer;
     PEXT2_VCB           Vcb = NULL;
-    PEXT2_FCB           Fcb = NULL;
-    PEXT2_CCB           Ccb = NULL;
-    PEXT2_MCB           Mcb = NULL;
-
-    PEXT2_FCB           ParentDcb = NULL;   /* Dcb of it's current parent */
-    PEXT2_MCB           ParentMcb = NULL;
-
+    PEXT2_FCB           Fcb = IrpContext->Fcb;
+    PEXT2_CCB           Ccb = IrpContext->Ccb;
+    BOOLEAN             VcbAcquired = FALSE;
+    BOOLEAN             FcbAcquired = FALSE;
     NTSTATUS            Status = STATUS_UNSUCCESSFUL;
-
-    BOOLEAN             FcbLockAcquired = FALSE;
-    BOOLEAN             MainResourceAcquired = FALSE;
-    BOOLEAN             VcbResourceAcquired = FALSE;
 
     __try {
 
-        Ccb = IrpContext->Ccb;
-        ASSERT(Ccb != NULL);
-        ASSERT((Ccb->Identifier.Type == EXT2CCB) &&
-               (Ccb->Identifier.Size == sizeof(EXT2_CCB)));
-        DeviceObject = IrpContext->DeviceObject;
-        Vcb = (PEXT2_VCB) DeviceObject->DeviceExtension;
-        Mcb = IrpContext->Fcb->Mcb;
-        Irp = IrpContext->Irp;
-
-        /* turning a file into a symlink, or back, changes what its name
-           resolves to: a namespace change, made under the exclusive volume
-           resource like create, delete and rename (order: Vcb -> FcbLock
-           -> Fcb), so no open can resolve the name halfway through */
-        ExAcquireResourceExclusiveLite(&Vcb->MainResource, TRUE);
-        VcbResourceAcquired = TRUE;
-
-        ExAcquireResourceExclusiveLite(&Vcb->FcbLock, TRUE);
-        FcbLockAcquired = TRUE;
-
-        ParentMcb = Mcb->Parent;
-        ParentDcb = ParentMcb->Icb->Fcb;
-        if (ParentDcb == NULL) {
-            ParentDcb = Ext2AllocateFcb(Vcb, ParentMcb);
-        }
-        if (ParentDcb) {
-            Ext2ReferXcb(&ParentDcb->ReferenceCount);
-        }
-
-        if (!Mcb || !IsInodeSymLink(Mcb->Inode) ||
-            !IsFlagOn(Ccb->Flags, CCB_OPEN_REPARSE_POINT)) {
-            Status = STATUS_NOT_A_REPARSE_POINT;
-            __leave;
-        }
-
-        Fcb = Ext2AllocateFcb (Vcb, Mcb);
-        if (Fcb) {
-            Ext2ReferXcb(&Fcb->ReferenceCount);
-        } else {
-            Status = STATUS_INSUFFICIENT_RESOURCES;
-            __leave;
-        }
-
-        if (FcbLockAcquired) {
-            ExReleaseResourceLite(&Vcb->FcbLock);
-            FcbLockAcquired = FALSE;
-        }
-
-        /* exclusive: the file data is truncated and rewritten below */
-        if (!ExAcquireResourceExclusiveLite(
-                    &Fcb->MainResource,
-                    IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT) )) {
-            Status = STATUS_PENDING;
-            __leave;
-        }
-        MainResourceAcquired = TRUE;
-
-        Status = Ext2TruncateSymlink(IrpContext, Vcb, Mcb, 0);
+        Status = Ext2ReparseHandle(IrpContext, &Vcb);
         if (!NT_SUCCESS(Status)) {
             __leave;
         }
 
-        /* inode is to be removed */
-        SetLongFlag(Ccb->Flags, CCB_DELETE_ON_CLOSE);
+        /* the request names the tag it removes, and carries no data */
+        if (RDB == NULL ||
+            IrpSp->Parameters.FileSystemControl.InputBufferLength < REPARSE_DATA_BUFFER_HEADER_SIZE ||
+            RDB->ReparseDataLength != 0) {
+            Status = STATUS_IO_REPARSE_DATA_INVALID;
+            __leave;
+        }
+
+        ExAcquireResourceExclusiveLite(&Vcb->MainResource, TRUE);
+        VcbAcquired = TRUE;
+
+        Status = Ext2ReparseMayChange(Vcb, Fcb, Ccb);
+        if (!NT_SUCCESS(Status)) {
+            __leave;
+        }
+        if (!IsInodeSymLink(Fcb->Inode) || !IsFlagOn(Ccb->Flags, CCB_OPEN_REPARSE_POINT)) {
+            Status = STATUS_NOT_A_REPARSE_POINT;
+            __leave;
+        }
+        if (RDB->ReparseTag != IO_REPARSE_TAG_SYMLINK) {
+            Status = STATUS_IO_REPARSE_TAG_MISMATCH;
+            __leave;
+        }
+
+        ExAcquireResourceExclusiveLite(&Fcb->MainResource, TRUE);
+        FcbAcquired = TRUE;
+
+        Status = Ext2SetDispositionInfo(IrpContext, Vcb, Fcb, Ccb, TRUE);
 
     } __finally {
 
-        if (FcbLockAcquired) {
-            ExReleaseResourceLite(&Vcb->FcbLock);
-        }
-
-        if (MainResourceAcquired) {
+        if (FcbAcquired) {
             ExReleaseResourceLite(&Fcb->MainResource);
         }
-
-        if (VcbResourceAcquired) {
+        if (VcbAcquired) {
             ExReleaseResourceLite(&Vcb->MainResource);
         }
-        
-        if (NT_SUCCESS(Status)) {
-            Ext2NotifyReportChange(
-                IrpContext,
-                Vcb,
-                Mcb,
-                FILE_NOTIFY_CHANGE_ATTRIBUTES,
-                FILE_ACTION_MODIFIED );
 
-        }
-        
         if (!AbnormalTermination()) {
-            if (Status == STATUS_PENDING || Status == STATUS_CANT_WAIT) {
-                Status = Ext2QueueRequest(IrpContext);
-            } else {
-                Ext2CompleteIrpContext(IrpContext, Status);
-            }
-        }
-
-        if (ParentDcb) {
-            Ext2ReleaseFcb(ParentDcb);
-        }
-
-        if (Fcb) {
-            Ext2ReleaseFcb(Fcb);
+            Ext2CompleteIrpContext(IrpContext, Status);
         }
     }
-    
+
     return Status;
 }

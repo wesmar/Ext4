@@ -5,7 +5,10 @@
 # buffers are refused instead of read, a legitimate query still works.
 # FSCTL_GET_RETRIEVAL_POINTERS (raw user pointers): bad VCNs and an unmapped
 # output buffer are refused, holes are reported as LCN -1. EAs are found by
-# name in any case, a missing name comes back empty. As a
+# name in any case, a missing name comes back empty. Reparse points: no volume
+# handle reads one, a short buffer gets the header and ERROR_MORE_DATA, data
+# and directory entries are never given up for a link, DELETE takes the link;
+# no attribute makes a file a directory. As a
 # restricted token of this thread (Administrators deny-only, as for a standard user): the control
 # device cannot be opened, and volume settings cannot be changed or mount
 # points created through a handle on a plain file.
@@ -102,6 +105,54 @@ public static class SecIo {
             return s.ToString();
         }
     }
+    // --- reparse points: FSCTL_GET (0x900A8), SET (0x900A4), DELETE (0x900AC) on the
+    //     object itself (FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+    static SafeFileHandle OpenObject(string p, uint access) {
+        return CreateFile(p, access, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+    }
+    // "error bytes [tag datalength]" of a GET into a buffer of len bytes; a volume is
+    // opened for reading, or the open goes to the volume device, not the file system
+    public static string GetReparse(string p, int len, uint access) {
+        using (var h = OpenObject(p, access)) {
+            if (h.IsInvalid) return "open" + Marshal.GetLastWin32Error();
+            var b = new byte[len]; int r;
+            int e = DeviceIoControl(h, 0x900A8, null, 0, b, len, out r, IntPtr.Zero) ? 0 : Marshal.GetLastWin32Error();
+            return e + " " + r + (r >= 8 ? " " + BitConverter.ToUInt32(b, 0).ToString("X") + " " + BitConverter.ToUInt16(b, 4) : "");
+        }
+    }
+    // a relative symlink to target: print name and substitute name the same
+    public static int SetReparse(string p, uint access, string target) {
+        byte[] n = System.Text.Encoding.Unicode.GetBytes(target);
+        var b = new byte[20 + 2 * n.Length];
+        BitConverter.GetBytes(0xA000000Cu).CopyTo(b, 0);
+        BitConverter.GetBytes((ushort)(12 + 2 * n.Length)).CopyTo(b, 4);
+        BitConverter.GetBytes((ushort)n.Length).CopyTo(b, 10);
+        BitConverter.GetBytes((ushort)n.Length).CopyTo(b, 12);
+        BitConverter.GetBytes((ushort)n.Length).CopyTo(b, 14);
+        BitConverter.GetBytes(1u).CopyTo(b, 16);
+        n.CopyTo(b, 20); n.CopyTo(b, 20 + n.Length);
+        using (var h = OpenObject(p, access)) {
+            if (h.IsInvalid) return -Marshal.GetLastWin32Error();
+            int r;
+            return DeviceIoControl(h, 0x900A4, b, b.Length, null, 0, out r, IntPtr.Zero) ? 0 : Marshal.GetLastWin32Error();
+        }
+    }
+    // FileBasicInformation straight to the file system (kernel32 masks the attributes)
+    [DllImport("ntdll.dll")] static extern int NtSetInformationFile(SafeFileHandle h, out IOSB io, byte[] b, uint l, int cls);
+    public static string SetAttr(string p, uint a) {
+        using (var h = CreateFile(p, 0x100, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+            if (h.IsInvalid) return "open" + Marshal.GetLastWin32Error();
+            var b = new byte[40]; BitConverter.GetBytes(a).CopyTo(b, 32);
+            IOSB io; return NtSetInformationFile(h, out io, b, 40, 4).ToString("X");
+        }
+    }
+    public static int DeleteReparse(string p, uint tag) {
+        using (var h = OpenObject(p, 0x100)) {
+            if (h.IsInvalid) return -Marshal.GetLastWin32Error();
+            var b = new byte[8]; BitConverter.GetBytes(tag).CopyTo(b, 0); int r;
+            return DeviceIoControl(h, 0x900AC, b, 8, null, 0, out r, IntPtr.Zero) ? 0 : Marshal.GetLastWin32Error();
+        }
+    }
     // --- a standard user's view: this thread impersonates a restricted copy of
     //     its own token (Administrators deny-only, no privileges) and runs the probes
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr p, uint a, out IntPtr t);
@@ -170,6 +221,26 @@ Check 'missing name comes back empty'         '0|blue|<none>' ([SecIo]::GetEaLis
 Check 'set COLOR replaces Color'              0         ([SecIo]::SetEa($file, 'COLOR', 'red'))
 Check 'one attribute left'                    '0|COLOR=red' ([SecIo]::GetEaList($file, $true))
 
+"-- reparse points"
+$link = "$dir\link"; $full = "$dir\full"
+[IO.File]::WriteAllBytes($link, [byte[]]@())
+[void][IO.Directory]::CreateDirectory($full); [IO.File]::WriteAllText("$full\x.txt", 'x')
+Check 'GET on a volume handle refused'             '87 0'  ([SecIo]::GetReparse("\\.\$Drive`:", 1024, 2147483648))
+Check 'SET without write access refused'           5       ([SecIo]::SetReparse($link, 0x80, 'probe.txt'))
+Check 'empty file becomes a link'                  0       ([SecIo]::SetReparse($link, 0x100, 'probe.txt'))
+Check 'GET reads it back'                 '0 56 A000000C 48' ([SecIo]::GetReparse($link, 1024, 0))
+Check 'GET into a short buffer: header, more data' '234 24 A000000C 48' ([SecIo]::GetReparse($link, 24, 0))
+Check 'GET into less than a header refused'        '122 0' ([SecIo]::GetReparse($link, 4, 0))
+Check 'SET on a directory with entries refused'    145     ([SecIo]::SetReparse($full, 0x100, 'probe.txt'))
+Check 'SET on a file with data refused'            50      ([SecIo]::SetReparse($file, 0x100, 'x'))
+Check 'SET on the root refused'                    5       ([SecIo]::SetReparse($root, 0x100, 'x'))
+Check 'DELETE naming another tag refused'          4394    ([SecIo]::DeleteReparse($link, 2684354563))
+Check 'DELETE on a plain file refused'             4390    ([SecIo]::DeleteReparse($file, 2684354572))
+Check 'a file is not made a directory'    'C000000D'  ([SecIo]::SetAttr($file, 0x30))
+Check '... and stays a file'                      $true   ([IO.File]::Exists($file))
+Check 'DELETE takes the link'                      0       ([SecIo]::DeleteReparse($link, 2684354572))
+Check '... gone once closed, target kept'          'False True' ("$([IO.File]::Exists($link)) $([IO.File]::Exists($file))")
+
 "-- as a standard user (restricted token: Administrators deny-only)"
 try {
     $res = @{}
@@ -180,7 +251,7 @@ try {
     Check 'mount points closed to users'            5  $res['mountpoint-via-file']
     Check 'symlink needs the symlink privilege'     1314 $res['symlink']
 } finally {
-    foreach ($x in $file, "$file.lnk", "$dir\runs.bin", "$dir\sparse.bin") { if ([IO.File]::Exists($x)) { [IO.File]::Delete($x) } }
-    if ([IO.Directory]::Exists($dir)) { [IO.Directory]::Delete($dir) }
+    foreach ($x in $file, "$file.lnk", "$dir\runs.bin", "$dir\sparse.bin", $link, "$full\x.txt") { if ([IO.File]::Exists($x)) { [IO.File]::Delete($x) } }
+    foreach ($x in $full, $dir) { if ([IO.Directory]::Exists($x)) { [IO.Directory]::Delete($x) } }
 }
 "security: $fail failed"

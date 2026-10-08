@@ -532,6 +532,11 @@ typedef struct _EXT2_CCB {
     /* Flags */
     ULONG               Flags;
 
+    /* What the open was granted (file handles): a request that declares
+       no access of its own - FILE_SPECIAL_ACCESS - checks this, as NTFS
+       does */
+    ACCESS_MASK         Access;
+
     /* Mcb of it's symbol link */
     PEXT2_MCB           SymLink;
 

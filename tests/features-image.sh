@@ -63,6 +63,8 @@ mkdir /attr/idir
 write $src/inner /attr/idir/inner.txt
 mkdir /attr/adir
 write $src/inner /attr/adir/inner.txt
+symlink /attr/idir/inner-link inner.txt
+symlink /attr/adir/inner-link inner.txt
 set_inode_field /attr/immutable.txt flags 0x80010
 set_inode_field /attr/append.log flags 0x80020
 set_inode_field /attr/idir flags 0x80010

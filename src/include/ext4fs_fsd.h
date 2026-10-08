@@ -539,15 +539,15 @@ Ext2FlushFile (
 NTSTATUS
 Ext2Flush (IN PEXT2_IRP_CONTEXT IrpContext);
 
+/* a copy of a symlink's target with '\' for '/', NUL-terminated; the caller
+   frees Text->Buffer (Ext2FreePool, 'NL2E') */
 NTSTATUS
-Ext2ReadSymlink (
+Ext2ReadLinkText(
     IN PEXT2_IRP_CONTEXT    IrpContext,
     IN PEXT2_VCB            Vcb,
     IN PEXT2_MCB            Mcb,
-    IN PVOID                Buffer,
-    IN ULONG                Size,
-    OUT PULONG              BytesRead
-    );
+    OUT POEM_STRING         Text
+);
 
 NTSTATUS
 Ext2WriteSymlink (
@@ -557,14 +557,6 @@ Ext2WriteSymlink (
     IN PVOID                Buffer,
     IN ULONG                Size,
     OUT PULONG              BytesWritten
-);
-
-NTSTATUS
-Ext2TruncateSymlink(
-    PEXT2_IRP_CONTEXT IrpContext,
-    PEXT2_VCB         Vcb,
-    PEXT2_MCB         Mcb,
-    ULONG             Size
 );
 
 NTSTATUS

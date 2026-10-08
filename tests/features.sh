@@ -60,6 +60,13 @@ absent /attr/imm-link.txt
 absent /attr/idir/new.txt
 absent /attr/idir/x.txt
 absent /attr/adir/x.txt
+for l in /attr/idir/inner-link /attr/adir/inner-link; do
+    if debugfs -R "stat \"$l\"" "$p" 2>/dev/null | grep -q 'Fast link dest: "inner.txt"'; then
+        echo "  $l kept"
+    else
+        echo "  $l NOT kept"; fail=1
+    fi
+done
 for f in /attr/immutable.txt:0x80010 /attr/append.log:0x80020 /attr/idir:0x80010 /attr/adir:0x80020; do
     got=$(debugfs -R "stat ${f%%:*}" "$p" 2>/dev/null | grep -o 'Flags: 0x[0-9a-f]*' | cut -d' ' -f2)
     [ "$got" = "${f##*:}" ] || { echo "  ${f%%:*} flags $got, want ${f##*:}"; fail=1; }
