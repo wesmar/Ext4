@@ -125,7 +125,6 @@ NTSTATUS JnlCheckpointOldest(PEXT2_JOURNAL J, BOOLEAN Wait, BOOLEAN AllowCommit)
 
             batch[count].Rec = r;
             batch[count].Block = r->Block;
-            batch[count].Data = J->IoBuffer + ((ULONGLONG)count << J->BlockBits);
             count++;
         }
 
@@ -133,8 +132,13 @@ NTSTATUS JnlCheckpointOldest(PEXT2_JOURNAL J, BOOLEAN Wait, BOOLEAN AllowCommit)
 
         /* copy with only the bh lock held: nobody can obtain (and thus
            modify) these buffers until it is released, so the copies are
-           exactly the committed content */
+           exactly the committed content. Sorted by block first and laid out
+           in that order: a run of consecutive blocks is one piece of the
+           buffer, written from where it lies (each run used to be gathered
+           into a buffer of its own, allocated and copied once more). */
+        JnlSortBatch(batch, count);
         for (i = 0; i < count; i++) {
+            batch[i].Data = J->IoBuffer + ((ULONGLONG)i << J->BlockBits);
             RtlCopyMemory(batch[i].Data, batch[i].Rec->bh->b_data, J->BlockSize);
         }
 
@@ -142,33 +146,16 @@ NTSTATUS JnlCheckpointOldest(PEXT2_JOURNAL J, BOOLEAN Wait, BOOLEAN AllowCommit)
 
         JnlReleaseRecordList(J, &done);
 
-        /* write the batch home, sorted for locality, coalescing runs */
+        /* write the batch home in block order, a run of consecutive blocks
+           at a time */
         if (count) {
-            JnlSortBatch(batch, count);
             i = 0;
             while (i < count && NT_SUCCESS(Status)) {
                 ULONG run = 1;
                 while (i + run < count && batch[i + run].Block == batch[i].Block + run)
                     run++;
-                if (run == 1) {
-                    Status = Ext2WriteDiskSync(Vcb, batch[i].Block << J->BlockBits,
-                                               J->BlockSize, batch[i].Data, FALSE);
-                } else {
-                    PUCHAR gather = Ext2AllocatePool(NonPagedPool, (SIZE_T)run << J->BlockBits, JNL_TAG);
-                    if (!gather) {
-                        run = 1;
-                        Status = Ext2WriteDiskSync(Vcb, batch[i].Block << J->BlockBits,
-                                                   J->BlockSize, batch[i].Data, FALSE);
-                    } else {
-                        ULONG k;
-                        for (k = 0; k < run; k++)
-                            RtlCopyMemory(gather + ((ULONGLONG)k << J->BlockBits),
-                                          batch[i + k].Data, J->BlockSize);
-                        Status = Ext2WriteDiskSync(Vcb, batch[i].Block << J->BlockBits,
-                                                   run << J->BlockBits, gather, FALSE);
-                        Ext2FreePool(gather, JNL_TAG);
-                    }
-                }
+                Status = Ext2WriteDiskSync(Vcb, batch[i].Block << J->BlockBits,
+                                           run << J->BlockBits, batch[i].Data, FALSE);
                 i += run;
             }
 
