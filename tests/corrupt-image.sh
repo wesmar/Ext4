@@ -10,6 +10,18 @@
 # superblock records the errors, new data went around the corrupt group,
 # the deleted file is gone, nothing was written after remount-ro.
 # Never repairs anything. The disk is found by its size.
+# e2fsck -fn passes a volume whose only fault is an error the driver
+# recorded in the superblock (EXT4_ERROR_FS, s_error_count), so a false
+# alarm of the driver's checks would go unseen: the record is read too,
+# with the place it names
+fsck_clean() {     # fsck_clean <device>: e2fsck -fn, and no error recorded
+    e2fsck -fn "$1" || return $?
+    dumpe2fs -h "$1" 2>/dev/null | awk -F': *' '
+        $1 == "Filesystem state" && $2 ~ /error/ { bad = 1 }
+        $1 == "FS Error count" && $2 + 0 > 0 { bad = 1 }
+        $1 ~ /^(First|Last) error/ { info = info "\n  " $0 }
+        END { if (bad) { print "errors recorded in the superblock:" info; exit 8 } }'
+}
 set -euo pipefail
 mode=${1:?prepare or check}
 size=${2:?disk size}
@@ -77,7 +89,7 @@ if [ "$mode" = prepare ]; then
         mkdir "$m/baddir"
         for n in a b c; do printf '%s\n' "$n" > "$m/baddir/$n.txt"; done
         umount "$m"; rmdir "$m"
-        e2fsck -fn "$p" > /dev/null || { echo "$p not clean before the damage"; exit 1; }
+        fsck_clean "$p" > /dev/null || { echo "$p not clean before the damage"; exit 1; }
     done
     corrupt "$p1" cont
     corrupt "$p2" ro

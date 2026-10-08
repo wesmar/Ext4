@@ -11,6 +11,18 @@
 #            to /interop-linux, as Linux sees it, then e2fsck -fn.
 #
 #   sudo bash interop.sh prepare|check [disk-size-in-bytes]
+# e2fsck -fn passes a volume whose only fault is an error the driver
+# recorded in the superblock (EXT4_ERROR_FS, s_error_count), so a false
+# alarm of the driver's checks would go unseen: the record is read too,
+# with the place it names
+fsck_clean() {     # fsck_clean <device>: e2fsck -fn, and no error recorded
+    e2fsck -fn "$1" || return $?
+    dumpe2fs -h "$1" 2>/dev/null | awk -F': *' '
+        $1 == "Filesystem state" && $2 ~ /error/ { bad = 1 }
+        $1 == "FS Error count" && $2 + 0 > 0 { bad = 1 }
+        $1 ~ /^(First|Last) error/ { info = info "\n  " $0 }
+        END { if (bad) { print "errors recorded in the superblock:" info; exit 8 } }'
+}
 set -u
 mode=$1
 size=${2:-1073741824}
@@ -110,7 +122,7 @@ for part in $(lsblk -rno NAME,FSTYPE "/dev/$dev" | awk '$2=="ext4" || $2=="ext3"
     fi
     umount "$m"; rmdir "$m"
     if [ "$mode" = check ]; then
-        out=$(e2fsck -fn "/dev/$part" 2>&1); e=$?
+        out=$(fsck_clean "/dev/$part" 2>&1); e=$?
         check "e2fsck clean" "0" "$e"
         [ $e -ne 0 ] && echo "$out" | grep -v '^Pass \|^e2fsck ' | head -15
     fi

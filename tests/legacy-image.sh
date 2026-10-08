@@ -1,6 +1,18 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-only
 # Dedicated ext2/ext3 smoke fixture; never repairs Windows-written metadata.
+# e2fsck -fn passes a volume whose only fault is an error the driver
+# recorded in the superblock (EXT4_ERROR_FS, s_error_count), so a false
+# alarm of the driver's checks would go unseen: the record is read too,
+# with the place it names
+fsck_clean() {     # fsck_clean <device>: e2fsck -fn, and no error recorded
+    e2fsck -fn "$1" || return $?
+    dumpe2fs -h "$1" 2>/dev/null | awk -F': *' '
+        $1 == "Filesystem state" && $2 ~ /error/ { bad = 1 }
+        $1 == "FS Error count" && $2 + 0 > 0 { bad = 1 }
+        $1 ~ /^(First|Last) error/ { info = info "\n  " $0 }
+        END { if (bad) { print "errors recorded in the superblock:" info; exit 8 } }'
+}
 set -euo pipefail
 mode=${1:?prepare or check}
 size=402653184
@@ -23,7 +35,7 @@ for n in 1 2; do
     part=${dev}${n}
     expected=ext$((n+1))
     [[ $(blkid -s TYPE -o value "$part") == "$expected" ]] || { echo 'Wrong fixture format'; exit 2; }
-    e2fsck -fn "$part"
+    fsck_clean "$part"
     m=$(mktemp -d)
     # Move out of the mount before cleanup, including on a failed assertion.
     trap 'cd /; if mountpoint -q "$m"; then umount "$m"; fi; rmdir "$m"' EXIT
@@ -60,7 +72,7 @@ PY
     umount "$m"
     rmdir "$m"
     trap - EXIT
-    e2fsck -fn "$part"
+    fsck_clean "$part"
     echo "LEGACY-LINUX: $expected $mode passed"
 done
 echo "LEGACY-LINUX: $mode ALL PASSED"

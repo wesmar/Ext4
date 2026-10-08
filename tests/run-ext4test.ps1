@@ -71,6 +71,7 @@ function Guest-PS([string]$file, [string]$Arguments) {
         'race.ps1' { '^opens=\d+ changes=\d+ unexpected=\d+' }
         'nsrace.ps1' { '^nsrace: \d+ unexpected' }
         'freed-reuse.ps1' { '^FREED-REUSE: \d+ failed' }
+        'copytree.ps1' { '^COPYTREE: \d+ failed' }
         default { throw "no completion contract for $file" }
     }
     if (-not @($out | Where-Object { $_ -match $completion }).Count) {
@@ -115,7 +116,7 @@ if (-not $Letters) { $Letters = @($vols.Letter) }
 "   ext volumes: $(($vols | ForEach-Object { "$($_.Letter): $($_.Label) $($_.Fs) $([math]::Round($_.Size/1MB)) MB" }) -join ', ')  -> testing on $Drive`:"
 if (($d -split ' ') -notcontains $Drive) { throw "drive $Drive not mounted in the guest (have: $d)" }
 
-foreach ($f in 'ext4test.ps1', 'resize.ps1', 'ext4sys.ps1', 'ext4hold.ps1', 'stress.ps1', 'repro.ps1', 'pending.ps1', 'race.ps1', 'nsrace.ps1', 'interop.ps1', 'security.ps1', 'luks.ps1', 'features.ps1', 'freed-reuse.ps1') {
+foreach ($f in 'ext4test.ps1', 'resize.ps1', 'ext4sys.ps1', 'ext4hold.ps1', 'stress.ps1', 'repro.ps1', 'pending.ps1', 'race.ps1', 'nsrace.ps1', 'interop.ps1', 'security.ps1', 'luks.ps1', 'features.ps1', 'freed-reuse.ps1', 'copytree.ps1') {
     & scp -q @sshOpt "$sp\$f" "${target}:C:/Windows/Temp/$f"
     if ($LASTEXITCODE) { throw "scp $f failed" }
 }
@@ -167,6 +168,11 @@ foreach ($letter in $Letters) {
     if (-not ($r.Out -match '^RESIZE: \d+ cases, 0 failed$')) { throw 'resize regression failed' }
     $summary["resize-$letter"] = '0 failed'
 }
+"-- whole trees copied by robocopy and .NET, compared and deleted"
+$sw.Restart()
+$r = Guest-PS 'copytree.ps1' "-Root $Drive`:\copytree"
+$bad = ($r.Out | Where-Object { $_ -match 'COPYTREE: (\d+) failed' -and [int]$Matches[1] -gt 0 }).Count
+$summary['copytree'] = "$bad failed ($([math]::Round($sw.Elapsed.TotalSeconds)) s)"
 "-- delete-pending scenarios (handles, symlinks, renames)"
 $sw.Restart()
 $r = Guest-PS 'pending.ps1' "-Root $Drive`:\pending"
@@ -317,7 +323,7 @@ catch {
 }
 
 # leave nothing behind in the guest
-[void](Remote 'powershell -NoProfile -Command "foreach($f in ''ext4test.ps1'',''resize.ps1'',''ext4sys.ps1'',''ext4hold.ps1'',''stress.ps1'',''repro.ps1'',''pending.ps1'',''race.ps1'',''nsrace.ps1'',''interop.ps1'',''security.ps1'',''luks.ps1'',''features.ps1'',''freed-reuse.ps1'',''ext4ctl.exe'',''handle64.exe''){ $p=\"C:\Windows\Temp\$f\"; if([IO.File]::Exists($p)){ [IO.File]::Delete($p) } }"')
+[void](Remote 'powershell -NoProfile -Command "foreach($f in ''ext4test.ps1'',''resize.ps1'',''ext4sys.ps1'',''ext4hold.ps1'',''stress.ps1'',''repro.ps1'',''pending.ps1'',''race.ps1'',''nsrace.ps1'',''interop.ps1'',''security.ps1'',''luks.ps1'',''features.ps1'',''freed-reuse.ps1'',''copytree.ps1'',''ext4ctl.exe'',''handle64.exe''){ $p=\"C:\Windows\Temp\$f\"; if([IO.File]::Exists($p)){ [IO.File]::Delete($p) } }"')
 
 ""
 "== SUMMARY ($([math]::Round($total.Elapsed.TotalSeconds)) s)"

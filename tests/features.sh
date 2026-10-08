@@ -7,12 +7,24 @@
 # wrote there must be byte-exact and the directory it made casefolded too.
 # Of the chattr +i / +a files only what Linux allows may have changed.
 # Read-only; the disk is found by its size.
+# e2fsck -fn passes a volume whose only fault is an error the driver
+# recorded in the superblock (EXT4_ERROR_FS, s_error_count), so a false
+# alarm of the driver's checks would go unseen: the record is read too,
+# with the place it names
+fsck_clean() {     # fsck_clean <device>: e2fsck -fn, and no error recorded
+    e2fsck -fn "$1" || return $?
+    dumpe2fs -h "$1" 2>/dev/null | awk -F': *' '
+        $1 == "Filesystem state" && $2 ~ /error/ { bad = 1 }
+        $1 == "FS Error count" && $2 + 0 > 0 { bad = 1 }
+        $1 ~ /^(First|Last) error/ { info = info "\n  " $0 }
+        END { if (bad) { print "errors recorded in the superblock:" info; exit 8 } }'
+}
 size=$1
 dev=/dev/$(lsblk -b -o NAME,SIZE,TYPE -n -d | awk -v s="$size" '$2==s && $3=="disk" {print $1; exit}')
 [ "$dev" = "/dev/" ] && { echo "disk not found"; exit 2; }
 p=${dev}1
 fail=0
-if e2fsck -fn "$p" > /tmp/cf.fsck 2>&1; then echo "  e2fsck clean"; else echo "  e2fsck FAILED"; tail -15 /tmp/cf.fsck; fail=1; fi
+if fsck_clean "$p" > /tmp/cf.fsck 2>&1; then echo "  e2fsck clean"; else echo "  e2fsck FAILED"; tail -15 /tmp/cf.fsck; fail=1; fi
 
 tmp=$(mktemp -d)
 debugfs -R "dump /winwrite.sha256 $tmp/manifest" "$p" > /dev/null 2>&1
@@ -67,7 +79,7 @@ done
 # partition 2: large_dir. e2fsck checks every index level; the kernel must
 # find Windows's names through the index (a read-only mount, no replay)
 p2=${dev}2
-if e2fsck -fn "$p2" > /tmp/ld.fsck 2>&1; then echo "  large_dir: e2fsck clean"; else echo "  large_dir: e2fsck FAILED"; tail -15 /tmp/ld.fsck; fail=1; fi
+if fsck_clean "$p2" > /tmp/ld.fsck 2>&1; then echo "  large_dir: e2fsck clean"; else echo "  large_dir: e2fsck FAILED"; tail -15 /tmp/ld.fsck; fail=1; fi
 levels=$(debugfs -R "htree /grow" "$p2" 2>/dev/null | grep -o 'Indirect levels: [0-9]*')
 [ "$levels" = "Indirect levels: 2" ] && echo "  /grow: $levels" || { echo "  /grow: '$levels', want a three-level index"; fail=1; }
 pad=$(printf 'x%.0s' $(seq 1 240))
@@ -94,7 +106,7 @@ for n in 3 5; do
     p=${dev}$n
     seq=$(mmp "$p" sequence); devn=$(mmp "$p" device_name)
     [ "$seq" = "ff4d4d50" ] && [ "$devn" = "ext4.sys" ] && echo "  partition $n: released by ext4.sys" || { echo "  partition $n: MMP sequence $seq device '$devn'"; fail=1; }
-    if e2fsck -fn "$p" > /tmp/mmp.fsck 2>&1; then echo "  partition $n: e2fsck clean"; else echo "  partition $n: e2fsck FAILED"; tail -5 /tmp/mmp.fsck; fail=1; fi
+    if fsck_clean "$p" > /tmp/mmp.fsck 2>&1; then echo "  partition $n: e2fsck clean"; else echo "  partition $n: e2fsck FAILED"; tail -5 /tmp/mmp.fsck; fail=1; fi
     debugfs -c -R "cat windows.txt" "$p" 2>/dev/null | grep -q '^mmp$' && echo "  partition $n: Windows's file there" || { echo "  partition $n: Windows's file missing"; fail=1; }
 done
 seq=$(mmp "${dev}4" sequence)
@@ -106,7 +118,7 @@ debugfs -c -R "stat windows.txt" "${dev}4" 2>/dev/null | grep -q '^Inode:' && { 
 # kernel checks each value against its crc32c and the entry's hash as it
 # reads it
 p6=${dev}6
-if e2fsck -fn "$p6" > /tmp/ea.fsck 2>&1; then echo "  ea_inode: e2fsck clean"; else echo "  ea_inode: e2fsck FAILED"; tail -15 /tmp/ea.fsck; fail=1; fi
+if fsck_clean "$p6" > /tmp/ea.fsck 2>&1; then echo "  ea_inode: e2fsck clean"; else echo "  ea_inode: e2fsck FAILED"; tail -15 /tmp/ea.fsck; fail=1; fi
 mnt=$(mktemp -d)
 if mount -o ro,noload "$p6" "$mnt"; then
     python3 - "$mnt" <<'PY' || fail=1
@@ -163,7 +175,7 @@ rmdir "$mnt"
 # Windows left alone and the ones it moved out to blocks; the kernel reads
 # them all back
 p7=${dev}7
-if e2fsck -fn "$p7" > /tmp/inl.fsck 2>&1; then echo "  inline_data: e2fsck clean"; else echo "  inline_data: e2fsck FAILED"; tail -15 /tmp/inl.fsck; fail=1; fi
+if fsck_clean "$p7" > /tmp/inl.fsck 2>&1; then echo "  inline_data: e2fsck clean"; else echo "  inline_data: e2fsck FAILED"; tail -15 /tmp/inl.fsck; fail=1; fi
 mnt=$(mktemp -d)
 if mount -o ro,noload "$p7" "$mnt"; then
     python3 - "$mnt" <<'PY' || fail=1
@@ -216,7 +228,7 @@ rmdir "$mnt"
 # the deleted symlinks held (the 60-byte one's block, the other's xattr
 # block); the kernel must find Windows's names through the index
 p8=${dev}8
-if e2fsck -fn "$p8" > /tmp/uh.fsck 2>&1; then echo "  unsigned hash: e2fsck clean"; else echo "  unsigned hash: e2fsck FAILED"; tail -15 /tmp/uh.fsck; fail=1; fi
+if fsck_clean "$p8" > /tmp/uh.fsck 2>&1; then echo "  unsigned hash: e2fsck clean"; else echo "  unsigned hash: e2fsck FAILED"; tail -15 /tmp/uh.fsck; fail=1; fi
 # the label Windows set: all 16 bytes of s_volume_name
 name=$(dumpe2fs -h "$p8" 2>/dev/null | awk -F': *' '$1 == "Filesystem volume name" {print $2}')
 [ "$name" = "win-label-16byte" ] && echo "  label set by Windows: $name" || { echo "  label '$name', want 'win-label-16byte'"; fail=1; }

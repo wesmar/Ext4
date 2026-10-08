@@ -98,12 +98,26 @@ Ext2SetBasicInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE_OBJ
     }
 
     if (FBI->FileAttributes != 0) {
+        /* what the file is, read before the caller's attributes replace the
+           cached ones: robocopy and Explorer set a new directory's
+           attributes without FILE_ATTRIBUTE_DIRECTORY, and read after,
+           the directory lost it - every name made in it then failed with
+           STATUS_NOT_A_DIRECTORY */
+        BOOLEAN Directory = IsDirectory(Fcb);
+
         Changed |= FILE_NOTIFY_CHANGE_ATTRIBUTES;
 
-        if (IsFlagOn(FBI->FileAttributes, FILE_ATTRIBUTE_READONLY)) {
-            Ext2SetOwnerReadOnly(Inode->i_mode);
-        } else {
+        /* Read-only is the owner's write permission - for a file. On a
+           directory Windows takes it for a display hint (Explorer marks
+           customized folders so, and copies carry it along) and NTFS
+           enforces nothing; made a permission, it kept every new name out
+           of a copied directory, on Linux as well. A directory is made
+           unwritable on Linux only; clearing the attribute (attrib -r)
+           gives the permission back. */
+        if (!IsFlagOn(FBI->FileAttributes, FILE_ATTRIBUTE_READONLY)) {
             Ext2SetOwnerWritable(Inode->i_mode);
+        } else if (!Directory) {
+            Ext2SetOwnerReadOnly(Inode->i_mode);
         }
         if (FBI->FileAttributes & FILE_ATTRIBUTE_TEMPORARY) {
             SetFlag(FileObject->Flags, FO_TEMPORARY_FILE);
@@ -112,7 +126,7 @@ Ext2SetBasicInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE_OBJ
         }
 
         Mcb->FileAttr = FBI->FileAttributes;
-        if (IsDirectory(Fcb)) {
+        if (Directory) {
             SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_DIRECTORY);
             ClearFlag(Mcb->FileAttr, FILE_ATTRIBUTE_NORMAL);
         }
