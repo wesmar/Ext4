@@ -60,7 +60,7 @@ Ext2FastIoLock (
                       "Ext2FastIoLock: %s %s %wZ\n",
                       Ext2GetCurrentProcessName(),
                       "FASTIO_LOCK",
-                      &Fcb->Mcb->FullName        ));
+                      &Fcb->Mcb->ShortName        ));
 
             DEBUG(DL_INF, (
                       "Ext2FastIoLock: Offset: %I64xh Length: %I64xh Key: %u %s%s\n",
@@ -166,7 +166,7 @@ Ext2FastIoUnlockSingle (
                       "Ext2FastIoUnlockSingle: %s %s %wZ\n",
                       (PUCHAR) Process + ProcessNameOffset,
                       "FASTIO_UNLOCK_SINGLE",
-                      &Fcb->Mcb->FullName        ));
+                      &Fcb->Mcb->ShortName        ));
 
             DEBUG(DL_INF, (
                       "Ext2FastIoUnlockSingle: Offset: %I64xh Length: %I64xh Key: %u\n",
@@ -262,7 +262,7 @@ Ext2FastIoUnlockAll (
                       "Ext2FastIoUnlockSingle: %s %s %wZ\n",
                       (PUCHAR) Process + ProcessNameOffset,
                       "FASTIO_UNLOCK_ALL",
-                      &Fcb->Mcb->FullName
+                      &Fcb->Mcb->ShortName
                   ));
 #endif
 
@@ -354,7 +354,7 @@ Ext2FastIoUnlockAllByKey (
                       "Ext2FastIoUnlockAllByKey: %s %s %wZ\n",
                       (PUCHAR) Process + ProcessNameOffset,
                       "FASTIO_UNLOCK_ALL_BY_KEY",
-                      &Fcb->Mcb->FullName
+                      &Fcb->Mcb->ShortName
                   ));
 
             DEBUG(DL_INF, (

@@ -26,6 +26,7 @@ typedef struct _EXT2_NEW_NAME {
     PEXT2_FCB       ParentDcb;      /* referenced */
     PEXT2_MCB       ExistingMcb;    /* a name there already, referenced */
     BOOLEAN         Replaced;       /* ... which the new one replaced */
+    EXT2_SAVED_NAME Existing;       /* ... its path, for the report after it went */
 } EXT2_NEW_NAME, *PEXT2_NEW_NAME;
 
 /* a name Ext2BuildName made */
@@ -149,7 +150,7 @@ Ext2NewNamePrepare(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb,
 
     Status = Ext2NewNameDirectories(Vcb, N);
     DEBUG(DL_RES, ("Ext2NewName: %wZ -> %wZ\\%wZ: %08x\n",
-                   &N->Mcb->FullName, &N->TargetMcb->FullName, &N->FileName, Status));
+                   &N->Mcb->ShortName, &N->TargetMcb->ShortName, &N->FileName, Status));
     return Status;
 }
 
@@ -178,7 +179,7 @@ Ext2NewNameReplace(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PEXT2_C
     }
 
     if (!IrpSp->Parameters.SetFile.ReplaceIfExists) {
-        DEBUG(DL_RES, ("Ext2NewName: %wZ exists\n", &N->ExistingMcb->FullName));
+        DEBUG(DL_RES, ("Ext2NewName: %wZ exists\n", &N->ExistingMcb->ShortName));
         return STATUS_OBJECT_NAME_COLLISION;
     }
 
@@ -190,6 +191,7 @@ Ext2NewNameReplace(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PEXT2_C
         }
     }
 
+    Ext2NotifySaveName(Vcb, N->ExistingMcb, &N->Existing);
     Status = Ext2DeleteFile(IrpContext, Vcb, ExistingFcb, N->ExistingMcb);
     if (NT_SUCCESS(Status)) {
         N->Replaced = TRUE;
@@ -200,6 +202,7 @@ Ext2NewNameReplace(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PEXT2_C
 static VOID
 Ext2NewNameRelease(IN PEXT2_NEW_NAME N)
 {
+    Ext2FreeFullName(&N->Existing.Path);
     if (N->TargetDcb) {
         Ext2ReleaseFcb(N->TargetDcb);
     }
@@ -224,7 +227,7 @@ Ext2SetRenameInfo(
 {
     PFILE_RENAME_INFORMATION FRI = (PFILE_RENAME_INFORMATION)IrpContext->Irp->AssociatedIrp.SystemBuffer;
     EXT2_NEW_NAME       N = { 0 };
-    UNICODE_STRING      ShortName = { 0 }, FullName = { 0 };
+    UNICODE_STRING      ShortName = { 0 };
     struct dentry      *NewEntry = NULL;
     __u16               nlink;
     BOOLEAN             Same, Move;
@@ -244,8 +247,7 @@ Ext2SetRenameInfo(
     /* the names the cache will need, before anything changes on disk: a
        rename done there and refused here, for want of memory, left the
        cache with the old name of a file the disk had renamed */
-    if (!Ext2BuildName(&ShortName, &N.FileName, NULL) ||
-        !Ext2BuildName(&FullName, &N.FileName, &N.TargetMcb->FullName)) {
+    if (!Ext2BuildName(&ShortName, &N.FileName)) {
         Status = STATUS_INSUFFICIENT_RESOURCES;
         goto out;
     }
@@ -305,20 +307,12 @@ Ext2SetRenameInfo(
     }
 
     if (N.Replaced) {
-        Ext2NotifyNameChange(IrpContext, Vcb, N.ExistingMcb, FILE_ACTION_REMOVED);
+        Ext2NotifySavedRemoval(Vcb, &N.Existing, TRUE);
     }
     Ext2NotifyNameChange(IrpContext, Vcb, N.Mcb, Move ? FILE_ACTION_REMOVED : FILE_ACTION_RENAMED_OLD_NAME);
 
-    /* the name cache is hashed by parent and name: out of the tree while
-       either changes, back in under the new parent afterwards */
-    Ext2RemoveMcb(Vcb, N.Mcb);
-    Ext2FreeName(&N.Mcb->ShortName);
-    Ext2FreeName(&N.Mcb->FullName);
-    N.Mcb->ShortName = ShortName;
-    N.Mcb->FullName = FullName;
-    RtlZeroMemory(&ShortName, sizeof(ShortName));
-    RtlZeroMemory(&FullName, sizeof(FullName));
-    Ext2InsertMcb(Vcb, N.TargetMcb, N.Mcb);
+    /* the new parent and name at once; ShortName gets the old name, freed below */
+    Ext2MoveMcb(Vcb, N.Mcb, N.TargetMcb, &ShortName);
 
     Ext2NotifyNameChange(IrpContext, Vcb, N.Mcb, Move ? FILE_ACTION_ADDED : FILE_ACTION_RENAMED_NEW_NAME);
 
@@ -327,7 +321,6 @@ out:
         Ext2FreeEntry(NewEntry);
     }
     Ext2FreeName(&ShortName);
-    Ext2FreeName(&FullName);
     Ext2NewNameRelease(&N);
     return Status;
 }
@@ -371,7 +364,7 @@ Ext2SetLinkInfo(
     }
 
     if (N.Replaced) {
-        Ext2NotifyNameChange(IrpContext, Vcb, N.ExistingMcb, FILE_ACTION_REMOVED);
+        Ext2NotifySavedRemoval(Vcb, &N.Existing, TRUE);
     }
 
     /* the new name, looked up to be announced (and cached) */

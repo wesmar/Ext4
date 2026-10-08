@@ -549,7 +549,7 @@ Ext2InitializeZone(
                 goto errorout;
             }
             DEBUG(DL_MAP, ("Ext2InitializeZone %wZ: Block = %I64xh Mapped = %xh\n",
-                           &Mcb->FullName, Block, Mapped));
+                           &Mcb->ShortName, Block, Mapped));
         }
 
         /* Mapped is total number of continous blocks or NULL blocks */

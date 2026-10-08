@@ -998,7 +998,7 @@ Ext2SetDispositionInfo(
     if (bDelete) {
 
         DEBUG(DL_INF, ( "Ext2SetDispositionInformation: Removing %wZ.\n",
-                        &Mcb->FullName));
+                        &Mcb->ShortName));
 
         /* a link opened as a reparse point too: Linux keeps it in a sealed
            directory as it keeps a file */

@@ -638,7 +638,7 @@ Ext2LoadRoot(IN PEXT2_VCB Vcb)
     Buffer[1] = 0;
     RootNode.Buffer = Buffer;
     RootNode.MaximumLength = RootNode.Length = sizeof(WCHAR);
-    Vcb->McbTree = Ext2AllocateMcb(Vcb, &RootNode, NULL, FILE_ATTRIBUTE_DIRECTORY);
+    Vcb->McbTree = Ext2AllocateMcb(Vcb, &RootNode, FILE_ATTRIBUTE_DIRECTORY);
     if (!Vcb->McbTree) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }

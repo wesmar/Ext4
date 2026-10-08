@@ -277,8 +277,12 @@ static VOID
 Ext2CleanupDelete(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE_OBJECT FileObject,
                   IN PEXT2_FCB Fcb, IN PEXT2_CCB Ccb, IN BOOLEAN SymLinkDelete, IN BOOLEAN FileDelete)
 {
-    PEXT2_MCB Name;
+    PEXT2_MCB       Name;
+    EXT2_SAVED_NAME Saved;
+    NTSTATUS        Status;
 
+    /* each name's path is taken while it is still in the tree: reported
+       after it left, it would reach no watcher */
     if (SymLinkDelete) {
         if (Ccb->SymLink) {
             Name = Ccb->SymLink;
@@ -286,9 +290,9 @@ Ext2CleanupDelete(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE_OB
         } else {
             Name = Ext2CcbName(Fcb, Ccb);
         }
-        if (NT_SUCCESS(Ext2DeleteFile(IrpContext, Vcb, Fcb, Name))) {
-            Ext2NotifyNameChange(IrpContext, Vcb, Name, FILE_ACTION_REMOVED);
-        }
+        Ext2NotifySaveName(Vcb, Name, &Saved);
+        Status = Ext2DeleteFile(IrpContext, Vcb, Fcb, Name);
+        Ext2NotifySavedRemoval(Vcb, &Saved, NT_SUCCESS(Status));
     }
 
     if (!FileDelete) {
@@ -303,9 +307,10 @@ Ext2CleanupDelete(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE_OB
             break;
         }
 
-        if (NT_SUCCESS(Ext2DeleteFile(IrpContext, Vcb, Fcb, Name))) {
-            Ext2NotifyNameChange(IrpContext, Vcb, Name, FILE_ACTION_REMOVED);
-        } else {
+        Ext2NotifySaveName(Vcb, Name, &Saved);
+        Status = Ext2DeleteFile(IrpContext, Vcb, Fcb, Name);
+        Ext2NotifySavedRemoval(Vcb, &Saved, NT_SUCCESS(Status));
+        if (!NT_SUCCESS(Status)) {
             /* not going anywhere (directory not empty ...) */
             ClearLongFlag(Name->Flags, MCB_DELETE_PENDING);
         }
@@ -435,7 +440,7 @@ Ext2Cleanup (IN PEXT2_IRP_CONTEXT IrpContext)
 
         DEBUG(DL_INF, ("Ext2Cleanup: OpenCount=%u ReferCount=%u NonCachedCount=%xh %wZ\n",
                        Fcb->OpenHandleCount, Fcb->ReferenceCount, Fcb->NonCachedOpenCount,
-                       &Fcb->Mcb->FullName));
+                       &Fcb->Mcb->ShortName));
 
         SetFlag(FileObject->Flags, FO_CLEANUP_COMPLETE);
 

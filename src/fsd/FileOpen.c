@@ -315,7 +315,7 @@ Ext2CreateLookupName(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT P
                     C->NonDirectoryFile, C->OpenTargetDirectory,
                     C->NoIntermediateBuffering, C->DeleteOnClose ));
     DEBUG(DL_RES, ("Ext2CreateFile: Lookup 1st: %wZ at %S\n",
-                   Name, C->ParentMcb ? C->ParentMcb->FullName.Buffer : L" "));
+                   Name, C->ParentMcb ? C->ParentMcb->ShortName.Buffer : L" "));
 
     return Ext2LookupFile(IrpContext, Vcb, Name, C->ParentMcb, &C->Mcb, 0 /* follow links */);
 }
@@ -367,7 +367,7 @@ Ext2CreateMissingName(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb,
         }
 
         DEBUG(DL_RES, ("Ext2CreateFile: Lookup 2nd: %wZ\\%wZ\n",
-                       &C->ParentMcb->FullName, &RealName));
+                       &C->ParentMcb->ShortName, &RealName));
         Status = Ext2LookupFile(IrpContext, Vcb, &RealName, C->ParentMcb, &Next, 0);
         if (!NT_SUCCESS(Status)) {
             if (Status == STATUS_NO_SUCH_FILE || Status == STATUS_OBJECT_NAME_NOT_FOUND) {
@@ -767,7 +767,7 @@ Ext2CreateAttachCcb(IN PEXT2_VCB Vcb, IN OUT PEXT2_CREATE C)
     FileObject->SectionObjectPointer = &(Fcb->SectionObject);
 
     DEBUG(DL_INF, ( "Ext2CreateFile: %wZ OpenCount=%u ReferCount=%u NonCachedCount=%u\n",
-                    &Fcb->Mcb->FullName, Fcb->OpenHandleCount, Fcb->ReferenceCount,
+                    &Fcb->Mcb->ShortName, Fcb->OpenHandleCount, Fcb->ReferenceCount,
                     Fcb->NonCachedOpenCount));
     return STATUS_SUCCESS;
 }
@@ -874,7 +874,7 @@ Ext2CreateFinish(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEXT2
         if (C->Ccb != NULL) {
             ASSERT(Fcb != NULL && Fcb->Mcb != NULL);
             DEBUG(DL_ERR, ("Ext2CreateFile: failed to create %wZ status = %xh\n",
-                           &Fcb->Mcb->FullName, Status));
+                           &Fcb->Mcb->ShortName, Status));
 
             Ext2DerefXcb(&Fcb->OpenHandleCount);
             Ext2DerefXcb(&Fcb->ReferenceCount);
@@ -925,7 +925,7 @@ Ext2CreateFinish(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEXT2
 
                 if (!NT_SUCCESS(Undo)) {
                     DbgPrint("ext4: a failed create left %wZ behind (%08x)\n",
-                             &C->Mcb->FullName, Undo);
+                             &C->Mcb->ShortName, Undo);
                 }
             }
         }

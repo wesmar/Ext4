@@ -308,7 +308,7 @@ Ext2SupersedeOrOverWriteFile(
     }
 
     /* remove all extent mappings */
-    DEBUG(DL_EXT, ("Ext2SuperSede ...: %wZ\n", &Fcb->Mcb->FullName));
+    DEBUG(DL_EXT, ("Ext2SuperSede ...: %wZ\n", &Fcb->Mcb->ShortName));
     Fcb->Inode->i_size = 0;
 
     if (Disposition == FILE_SUPERSEDE) {

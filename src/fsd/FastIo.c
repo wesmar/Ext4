@@ -118,7 +118,7 @@ Ext2FastIoCheckIfPossible (
             DEBUG(DL_INF, ("Ext2FastIIOCheckPossible: %s %s %wZ\n",
                            Ext2GetCurrentProcessName(),
                            "FASTIO_CHECK_IF_POSSIBLE",
-                           &Fcb->Mcb->FullName
+                           &Fcb->Mcb->ShortName
                           ));
 
             DEBUG(DL_INF, (
@@ -282,7 +282,7 @@ Ext2FastIoQueryBasicInfo (
                       "Ext2FastIoQueryBasicInfo: %s %s %wZ\n",
                       Ext2GetCurrentProcessName(),
                       "FASTIO_QUERY_BASIC_INFO",
-                      &Fcb->Mcb->FullName
+                      &Fcb->Mcb->ShortName
                   ));
 #endif
             if (!IsFlagOn(Fcb->Flags, FCB_PAGE_FILE)) {
@@ -395,7 +395,7 @@ Ext2FastIoQueryStandardInfo (
                       "Ext2FastIoQueryStandardInfo: %s %s %wZ\n",
                       Ext2GetCurrentProcessName(),
                       "FASTIO_QUERY_STANDARD_INFO",
-                      &Fcb->Mcb->FullName ));
+                      &Fcb->Mcb->ShortName ));
 #endif
             Vcb = Fcb->Vcb;
 
@@ -512,7 +512,7 @@ Ext2FastIoQueryNetworkOpenInfo (
         DEBUG(DL_INF, (
                   "%-31s %wZ\n",
                   "FASTIO_QUERY_NETWORK_OPEN_INFO",
-                  &Fcb->Mcb->FullName
+                  &Fcb->Mcb->ShortName
               ));
 #endif
 

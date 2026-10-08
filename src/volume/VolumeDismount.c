@@ -318,7 +318,7 @@ Ext2PurgeVolume (IN PEXT2_VCB Vcb,
             Fcb = CONTAINING_RECORD(Next, EXT2_FCB, Next);
 
             DEBUG(DL_INF, ( "Ext2PurgeVolume: %wZ refercount=%xh\n",
-                            &Fcb->Mcb->FullName, Fcb->ReferenceCount));
+                            &Fcb->Mcb->ShortName, Fcb->ReferenceCount));
             InsertTailList(&List, &Fcb->Next);
         }
 
@@ -407,7 +407,7 @@ Ext2PurgeFile ( IN PEXT2_FCB Fcb,
 
     if (!IsVcbReadOnly(Fcb->Vcb) && FlushBeforePurge) {
         DEBUG(DL_INF, ( "Ext2PurgeFile: CcFlushCache on %wZ.\n",
-                        &Fcb->Mcb->FullName));
+                        &Fcb->Mcb->ShortName));
         ExAcquireSharedStarveExclusive(&Fcb->PagingIoResource, TRUE);
         ExReleaseResourceLite(&Fcb->PagingIoResource);
         CcFlushCache(&Fcb->SectionObject, NULL, 0, &IoStatus);
@@ -416,13 +416,13 @@ Ext2PurgeFile ( IN PEXT2_FCB Fcb,
 
     if (Fcb->SectionObject.ImageSectionObject) {
         DEBUG(DL_INF, ( "Ext2PurgeFile: MmFlushImageSection on %wZ.\n",
-                        &Fcb->Mcb->FullName));
+                        &Fcb->Mcb->ShortName));
         MmFlushImageSection(&Fcb->SectionObject, MmFlushForWrite);
     }
 
     if (Fcb->SectionObject.DataSectionObject) {
         DEBUG(DL_INF, ( "Ext2PurgeFile: CcPurgeCacheSection on %wZ.\n",
-                        &Fcb->Mcb->FullName));
+                        &Fcb->Mcb->ShortName));
         /* UninitializeCacheMaps: the cache manager's shared cache map keeps
            the section's views mapped and holds a file object of its own
            until the lazy writer gets round to tearing it down - for a file

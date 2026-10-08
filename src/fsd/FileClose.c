@@ -110,7 +110,7 @@ Ext2Close (IN PEXT2_IRP_CONTEXT IrpContext)
         }
 
         DEBUG(DL_INF, ( "Ext2Close: Fcb = %p OpenHandleCount= %u ReferenceCount=%u NonCachedCount=%u %wZ\n",
-                        Fcb, Fcb->OpenHandleCount, Fcb->ReferenceCount, Fcb->NonCachedOpenCount, &Fcb->Mcb->FullName ));
+                        Fcb, Fcb->OpenHandleCount, Fcb->ReferenceCount, Fcb->NonCachedOpenCount, &Fcb->Mcb->ShortName ));
 
         RemoveEntryList(&Ccb->FcbLink);
         Ext2FreeCcb(Vcb, Ccb);

@@ -220,7 +220,7 @@ Ext2ProcessEntry(
 
     if (InfoLength == 0) {
         DEBUG(DL_ERR, ("Ext2ProcessEntry: invalid class %xh for %wZ in %wZ\n",
-                       FileInformationClass, pName, &Dcb->Mcb->FullName));
+                       FileInformationClass, pName, &Dcb->Mcb->ShortName));
         return STATUS_INVALID_INFO_CLASS;
     }
     if (InfoLength + NameLength > Length) {
@@ -287,7 +287,7 @@ Ext2ProcessEntry(
     *EntrySize = InfoLength + Copied;
 
     DEBUG(DL_CP, ("Ext2ProcessEntry: Status = %xh for %wZ in %wZ\n",
-                  Status, pName, &Dcb->Mcb->FullName));
+                  Status, pName, &Dcb->Mcb->ShortName));
     return Status;
 }
 
@@ -550,10 +550,28 @@ Ext2NotifyChangeDirectory (
             __leave;
         }
 
+        /* the path as this handle registers it: FsRtl keeps the pointer until
+           the handle's cleanup, so it is built once and stays (a rename of the
+           directory does not touch it); the Fcb is held exclusively */
+        if (Ccb->NotifyName == NULL) {
+            PUNICODE_STRING Name = Ext2AllocatePool(PagedPool, sizeof(UNICODE_STRING), EXT2_FNAME_MAGIC);
+
+            if (Name == NULL) {
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                __leave;
+            }
+            Status = Ext2GetFullName(Vcb, Fcb->Mcb, Name, NULL);
+            if (!NT_SUCCESS(Status)) {
+                Ext2FreePool(Name, EXT2_FNAME_MAGIC);
+                __leave;
+            }
+            Ccb->NotifyName = Name;
+        }
+
         FsRtlNotifyFullChangeDirectory( Vcb->NotifySync,
                                         &Vcb->NotifyList,
                                         FileObject->FsContext2,
-                                        (PSTRING)(&Fcb->Mcb->FullName),
+                                        (PSTRING)Ccb->NotifyName,
                                         WatchTree,
                                         FALSE,
                                         CompletionFilter,
@@ -596,21 +614,30 @@ Ext2NotifyReportChange (
     IN ULONG             Filter,
     IN ULONG             Action   )
 {
-    UNREFERENCED_PARAMETER(IrpContext);
+    UNICODE_STRING  Name;
     USHORT          Offset;
 
-    Offset = (USHORT) ( Mcb->FullName.Length -
-                        Mcb->ShortName.Length);
+    UNREFERENCED_PARAMETER(IrpContext);
+
+    /* nobody watches: no path to build. Read without NotifySync - a watch
+       set meanwhile would miss this change either way. */
+    if (IsListEmpty(&Vcb->NotifyList)) {
+        return;
+    }
+    if (!NT_SUCCESS(Ext2GetFullName(Vcb, Mcb, &Name, &Offset))) {
+        return;
+    }
 
     FsRtlNotifyFullReportChange( Vcb->NotifySync,
                                  &(Vcb->NotifyList),
-                                 (PSTRING) (&Mcb->FullName),
-                                 (USHORT) Offset,
+                                 (PSTRING)&Name,
+                                 Offset,
                                  (PSTRING)NULL,
                                  (PSTRING) NULL,
                                  (ULONG) Filter,
                                  (ULONG) Action,
                                  (PVOID) NULL );
+    Ext2FreeFullName(&Name);
 }
 
 /* a name came, went or changed: a directory's or a file's, as watchers filter them */
@@ -627,6 +654,28 @@ Ext2NotifyNameChange (
                            Action);
 }
 
+VOID
+Ext2NotifySaveName(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, OUT PEXT2_SAVED_NAME Saved)
+{
+    RtlZeroMemory(Saved, sizeof(EXT2_SAVED_NAME));
+    Saved->Filter = IsMcbDirectory(Mcb) ? FILE_NOTIFY_CHANGE_DIR_NAME : FILE_NOTIFY_CHANGE_FILE_NAME;
+
+    /* read without NotifySync, as Ext2NotifyReportChange does */
+    if (!IsListEmpty(&Vcb->NotifyList)) {
+        (void)Ext2GetFullName(Vcb, Mcb, &Saved->Path, &Saved->Offset);
+    }
+}
+
+VOID
+Ext2NotifySavedRemoval(IN PEXT2_VCB Vcb, IN OUT PEXT2_SAVED_NAME Saved, IN BOOLEAN Gone)
+{
+    if (Gone && Saved->Path.Buffer != NULL) {
+        FsRtlNotifyFullReportChange(Vcb->NotifySync, &Vcb->NotifyList,
+                                    (PSTRING)&Saved->Path, Saved->Offset,
+                                    NULL, NULL, Saved->Filter, FILE_ACTION_REMOVED, NULL);
+    }
+    Ext2FreeFullName(&Saved->Path);
+}
 NTSTATUS
 Ext2DirectoryControl (IN PEXT2_IRP_CONTEXT IrpContext)
 {

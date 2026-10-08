@@ -217,18 +217,28 @@ Ext2QueryStandard(IN PEXT2_QUERY Q, OUT PFILE_STANDARD_INFORMATION FSI)
     Ext2QuerySizes(Q, &FSI->AllocationSize, &FSI->EndOfFile);
 }
 
-/* The path from the volume root, as NTFS answers it. Room is what the
-   buffer has for the name; what does not fit is cut, with
-   STATUS_BUFFER_OVERFLOW. */
+/* The path from the volume root, as NTFS answers it - built now, from the
+   names up the tree as they are (a directory renamed above the file shows
+   in it). Room is what the buffer has for the name; what does not fit is
+   cut, with STATUS_BUFFER_OVERFLOW. */
 static NTSTATUS
 Ext2QueryName(IN PEXT2_QUERY Q, OUT PFILE_NAME_INFORMATION FNI, IN ULONG Room, OUT PULONG Copied)
 {
-    PUNICODE_STRING Name = &Q->Mcb->FullName;
+    UNICODE_STRING  Name;
+    NTSTATUS        Status;
 
-    *Copied = min(Room, (ULONG)Name->Length);
-    FNI->FileNameLength = Name->Length;
-    RtlCopyMemory(FNI->FileName, Name->Buffer, *Copied);
-    return *Copied < Name->Length ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
+    *Copied = 0;
+    Status = Ext2GetFullName(Q->Vcb, Q->Mcb, &Name, NULL);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+
+    *Copied = min(Room, (ULONG)Name.Length);
+    FNI->FileNameLength = Name.Length;
+    RtlCopyMemory(FNI->FileName, Name.Buffer, *Copied);
+    Status = *Copied < Name.Length ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
+    Ext2FreeFullName(&Name);
+    return Status;
 }
 
 /* FileAllInformation: the classes above in one. Access, mode and alignment

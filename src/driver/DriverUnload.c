@@ -563,7 +563,7 @@ Ext2ReportVolumeHolders(IN OUT PLONGLONG LastPicture)
                         Listed++;
                         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
                                    "ext4:   %wZ handles %d references %d file objects %d flags %x data %p cache %p image %p\n",
-                                   Fcb->Mcb ? &Fcb->Mcb->FullName : NULL,
+                                   Fcb->Mcb ? &Fcb->Mcb->ShortName : NULL,
                                    Fcb->OpenHandleCount, Fcb->ReferenceCount, Fcb->CcbCount, Fcb->Flags,
                                    Fcb->SectionObject.DataSectionObject,
                                    Fcb->SectionObject.SharedCacheMap,

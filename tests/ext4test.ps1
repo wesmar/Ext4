@@ -223,6 +223,41 @@ public static class X4 {
         });
         return errors.Count == 0 ? "" : string.Join(" | ", errors.ToArray());
     }
+    // the path a handle has now: FILE_NAME_OPENED | VOLUME_NAME_NONE (FileNameInformation)
+    public static string PathOf(SafeFileHandle h) {
+        var sb = new StringBuilder(1024);
+        if (GetFinalPathNameByHandle(h, sb, 1024, 0xC) == 0) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        return sb.ToString();
+    }
+    // an open file's path after the directory above it was renamed
+    public static string RenamedParentPath(string root) {
+        string a = Path.Combine(root, "pa"), b = Path.Combine(root, "pb");
+        Directory.CreateDirectory(Path.Combine(a, "sub"));
+        File.WriteAllText(Path.Combine(a, "sub", "f.txt"), "x");
+        using (var fs = new FileStream(Path.Combine(a, "sub", "f.txt"), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
+            Directory.Move(a, b);
+            return PathOf(fs.SafeFileHandle);
+        }
+    }
+    // a watched directory renamed under its watcher (FsRtl holds the name the watch was set with)
+    public static string WatchedRename(string root) {
+        string d = Path.Combine(root, "wd"), d2 = Path.Combine(root, "wd2");
+        Directory.CreateDirectory(d);
+        var got = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        using (var inner = new FileSystemWatcher(d))
+        using (var outer = new FileSystemWatcher(root, "wd*")) {
+            inner.IncludeSubdirectories = true;
+            inner.Created += (s, e) => got.Enqueue("created:" + e.Name);
+            outer.Renamed += (s, e) => got.Enqueue("renamed:" + e.OldName + ">" + e.Name);
+            inner.EnableRaisingEvents = true;
+            outer.EnableRaisingEvents = true;
+            File.WriteAllText(Path.Combine(d, "before.txt"), "b");
+            Directory.Move(d, d2);
+            File.WriteAllText(Path.Combine(d2, "after.txt"), "a");
+            Thread.Sleep(1000);
+        }
+        return string.Join(" ", got.ToArray());
+    }
     public static string Notify(string dir) {
         // events fire on thread-pool threads, no PowerShell event pump needed
         var got = new System.Collections.Concurrent.ConcurrentQueue<string>();
@@ -387,6 +422,8 @@ Check "move across dirs" ((Get-Content -LiteralPath "$Root\mv\moved.txt" -Raw) -
 Rename-Item -LiteralPath "$Root\mv" 'mv2'; Check "rename dir" (Test-Path -LiteralPath "$Root\mv2\moved.txt")
 New-Item -ItemType Directory "$Root\deep\er" -Force | Out-Null; Move-Item -LiteralPath "$Root\mv2" "$Root\deep\er\mv3"
 Check "move dir into subdir" (Test-Path -LiteralPath "$Root\deep\er\mv3\moved.txt")
+$e = Try-Op { $script:pp = [X4]::RenamedParentPath($Root) }
+Check "open file's path follows a renamed parent" (($e -eq $null) -and ($script:pp -eq ($Root.Substring(2) + '\pb\sub\f.txt'))) "($script:pp$(if ($e) { " $($e.Message)" }))"
 Set-Content -LiteralPath "$Root\target.txt" -Value 'old' -NoNewline; Set-Content -LiteralPath "$Root\source.txt" -Value 'new' -NoNewline
 $e = Try-Op { [IO.File]::Move("$Root\source.txt", "$Root\target.txt") }
 Check "rename onto existing refused" ($e -ne $null)
@@ -494,6 +531,8 @@ $e = Try-Op { [IO.File]::WriteAllText("$Root\append.txt:ads", 'x') }; Check "alt
 "-- change notification"
 $got = [X4]::Notify($Root)
 Check "create/rename/change/delete notifications" (($got -like '*created:notify1.txt*') -and ($got -like '*renamed:notify2.txt*') -and ($got -like '*changed:notify2.txt*') -and ($got -like '*deleted:notify2.txt*')) "($got)"
+$got = [X4]::WatchedRename($Root)
+Check "a watched directory renamed under its watcher" (($got -like '*created:before.txt*') -and ($got -like '*renamed:wd>wd2*')) "($got)"
 
 # ---------------------------------------------------------------- 8. concurrency
 "-- concurrency"

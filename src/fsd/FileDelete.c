@@ -177,7 +177,7 @@ Ext2DeleteFile(
     BOOLEAN         LastName = FALSE;
 
     DEBUG(DL_INF, ( "Ext2DeleteFile: File %wZ (%xh) will be deleted!\n",
-                    &Mcb->FullName, Mcb->Inode->i_ino));
+                    &Mcb->ShortName, Mcb->Inode->i_ino));
 
     if (IsFlagOn(Mcb->Flags, MCB_FILE_DELETED)) {
         return STATUS_SUCCESS;
@@ -317,7 +317,7 @@ Ext2DeleteFile(
     }
 
     DEBUG(DL_INF, ( "Ext2DeleteFile: %wZ Succeed... EXT2SB->S_FREE_BLOCKS = %I64xh .\n",
-                    &Mcb->FullName, Ext2FreeBlocks(Vcb)));
+                    &Mcb->ShortName, Ext2FreeBlocks(Vcb)));
 
     return Status;
 }

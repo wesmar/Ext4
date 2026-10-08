@@ -9,80 +9,40 @@
 #include "ext4fs.h"
 #include "core_internal.h"
 
+/* Target becomes a copy of Name in a buffer of its own, terminated; what
+   it held goes. A name is one component: the path is built when asked
+   (Ext2GetFullName). */
 BOOLEAN
 Ext2BuildName(
     IN OUT PUNICODE_STRING  Target,
-    IN PUNICODE_STRING      File,
-    IN PUNICODE_STRING      Parent
+    IN PUNICODE_STRING      Name
 )
 {
-    USHORT  Length = 0;
-    USHORT  ParentLen = 0;
-    BOOLEAN bBackslash = TRUE;
-
-    /* free the original buffer */
     if (Target->Buffer) {
         DEC_MEM_COUNT(PS_MCB_NAME, Target->Buffer, Target->MaximumLength);
         Ext2FreePool(Target->Buffer, EXT2_FNAME_MAGIC);
-        Target->Length = Target->MaximumLength = 0;
+        RtlZeroMemory(Target, sizeof(UNICODE_STRING));
     }
 
-    /* check the parent directory's name and backslash */
-    if (Parent && Parent->Buffer && Parent->Length > 0) {
-        ParentLen = Parent->Length / sizeof(WCHAR);
-        if (Parent->Buffer[ParentLen - 1] == L'\\') {
-            bBackslash = FALSE;
-        }
-    }
-
-    if (Parent == NULL || File->Buffer[0] == L'\\') {
-        /* must be root inode */
-        ASSERT(ParentLen == 0);
-        bBackslash = FALSE;
-    }
-
-    /* allocate and initialize new name buffer */
-    Length  = File->Length;
-    Length += (ParentLen + (bBackslash ? 1 : 0)) * sizeof(WCHAR);
-
-    Target->Buffer = Ext2AllocatePool(
-                         PagedPool,
-                         Length + 2,
-                         EXT2_FNAME_MAGIC
-                     );
-
-    if (!Target->Buffer) {
-        DEBUG(DL_ERR, ( "Ext2BuildName: failed to allocate name buffer.\n"));
+    if (Name->Length > MAXUSHORT - sizeof(WCHAR)) {
         return FALSE;
     }
-    RtlZeroMemory(Target->Buffer, Length + 2);
-
-    if (ParentLen) {
-        RtlCopyMemory(&Target->Buffer[0],
-                      Parent->Buffer,
-                      ParentLen * sizeof(WCHAR));
+    Target->Buffer = Ext2AllocatePool(PagedPool, Name->Length + sizeof(WCHAR), EXT2_FNAME_MAGIC);
+    if (!Target->Buffer) {
+        return FALSE;
     }
-
-    if (bBackslash) {
-        Target->Buffer[ParentLen++] = L'\\';
-    }
-
-    RtlCopyMemory( &Target->Buffer[ParentLen],
-                   File->Buffer,
-                   File->Length);
-
-    INC_MEM_COUNT(PS_MCB_NAME, Target->Buffer, Length + 2);
-    Target->Length = Length;
-    Target->MaximumLength = Length + 2;
+    RtlCopyMemory(Target->Buffer, Name->Buffer, Name->Length);
+    Target->Buffer[Name->Length / sizeof(WCHAR)] = 0;
+    Target->Length = Name->Length;
+    Target->MaximumLength = Name->Length + sizeof(WCHAR);
+    INC_MEM_COUNT(PS_MCB_NAME, Target->Buffer, Target->MaximumLength);
 
     return TRUE;
 }
-
 PEXT2_MCB
 Ext2AllocateMcb (
     IN PEXT2_VCB        Vcb,
     IN PUNICODE_STRING  FileName,
-    IN PUNICODE_STRING  Parent,
     IN ULONG            FileAttr
 )
 {
@@ -119,39 +79,16 @@ Ext2AllocateMcb (
             SetFlag(Mcb->FileAttr, FILE_ATTRIBUTE_HIDDEN);
         }
 
-        if (!Ext2BuildName(&Mcb->ShortName, FileName, NULL)) {
-            goto errorout;
-        }
-        if (!Ext2BuildName(&Mcb->FullName, FileName, Parent)) {
-            goto errorout;
+        if (!Ext2BuildName(&Mcb->ShortName, FileName)) {
+            ExFreeToNPagedLookasideList(&(Ext2Global->Ext2McbLookasideList), Mcb);
+            return NULL;
         }
     }
 
     INC_MEM_COUNT(PS_MCB, Mcb, sizeof(EXT2_MCB));
-    DEBUG(DL_INF, ( "Ext2AllocateMcb: Mcb %wZ created.\n", &Mcb->FullName));
+    DEBUG(DL_INF, ( "Ext2AllocateMcb: Mcb %wZ created.\n", &Mcb->ShortName));
 
     return Mcb;
-
-errorout:
-
-    if (Mcb) {
-
-        if (Mcb->ShortName.Buffer) {
-            DEC_MEM_COUNT(PS_MCB_NAME, Mcb->ShortName.Buffer,
-                          Mcb->ShortName.MaximumLength);
-            Ext2FreePool(Mcb->ShortName.Buffer, EXT2_FNAME_MAGIC);
-        }
-
-        if (Mcb->FullName.Buffer) {
-            DEC_MEM_COUNT(PS_MCB_NAME, Mcb->FullName.Buffer,
-                          Mcb->FullName.MaximumLength);
-            Ext2FreePool(Mcb->FullName.Buffer, EXT2_FNAME_MAGIC);
-        }
-
-        ExFreeToNPagedLookasideList(&(Ext2Global->Ext2McbLookasideList), Mcb);
-    }
-
-    return NULL;
 }
 
 VOID
@@ -168,7 +105,7 @@ Ext2FreeMcb (IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb)
         return;
     }
 
-    DEBUG(DL_INF, ( "Ext2FreeMcb: Mcb %wZ will be freed.\n", &Mcb->FullName));
+    DEBUG(DL_INF, ( "Ext2FreeMcb: Mcb %wZ will be freed.\n", &Mcb->ShortName));
 
     if (IsMcbSymLink(Mcb) && Mcb->Target) {
         Ext2DerefMcb(Mcb->Target);
@@ -182,12 +119,6 @@ Ext2FreeMcb (IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb)
         DEC_MEM_COUNT(PS_MCB_NAME, Mcb->ShortName.Buffer,
                       Mcb->ShortName.MaximumLength);
         Ext2FreePool(Mcb->ShortName.Buffer, EXT2_FNAME_MAGIC);
-    }
-
-    if (Mcb->FullName.Buffer) {
-        DEC_MEM_COUNT(PS_MCB_NAME, Mcb->FullName.Buffer,
-                      Mcb->FullName.MaximumLength);
-        Ext2FreePool(Mcb->FullName.Buffer, EXT2_FNAME_MAGIC);
     }
 
     /* free dentry */
@@ -264,6 +195,7 @@ Ext2InitializeNameCache(IN PEXT2_VCB Vcb)
     InitializeListHead(&Vcb->McbList);
     KeInitializeSpinLock(&Vcb->McbLruLock);
     ExInitializeFastMutex(&Vcb->McbReapLock);
+    ExInitializePushLock(&Vcb->NameLock);
 
     Vcb->McbHash = Ext2AllocatePool(NonPagedPool, sizeof(LIST_ENTRY) * Chains, TAG_VPB);
     if (Vcb->McbHash == NULL) {
@@ -559,8 +491,12 @@ Ext2InsertMcb (
     }
 }
 
-/* Take Mcb out of the tree; the caller holds its stripe. Returns the
-   parent, whose reference the caller drops. */
+/* Take Mcb out of the tree; the caller holds its stripe and, for a name a
+   path may be built through, NameLock exclusively (the reaper takes
+   neither: a name nobody references is on no path - each name on one is
+   referenced by the next, the last by the builder). Returns the parent,
+   whose reference the caller drops, never under NameLock: once no path
+   holds it, the reaper may free it. */
 static PEXT2_MCB
 Ext2UnhashMcbLocked(IN PEXT2_MCB Mcb)
 {
@@ -596,6 +532,9 @@ Ext2RemoveMcb (
         Ext2ReleaseNameStripe(Stripe);
     }
 
+    /* a path may be built through this name right now (Ext2GetFullName) */
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&Vcb->NameLock);
     if (IsFlagOn(Mcb->Flags, MCB_ENTRY_TREE)) {
         Ext2UnhashMcbLocked(Mcb);
     } else {
@@ -603,12 +542,162 @@ Ext2RemoveMcb (
         Mcb->de->d_parent = NULL;
         Parent = NULL;
     }
+    ExReleasePushLockExclusive(&Vcb->NameLock);
+    KeLeaveCriticalRegion();
     Ext2ReleaseNameStripe(Stripe);
 
     if (Parent) {
         Ext2DerefMcb(Parent);
     }
     return TRUE;
+}
+
+/*
+ * A rename in the name cache: Mcb becomes NewName in directory NewParent in
+ * one step. The stripes of both places are taken, then NameLock, so a path
+ * built meanwhile is the old one or the new one; out of the tree and back,
+ * it was a path without the directories above for a moment. NewName takes
+ * the old name's place - the caller frees what comes back. A rename into a
+ * symlink to a directory lands in the directory; with the target gone, the
+ * name is only taken out of the tree.
+ */
+VOID
+Ext2MoveMcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN PEXT2_MCB NewParent, IN OUT PUNICODE_STRING NewName)
+{
+    PEXT2_MCB       OldParent, Dir = NULL;
+    PERESOURCE      From, To = NULL;
+    ULONG           Hash = Ext2HashMcbName(NewName);
+    UNICODE_STRING  Old;
+
+    if (IsMcbSymLink(NewParent)) {
+        Dir = Ext2ReferDirectory(Vcb, NewParent);
+        NewParent = Dir;
+    }
+
+    /* the stripe of the old place depends on the parent: read, lock, check */
+    for (;;) {
+        OldParent = (PEXT2_MCB)ReadPointerAcquire((PVOID *)&Mcb->Parent);
+        From = OldParent ? Ext2AcquireNameStripe(Vcb, OldParent, Mcb->NameHash, TRUE) : NULL;
+        if (Mcb->Parent == OldParent) {
+            break;
+        }
+        if (From) {
+            Ext2ReleaseNameStripe(From);
+        }
+    }
+    if (NewParent) {
+        To = Ext2AcquireNameStripe(Vcb, NewParent, Hash, TRUE);
+        Ext2ReferMcb(NewParent);
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&Vcb->NameLock);
+    if (IsFlagOn(Mcb->Flags, MCB_ENTRY_TREE)) {
+        Ext2UnhashMcbLocked(Mcb);
+    } else {
+        /* out of the tree, the parent holds no reference of it */
+        Mcb->Parent = NULL;
+        Mcb->de->d_parent = NULL;
+        OldParent = NULL;
+    }
+    Old = Mcb->ShortName;
+    Mcb->ShortName = *NewName;
+    *NewName = Old;
+    Mcb->NameHash = Hash;
+    if (NewParent) {
+        InsertHeadList(&Vcb->McbHash[Ext2McbChain(Vcb, NewParent, Hash)], &Mcb->Hash);
+        Mcb->Parent = NewParent;
+        Mcb->de->d_parent = NewParent->de;
+        SetLongFlag(Mcb->Flags, MCB_ENTRY_TREE);
+    }
+    ExReleasePushLockExclusive(&Vcb->NameLock);
+    KeLeaveCriticalRegion();
+
+    if (To) {
+        Ext2ReleaseNameStripe(To);
+    }
+    if (From) {
+        Ext2ReleaseNameStripe(From);
+    }
+    if (OldParent) {
+        Ext2DerefMcb(OldParent);
+    }
+    if (Dir) {
+        Ext2DerefMcb(Dir);
+    }
+}
+
+/*
+ * The path of Mcb from the volume root ("\dir\file", "\" for the root),
+ * built from the names up the tree into a buffer the caller frees with
+ * Ext2FreeFullName. A name out of the tree - a deleted file still open -
+ * is "\name". *LastOffset, when asked, is where the last component starts
+ * (bytes), as change notification wants it. Built under NameLock shared:
+ * every name on the way is referenced by the next, the first by the
+ * caller, and none changes its parent or its name meanwhile.
+ */
+NTSTATUS
+Ext2GetFullName(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, OUT PUNICODE_STRING Name,
+                OUT PUSHORT LastOffset OPTIONAL)
+{
+    PEXT2_MCB   Node;
+    ULONG       Length = 0;
+    ULONG       Pos;
+    NTSTATUS    Status = STATUS_SUCCESS;
+
+    RtlZeroMemory(Name, sizeof(UNICODE_STRING));
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&Vcb->NameLock);
+
+    for (Node = Mcb; Node != NULL && Node != Vcb->McbTree; Node = Node->Parent) {
+        Length += sizeof(WCHAR) + Node->ShortName.Length;
+    }
+    if (Length == 0) {
+        Length = sizeof(WCHAR);
+    }
+
+    if (Length + sizeof(WCHAR) > MAXUSHORT) {
+        Status = STATUS_NAME_TOO_LONG;
+    } else {
+        Name->Buffer = Ext2AllocatePool(PagedPool, Length + sizeof(WCHAR), EXT2_FNAME_MAGIC);
+        if (Name->Buffer == NULL) {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+        }
+    }
+
+    if (NT_SUCCESS(Status)) {
+        Name->Length = (USHORT)Length;
+        Name->MaximumLength = (USHORT)(Length + sizeof(WCHAR));
+        Name->Buffer[Length / sizeof(WCHAR)] = 0;
+        Name->Buffer[0] = L'\\';
+
+        /* from the end: each name, the backslash before it */
+        Pos = Length;
+        for (Node = Mcb; Node != NULL && Node != Vcb->McbTree; Node = Node->Parent) {
+            Pos -= Node->ShortName.Length;
+            RtlCopyMemory((PUCHAR)Name->Buffer + Pos, Node->ShortName.Buffer, Node->ShortName.Length);
+            Pos -= sizeof(WCHAR);
+            Name->Buffer[Pos / sizeof(WCHAR)] = L'\\';
+        }
+        if (LastOffset) {
+            *LastOffset = (Mcb == Vcb->McbTree) ? 0 :
+                          (USHORT)(Length - Mcb->ShortName.Length);
+        }
+    }
+
+    ExReleasePushLockShared(&Vcb->NameLock);
+    KeLeaveCriticalRegion();
+    return Status;
+}
+
+VOID
+Ext2FreeFullName(IN OUT PUNICODE_STRING Name)
+{
+    if (Name->Buffer) {
+        Ext2FreePool(Name->Buffer, EXT2_FNAME_MAGIC);
+        RtlZeroMemory(Name, sizeof(UNICODE_STRING));
+    }
 }
 
 /* ---------------------------------------------------------------- reaping order */
@@ -818,7 +907,7 @@ Ext2CleanupAllMcbs(PEXT2_VCB Vcb)
             if (Left++ < EXT4_LEAK_REPORT_MAX) {
                 DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
                            "ext4: name left behind: %wZ refs=%d flags=%08x ino=%u\n",
-                           &Mcb->FullName, Mcb->Refercount, Mcb->Flags,
+                           &Mcb->ShortName, Mcb->Refercount, Mcb->Flags,
                            Mcb->Inode ? Mcb->Inode->i_ino : 0);
             }
         }

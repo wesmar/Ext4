@@ -124,8 +124,8 @@ Ext2DbgPrintCall (IN PDEVICE_OBJECT   DeviceObject,
 
         if (Fcb->Identifier.Type == EXT2VCB)  {
             FileName = L"\\Volume";
-        } else if (Fcb->Identifier.Type == EXT2FCB && Fcb->Mcb->FullName.Buffer) {
-            FileName = Fcb->Mcb->FullName.Buffer;
+        } else if (Fcb->Identifier.Type == EXT2FCB && Fcb->Mcb->ShortName.Buffer) {
+            FileName = Fcb->Mcb->ShortName.Buffer;
         }
     }
 

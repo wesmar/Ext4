@@ -257,7 +257,7 @@ Ext2InsertName (
     ASSERT(!IsMcbSymLink(Parent));
     *Result = NULL;
 
-    Mcb = Ext2AllocateMcb(Vcb, FileName, &Parent->FullName, 0);
+    Mcb = Ext2AllocateMcb(Vcb, FileName, 0);
     if (!Mcb) {
         Ext2FreeEntry(de);
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -629,7 +629,7 @@ Ext2ScanDir (
 
     NTSTATUS                Status = STATUS_NO_SUCH_FILE;
 
-    DEBUG(DL_RES, ("Ext2ScanDir: %wZ\\%wZ\n", &Parent->FullName, FileName));
+    DEBUG(DL_RES, ("Ext2ScanDir: %wZ\\%wZ\n", &Parent->ShortName, FileName));
 
     __try {
 

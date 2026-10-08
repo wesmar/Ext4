@@ -53,7 +53,7 @@ Ext2AllocateFcb (
     Mcb->Icb->Fcb = Fcb;
 
     DEBUG(DL_RES, ("Ext2AllocateFcb: Fcb %p created: %wZ.\n",
-                   Fcb, &Fcb->Mcb->FullName));
+                   Fcb, &Fcb->Mcb->ShortName));
 
     Fcb->Header.NodeTypeCode = (CSHORT)(EXT2FCB & 0xFFFF);
     Fcb->Header.NodeByteSize = sizeof(EXT2_FCB);
@@ -129,7 +129,7 @@ Ext2UnlinkFcb(IN PEXT2_FCB Fcb)
     Mcb = Fcb->Mcb;
 
     DEBUG(DL_INF, ("Ext2FreeFcb: Fcb (%p) to be unlinked: %wZ.\n",
-                    Fcb, Mcb ? &Mcb->FullName : NULL));
+                    Fcb, Mcb ? &Mcb->ShortName : NULL));
 
     if ((Mcb != NULL) && 
         (Mcb->Identifier.Type == EXT2MCB) &&
@@ -289,7 +289,7 @@ Ext2AllocateCcb (ULONG Flags, PEXT2_MCB Mcb, PEXT2_MCB SymLink)
         ASSERT(SymLink->Refercount > 0);
         Ext2ReferMcb(SymLink);
         DEBUG(DL_INF, ( "ExtAllocateCcb: Ccb SymLink: %wZ.\n",
-                        &Ccb->SymLink->FullName));
+                        &Ccb->SymLink->ShortName));
     }
 
     Ccb->DirectorySearchPattern.Length = 0;
@@ -312,7 +312,7 @@ Ext2FreeCcb (IN PEXT2_VCB Vcb, IN PEXT2_CCB Ccb)
 
     if (Ccb->SymLink) {
         DEBUG(DL_INF, ( "Ext2FreeCcb: Ccb SymLink: %wZ.\n",
-                        &Ccb->SymLink->FullName));
+                        &Ccb->SymLink->ShortName));
         /* the link may have been demoted meanwhile (its target went, an
            open cleared Target): no target is as gone as a deleted one.
            Target is read under LinkLock: a demotion drops its reference. */
@@ -339,6 +339,12 @@ Ext2FreeCcb (IN PEXT2_VCB Vcb, IN PEXT2_CCB Ccb)
         DEC_MEM_COUNT(PS_DIR_PATTERN, Ccb->DirectorySearchPattern.Buffer,
                       Ccb->DirectorySearchPattern.MaximumLength );
         Ext2FreePool(Ccb->DirectorySearchPattern.Buffer, EXT2_DIRSP_MAGIC);
+    }
+
+    /* FsRtl let go of it at the handle's cleanup (FsRtlNotifyCleanup) */
+    if (Ccb->NotifyName != NULL) {
+        Ext2FreeFullName(Ccb->NotifyName);
+        Ext2FreePool(Ccb->NotifyName, EXT2_FNAME_MAGIC);
     }
 
     ExFreeToNPagedLookasideList(&(Ext2Global->Ext2CcbLookasideList), Ccb);

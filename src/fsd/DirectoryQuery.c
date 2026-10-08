@@ -327,7 +327,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
         }
         if (Status == STATUS_MORE_PROCESSING_REQUIRED) {
             DEBUG(DL_CP, ("Ext2QueryDirectory: Dir: %wZ Index=%I64xh Pattern : %wZ.\n",
-                          &Mcb->FullName, (ULONGLONG)Ccb->filp.f_pos, &Ccb->DirectorySearchPattern));
+                          &Mcb->ShortName, (ULONGLONG)Ccb->filp.f_pos, &Ccb->DirectorySearchPattern));
             Status = Ext2QueryEntries(IrpContext, Vcb, Mcb, Ccb, &fc);
         }
         Status = Ext2QueryResult(&fc, Status, FirstQuery);

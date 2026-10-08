@@ -81,6 +81,13 @@ typedef struct _EXT2_VCB {
     PVOID                       McbStripePool;  /* allocation behind McbStripes */
     ULONG                       McbStripeMask;
 
+    /* What a path is made of - the Parent and the ShortName of each name
+       on it - changes under NameLock exclusively (Ext2RemoveMcb,
+       Ext2MoveMcb); a path is built under it shared (Ext2GetFullName).
+       The innermost lock of the volume: taken under a stripe, nothing is
+       waited for while it is held. */
+    EX_PUSH_LOCK                NameLock;
+
     /* Entry of Mcb Tree (Root Node) */
     PEXT2_MCB                   McbTree;
 
@@ -423,11 +430,11 @@ struct _EXT2_MCB {
     /* Link into Icb->Names */
     LIST_ENTRY                      IcbLink;
 
-    /* Short name */
+    /* The name in its directory (Vcb->NameLock). The path is no field of
+       its own: built from the names up the tree when asked
+       (Ext2GetFullName) - one kept per name went stale under a renamed
+       directory, and was freed under its readers. */
     UNICODE_STRING                  ShortName;
-
-    /* Full name with path */
-    UNICODE_STRING                  FullName;
 
     /* File attribute */
     ULONG                           FileAttr;
@@ -547,6 +554,11 @@ typedef struct _EXT2_CCB {
 
     /* State that may need to be maintained */
     UNICODE_STRING      DirectorySearchPattern;
+
+    /* The directory's path as its first change notification registered
+       it: FsRtl keeps the pointer until FsRtlNotifyCleanup, so it stays
+       as it was - a rename does not touch it - until the Ccb goes */
+    PUNICODE_STRING     NotifyName;
 
     /* Open handle control block */
     struct file         filp;

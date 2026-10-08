@@ -128,10 +128,10 @@ Ext2TraceMcb(PCHAR fn, USHORT lc, USHORT add, PEXT2_MCB Mcb) {
     }
     if (add) {
         Ext2ReferXcb(&Mcb->Refercount);
-        DEBUG(DL_RES,   ("%s +%2u %wZ (%p)\n", _space, (Mcb->Refercount - 1), &Mcb->FullName, Mcb));
+        DEBUG(DL_RES,   ("%s +%2u %wZ (%p)\n", _space, (Mcb->Refercount - 1), &Mcb->ShortName, Mcb));
     } else {
         Ext2DerefXcb(&Mcb->Refercount);
-        DEBUG(DL_RES, ("%s -%2u %wZ (%p)\n", _space, Mcb->Refercount, &Mcb->FullName, Mcb));
+        DEBUG(DL_RES, ("%s -%2u %wZ (%p)\n", _space, Mcb->Refercount, &Mcb->ShortName, Mcb));
     }
 }
 

@@ -219,7 +219,7 @@ Ext2McbReaperThread(
                     while (!IsListEmpty(&Reaped)) {
                         Mcb = CONTAINING_RECORD(RemoveHeadList(&Reaped), EXT2_MCB, Link);
                         DEBUG(DL_RES, ( "Ext2McbReaperThread: releasing Mcb (%p): %wZ"
-                                        " Total: %xh\n", Mcb, &Mcb->FullName,
+                                        " Total: %xh\n", Mcb, &Mcb->ShortName,
                                         Ext2Global->PerfStat.Current.Mcb));
                         Ext2FreeMcb(Vcb, Mcb);
                     }

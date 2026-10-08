@@ -24,7 +24,7 @@ Ext2LoadInternalJournal(
     PEXT2_MCB   Jcb = NULL;
     BOOLEAN     Attached;
 
-    Jcb = Ext2AllocateMcb(Vcb, NULL, NULL, 0);
+    Jcb = Ext2AllocateMcb(Vcb, NULL, 0);
     if (!Jcb) {
         goto errorout;
     }

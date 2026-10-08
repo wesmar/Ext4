@@ -136,7 +136,7 @@ Ext2AttachIcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN ULONG Ino)
     }
 
     DEBUG(DL_INF, ("Ext2AttachIcb: %wZ -> inode %xh (%s, refs %u)\n",
-                   &Mcb->FullName, Ino,
+                   &Mcb->ShortName, Ino,
                    IsFlagOn(Icb->Flags, ICB_INODE_LOADED) ? "cached" : "new",
                    Icb->Refercount));
 
@@ -290,7 +290,7 @@ Ext2NameUnlinked(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb)
 
     if (Live) {
         DEBUG(DL_INF, ("Ext2NameUnlinked: Fcb %p moves from %wZ to %wZ\n",
-                       Fcb, &Mcb->FullName, &Live->FullName));
+                       Fcb, &Mcb->ShortName, &Live->ShortName));
         Fcb->Mcb = Live;
         Ext2DerefMcb(Mcb);
     }

@@ -260,15 +260,13 @@ Ext2InitializeZone(
 BOOLEAN
 Ext2BuildName(
     IN OUT PUNICODE_STRING  Target,
-    IN PUNICODE_STRING      File,
-    IN PUNICODE_STRING      Parent
+    IN PUNICODE_STRING      Name
 );
 
 PEXT2_MCB
 Ext2AllocateMcb (
     IN PEXT2_VCB        Vcb,
     IN PUNICODE_STRING  FileName,
-    IN PUNICODE_STRING  Parent,
     IN ULONG            FileAttr
 );
 
@@ -365,6 +363,19 @@ Ext2RemoveMcb(
     PEXT2_VCB Vcb,
     PEXT2_MCB Mcb
 );
+
+/* a rename in the name cache: NewName in NewParent at once; the old name
+   comes back in NewName for the caller to free */
+VOID
+Ext2MoveMcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN PEXT2_MCB NewParent, IN OUT PUNICODE_STRING NewName);
+
+/* the path of Mcb from the root, built on demand (Ext2FreeFullName frees it) */
+NTSTATUS
+Ext2GetFullName(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, OUT PUNICODE_STRING Name,
+                OUT PUSHORT LastOffset OPTIONAL);
+
+VOID
+Ext2FreeFullName(IN OUT PUNICODE_STRING Name);
 
 VOID
 Ext2CleanupAllMcbs(

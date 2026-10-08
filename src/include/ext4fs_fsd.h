@@ -244,6 +244,22 @@ Ext2NotifyNameChange (
     IN ULONG             Action
 );
 
+/* the path of a name about to leave the tree, kept for the report made
+   after it has (Ext2NotifySavedRemoval): gone, a name is "\name" and
+   reaches no watcher. Empty when nobody watches. */
+typedef struct _EXT2_SAVED_NAME {
+    UNICODE_STRING  Path;
+    USHORT          Offset;     /* of the last component, in bytes */
+    ULONG           Filter;     /* FILE_NOTIFY_CHANGE_DIR_NAME or _FILE_NAME */
+} EXT2_SAVED_NAME, *PEXT2_SAVED_NAME;
+
+VOID
+Ext2NotifySaveName(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, OUT PEXT2_SAVED_NAME Saved);
+
+/* Saved reported removed when Gone, and let go either way */
+VOID
+Ext2NotifySavedRemoval(IN PEXT2_VCB Vcb, IN OUT PEXT2_SAVED_NAME Saved, IN BOOLEAN Gone);
+
 NTSTATUS
 Ext2DirectoryControl (IN PEXT2_IRP_CONTEXT IrpContext);
 
