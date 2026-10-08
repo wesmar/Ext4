@@ -11,14 +11,6 @@
 
 PEXT2_GLOBAL    Ext2Global   = NULL;
 
-/*
- *   Ext2Fsd version, building date/time
- */
-
-CHAR            gVersion[]   = EXT4_VERSION_STRING;
-CHAR            gTime[] = __TIME__;
-CHAR            gDate[] = __DATE__;
-
 NTSTATUS
 DriverEntry(
     IN PDRIVER_OBJECT DriverObject,
@@ -26,6 +18,8 @@ DriverEntry(
 
 DECLARE_INIT(journal_init);
 DECLARE_EXIT(journal_exit);
+
+static VOID Ext2DeleteLookasides(VOID);
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT, DriverEntry)
@@ -92,12 +86,7 @@ DriverUnload (IN PDRIVER_OBJECT DriverObject)
 
     ExDeleteResourceLite(&Ext2Global->Resource);
 
-    ExDeleteNPagedLookasideList(&(Ext2Global->Ext2DentryLookasideList));
-    ExDeleteNPagedLookasideList(&(Ext2Global->Ext2ExtLookasideList));
-    ExDeleteNPagedLookasideList(&(Ext2Global->Ext2McbLookasideList));
-    ExDeleteNPagedLookasideList(&(Ext2Global->Ext2CcbLookasideList));
-    ExDeleteNPagedLookasideList(&(Ext2Global->Ext2FcbLookasideList));
-    ExDeleteNPagedLookasideList(&(Ext2Global->Ext2IrpContextLookasideList));
+    Ext2DeleteLookasides();
 
     /*
      *  Drop the extra reference DriverEntry took on each control device;
@@ -140,79 +129,98 @@ Ext2EresourceAlignmentChecking()
     CL_ASSERT((FIELD_OFFSET(EXT2_ICB, EntryResource) & 7) == 0);
 }
 
-/*
- * NAME: DriverEntry
- * FUNCTION: Called by the system to initialize the driver
- *
- * ARGUMENTS:
- *           DriverObject = object describing this driver
- *           RegistryPath = path to our configuration entries
- * RETURNS: Success or failure
- */
-NTSTATUS
-DriverEntry (
-    IN PDRIVER_OBJECT   DriverObject,
-    IN PUNICODE_STRING  RegistryPath
-)
+/* the on-disk superblock is overlaid on this structure: its size and the
+   magic's offset are the format's */
+C_ASSERT(sizeof(EXT2_SUPER_BLOCK) == SUPER_BLOCK_SIZE);
+C_ASSERT(FIELD_OFFSET(EXT2_SUPER_BLOCK, s_magic) == 56);
+
+/* the requests the driver takes, every one through Ext2BuildRequest */
+static const UCHAR Ext2MajorFunctions[] = {
+    IRP_MJ_CREATE, IRP_MJ_CLOSE, IRP_MJ_READ, IRP_MJ_WRITE,
+    IRP_MJ_FLUSH_BUFFERS, IRP_MJ_SHUTDOWN,
+    IRP_MJ_QUERY_INFORMATION, IRP_MJ_SET_INFORMATION,
+    IRP_MJ_QUERY_VOLUME_INFORMATION, IRP_MJ_SET_VOLUME_INFORMATION,
+    IRP_MJ_DIRECTORY_CONTROL, IRP_MJ_FILE_SYSTEM_CONTROL,
+    IRP_MJ_DEVICE_CONTROL, IRP_MJ_LOCK_CONTROL,
+    IRP_MJ_QUERY_EA, IRP_MJ_SET_EA,
+    IRP_MJ_CLEANUP, IRP_MJ_PNP
+};
+
+/* The name and file caches are trimmed past 64 entries per unit of depth
+   (Ext2McbHighWater, Ext2FcbHighWater): a larger system keeps more. */
+#define EXT2_CACHE_DEPTH_SMALL      64
+#define EXT2_CACHE_DEPTH_MEDIUM     128
+#define EXT2_CACHE_DEPTH_LARGE      256
+
+static USHORT
+Ext2CacheDepth(VOID)
 {
-    PDEVICE_OBJECT              DiskdevObject = NULL;
-    PDEVICE_OBJECT              CdromdevObject = NULL;
-    UNICODE_STRING              DeviceName;
-    UNICODE_STRING              DosDeviceName;
-
-    PFAST_IO_DISPATCH           FastIoDispatch;
-    PCACHE_MANAGER_CALLBACKS    CacheManagerCallbacks;
-
-    NTSTATUS                    Status;
-
-    int                         rc = 0;
-    BOOLEAN                     linux_lib_inited = FALSE;
-    BOOLEAN                     journal_module_inited = FALSE;
-
-    /* the on-disk superblock is overlaid on this structure: its size and the magic offset are fixed by the format */
-    ASSERT(sizeof(EXT2_SUPER_BLOCK) == 1024);
-    ASSERT(FIELD_OFFSET(EXT2_SUPER_BLOCK, s_magic) == 56);
-
-    DbgPrint(
-        "ext4 -- version "
-        EXT4_VERSION_STRING
-#if EXT2_DEBUG
-        " Debug"
-#else
-        " Release"
-#endif
-        " -- "
-        __DATE__ " "
-        __TIME__ ".\n");
-
-    DEBUG(DL_FUN, ( "Ext2 DriverEntry ...\n"));
-
-    /* initialize winlib structures */
-    if (ext2_init_linux()) {
-        Status = STATUS_INSUFFICIENT_RESOURCES;
-        goto errorout;
+    switch (MmQuerySystemSize()) {
+    case MmSmallSystem:     return EXT2_CACHE_DEPTH_SMALL;
+    case MmMediumSystem:    return EXT2_CACHE_DEPTH_MEDIUM;
+    default:                return EXT2_CACHE_DEPTH_LARGE;
     }
-    linux_lib_inited = TRUE;
+}
 
-    /* initialize journal module structures */
-    LOAD_MODULE(journal_init);
-    if (rc != 0) {
-        Status = STATUS_INSUFFICIENT_RESOURCES;
-        goto errorout;
+/* the fixed-size objects, each from a lookaside list of its own */
+#define EXT2_LOOKASIDES     6
+
+typedef struct _EXT2_LOOKASIDE {
+    PNPAGED_LOOKASIDE_LIST  List;
+    SIZE_T                  Size;
+    ULONG                   Tag;
+} EXT2_LOOKASIDE;
+
+static VOID
+Ext2LookasideTable(OUT EXT2_LOOKASIDE Lists[EXT2_LOOKASIDES])
+{
+    const EXT2_LOOKASIDE Table[EXT2_LOOKASIDES] = {
+        { &Ext2Global->Ext2IrpContextLookasideList, sizeof(EXT2_IRP_CONTEXT),   'PRIE' },
+        { &Ext2Global->Ext2FcbLookasideList,        sizeof(EXT2_FCB),           'BCFE' },
+        { &Ext2Global->Ext2CcbLookasideList,        sizeof(EXT2_CCB),           'BCCE' },
+        { &Ext2Global->Ext2McbLookasideList,        sizeof(EXT2_MCB),           'BCME' },
+        { &Ext2Global->Ext2ExtLookasideList,        sizeof(EXT2_EXTENT),        'STXE' },
+        { &Ext2Global->Ext2DentryLookasideList,     sizeof(struct dentry),      'TNED' },
+    };
+
+    RtlCopyMemory(Lists, Table, sizeof(Table));
+}
+
+static VOID
+Ext2InitializeLookasides(VOID)
+{
+    EXT2_LOOKASIDE  Lists[EXT2_LOOKASIDES];
+    ULONG           i;
+
+    Ext2LookasideTable(Lists);
+    for (i = 0; i < EXT2_LOOKASIDES; i++) {
+        ExInitializeNPagedLookasideList(Lists[i].List, NULL, NULL, 0, Lists[i].Size, Lists[i].Tag, 0);
     }
-    journal_module_inited = TRUE;
+}
 
-    /* per-thread handle registry of the write-ahead journal engine */
-    Ext2JournalGlobalInit();
+static VOID
+Ext2DeleteLookasides(VOID)
+{
+    EXT2_LOOKASIDE  Lists[EXT2_LOOKASIDES];
+    ULONG           i;
 
-    /* allocate memory for Ext2Global */
+    Ext2LookasideTable(Lists);
+    for (i = EXT2_LOOKASIDES; i-- > 0; ) {
+        ExDeleteNPagedLookasideList(Lists[i].List);
+    }
+}
+
+/* Ext2Global: the lists, locks and events the rest takes for granted, and
+   the registry settings */
+static NTSTATUS
+Ext2InitializeGlobal(IN PUNICODE_STRING RegistryPath)
+{
+    UNICODE_STRING LowMemoryName;
+
     Ext2Global = Ext2AllocatePool(NonPagedPool, sizeof(EXT2_GLOBAL), EXT4_TAG_GLOBAL);
-    if (!Ext2Global) {
-        Status = STATUS_INSUFFICIENT_RESOURCES;
-        goto errorout;
+    if (Ext2Global == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
     }
-
-    /* initialize Ext2Global */
     RtlZeroMemory(Ext2Global, sizeof(EXT2_GLOBAL));
     Ext2Global->Identifier.Type = EXT2FGD;
     Ext2Global->Identifier.Size = sizeof(EXT2_GLOBAL);
@@ -228,275 +236,247 @@ DriverEntry (
 
     /* memory pressure makes the reapers give back everything idle; without
        the event they still trim by deadlines */
-    {
-        UNICODE_STRING LowMemoryName;
+    RtlInitUnicodeString(&LowMemoryName, L"\\KernelObjects\\LowMemoryCondition");
+    Ext2Global->LowMemory = IoCreateNotificationEvent(&LowMemoryName, &Ext2Global->LowMemoryHandle);
 
-        RtlInitUnicodeString(&LowMemoryName, L"\\KernelObjects\\LowMemoryCondition");
-        Ext2Global->LowMemory = IoCreateNotificationEvent(&LowMemoryName,
-                                                          &Ext2Global->LowMemoryHandle);
-    }
+    Ext2Global->MaxDepth = Ext2CacheDepth();
 
-    /* query registry settings */
     Ext2QueryRegistrySettings(RegistryPath);
     Ext2UnloadStep(L"UnloadStep", EXT2_STEP_LOADED);
+    return STATUS_SUCCESS;
+}
 
-    /* The control devices take the driver's own IOCTLs (volume properties,
-       mount points, statistics): SYSTEM and administrators only, enforced
-       on every open below them too (FILE_DEVICE_SECURE_OPEN). Created with
-       the default security, any user could open \\.\ext4 and send them. */
-
-    /* control device for CD-ROM media: the I/O manager offers optical volumes only to CD file systems */
-    RtlInitUnicodeString(&DeviceName, CDROM_NAME);
-    Status = IoCreateDeviceSecure(
-                 DriverObject,
-                 0,
-                 &DeviceName,
-                 FILE_DEVICE_CD_ROM_FILE_SYSTEM,
-                 FILE_DEVICE_SECURE_OPEN,
-                 FALSE,
-                 &SDDL_DEVOBJ_SYS_ALL_ADM_ALL,
-                 NULL,
-                 &CdromdevObject );
-
-    if (!NT_SUCCESS(Status)) {
-        DEBUG(DL_ERR, ( "IoCreateDevice cdrom device object error.\n"));
-        goto errorout;
+/* what Ext2InitializeGlobal set up, after a failed start */
+static VOID
+Ext2FreeGlobal(VOID)
+{
+    ExDeleteResourceLite(&Ext2Global->Resource);
+    if (Ext2Global->LowMemoryHandle) {
+        ZwClose(Ext2Global->LowMemoryHandle);
     }
-
-    /* control device for disk media, \ext4: the one mounts are requested through */
-    RtlInitUnicodeString(&DeviceName, DEVICE_NAME);
-    Status = IoCreateDeviceSecure(
-                 DriverObject,
-                 0,
-                 &DeviceName,
-                 FILE_DEVICE_DISK_FILE_SYSTEM,
-                 FILE_DEVICE_SECURE_OPEN,
-                 FALSE,
-                 &SDDL_DEVOBJ_SYS_ALL_ADM_ALL,
-                 NULL,
-                 &DiskdevObject );
-
-    if (!NT_SUCCESS(Status)) {
-        DEBUG(DL_ERR, ( "IoCreateDevice disk device object error.\n"));
-        goto errorout;
+    if (Ext2Global->RegistryPath.Buffer) {
+        Ext2FreePool(Ext2Global->RegistryPath.Buffer, EXT4_TAG_GLOBAL);
     }
+    Ext2FreePool(Ext2Global, EXT4_TAG_GLOBAL);
+    Ext2Global = NULL;
+}
 
-    Status= Ext2StartReaper(
-                &Ext2Global->FcbReaper,
-                Ext2FcbReaperThread);
+/* The control devices take the driver's own IOCTLs (volume properties,
+   mount points, statistics): SYSTEM and administrators only, enforced on
+   every open below them too (FILE_DEVICE_SECURE_OPEN). Created with the
+   default security, any user could open \\.\ext4 and send them. */
+static NTSTATUS
+Ext2CreateControlDevice(IN PDRIVER_OBJECT DriverObject, IN PCWSTR Name, IN DEVICE_TYPE Type,
+                        OUT PDEVICE_OBJECT *Device)
+{
+    UNICODE_STRING DeviceName;
+
+    RtlInitUnicodeString(&DeviceName, Name);
+    return IoCreateDeviceSecure(DriverObject, 0, &DeviceName, Type, FILE_DEVICE_SECURE_OPEN,
+                                FALSE, &SDDL_DEVOBJ_SYS_ALL_ADM_ALL, NULL, Device);
+}
+
+/* the reapers of the FCB, MCB and buffer-head caches: all or none */
+static NTSTATUS
+Ext2StartReapers(VOID)
+{
+    NTSTATUS Status;
+
+    Status = Ext2StartReaper(&Ext2Global->FcbReaper, Ext2FcbReaperThread);
     if (!NT_SUCCESS(Status)) {
-        goto errorout;
+        return Status;
     }
-
-    /* start resource reaper thread */
-    Status= Ext2StartReaper(
-                &Ext2Global->McbReaper,
-                Ext2McbReaperThread);
+    Status = Ext2StartReaper(&Ext2Global->McbReaper, Ext2McbReaperThread);
     if (!NT_SUCCESS(Status)) {
         Ext2StopReaper(&Ext2Global->FcbReaper);
-        goto errorout;
+        return Status;
     }
-
-    Status= Ext2StartReaper(
-                &Ext2Global->bhReaper,
-                Ext2bhReaperThread);
+    Status = Ext2StartReaper(&Ext2Global->bhReaper, Ext2bhReaperThread);
     if (!NT_SUCCESS(Status)) {
-        Ext2StopReaper(&Ext2Global->FcbReaper);
         Ext2StopReaper(&Ext2Global->McbReaper);
-        goto errorout;
+        Ext2StopReaper(&Ext2Global->FcbReaper);
     }
+    return Status;
+}
 
+/* the entry points the I/O, cache and memory managers call besides the IRPs */
+static VOID
+Ext2InitializeCallbacks(IN PDRIVER_OBJECT DriverObject)
+{
+    PFAST_IO_DISPATCH           FastIo = &Ext2Global->FastIoDispatch;
+    PCACHE_MANAGER_CALLBACKS    Cache = &Ext2Global->CacheManagerCallbacks;
+    PCACHE_MANAGER_CALLBACKS    NoOp = &Ext2Global->CacheManagerNoOpCallbacks;
 
-    /* initializing */
-    Ext2Global->DiskdevObject  = DiskdevObject;
-    Ext2Global->CdromdevObject = CdromdevObject;
+    FastIo->SizeOfFastIoDispatch          = sizeof(FAST_IO_DISPATCH);
+    FastIo->FastIoCheckIfPossible         = Ext2FastIoCheckIfPossible;
+    FastIo->FastIoRead                    = Ext2FastIoRead;
+    FastIo->FastIoWrite                   = Ext2FastIoWrite;
+    FastIo->FastIoQueryBasicInfo          = Ext2FastIoQueryBasicInfo;
+    FastIo->FastIoQueryStandardInfo       = Ext2FastIoQueryStandardInfo;
+    FastIo->FastIoLock                    = Ext2FastIoLock;
+    FastIo->FastIoUnlockSingle            = Ext2FastIoUnlockSingle;
+    FastIo->FastIoUnlockAll               = Ext2FastIoUnlockAll;
+    FastIo->FastIoUnlockAllByKey          = Ext2FastIoUnlockAllByKey;
+    FastIo->FastIoQueryNetworkOpenInfo    = Ext2FastIoQueryNetworkOpenInfo;
+    FastIo->AcquireForModWrite            = Ext2AcquireFileForModWrite;
+    FastIo->ReleaseForModWrite            = Ext2ReleaseFileForModWrite;
+    FastIo->AcquireForCcFlush             = Ext2AcquireFileForCcFlush;
+    FastIo->ReleaseForCcFlush             = Ext2ReleaseFileForCcFlush;
+    FastIo->AcquireFileForNtCreateSection = Ext2AcquireForCreateSection;
+    FastIo->ReleaseFileForNtCreateSection = Ext2ReleaseForCreateSection;
+    DriverObject->FastIoDispatch = FastIo;
 
-    DriverObject->MajorFunction[IRP_MJ_CREATE]              = Ext2BuildRequest;
-    DriverObject->MajorFunction[IRP_MJ_CLOSE]               = Ext2BuildRequest;
-    DriverObject->MajorFunction[IRP_MJ_READ]                = Ext2BuildRequest;
-    DriverObject->MajorFunction[IRP_MJ_WRITE]               = Ext2BuildRequest;
+    Cache->AcquireForLazyWrite  = Ext2AcquireForLazyWrite;
+    Cache->ReleaseFromLazyWrite = Ext2ReleaseFromLazyWrite;
+    Cache->AcquireForReadAhead  = Ext2AcquireForReadAhead;
+    Cache->ReleaseFromReadAhead = Ext2ReleaseFromReadAhead;
 
-    DriverObject->MajorFunction[IRP_MJ_FLUSH_BUFFERS]       = Ext2BuildRequest;
-    DriverObject->MajorFunction[IRP_MJ_SHUTDOWN]            = Ext2BuildRequest;
+    NoOp->AcquireForLazyWrite  = Ext2NoOpAcquire;
+    NoOp->ReleaseFromLazyWrite = Ext2NoOpRelease;
+    NoOp->AcquireForReadAhead  = Ext2NoOpAcquire;
+    NoOp->ReleaseFromReadAhead = Ext2NoOpRelease;
 
-    DriverObject->MajorFunction[IRP_MJ_QUERY_INFORMATION]   = Ext2BuildRequest;
-    DriverObject->MajorFunction[IRP_MJ_SET_INFORMATION]     = Ext2BuildRequest;
+    RtlZeroMemory(&Ext2Global->FilterCallbacks, sizeof(FS_FILTER_CALLBACKS));
+    Ext2Global->FilterCallbacks.SizeOfFsFilterCallbacks = sizeof(FS_FILTER_CALLBACKS);
+    Ext2Global->FilterCallbacks.PreAcquireForSectionSynchronization = Ext2PreAcquireForCreateSection;
+    FsRtlRegisterFileSystemFilterCallbacks(DriverObject, &Ext2Global->FilterCallbacks);
+}
 
-    DriverObject->MajorFunction[IRP_MJ_QUERY_VOLUME_INFORMATION]    = Ext2BuildRequest;
-    DriverObject->MajorFunction[IRP_MJ_SET_VOLUME_INFORMATION]      = Ext2BuildRequest;
+/* the unit sizes of the statistics (IOCTL_APP_QUERY_PERFSTAT); 1: the
+   size varies from one allocation to the next */
+static VOID
+Ext2InitializePerfStat(VOID)
+{
+    PULONG Slot = Ext2Global->PerfStat.Unit.Slot;
 
-    DriverObject->MajorFunction[IRP_MJ_DIRECTORY_CONTROL]   = Ext2BuildRequest;
-    DriverObject->MajorFunction[IRP_MJ_FILE_SYSTEM_CONTROL] = Ext2BuildRequest;
-    DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL]      = Ext2BuildRequest;
-    DriverObject->MajorFunction[IRP_MJ_LOCK_CONTROL]        = Ext2BuildRequest;
-
-    DriverObject->MajorFunction[IRP_MJ_QUERY_EA] = Ext2BuildRequest;
-    DriverObject->MajorFunction[IRP_MJ_SET_EA] = Ext2BuildRequest;
-
-    DriverObject->MajorFunction[IRP_MJ_CLEANUP]             = Ext2BuildRequest;
-
-    DriverObject->MajorFunction[IRP_MJ_PNP]                 = Ext2BuildRequest;
-
-    DriverObject->DriverUnload                              = DriverUnload;
-
-    /* Initialize the fast I/O entry points */
-
-    FastIoDispatch = &(Ext2Global->FastIoDispatch);
-
-    FastIoDispatch->SizeOfFastIoDispatch          = sizeof(FAST_IO_DISPATCH);
-    FastIoDispatch->FastIoCheckIfPossible         = Ext2FastIoCheckIfPossible;
-    FastIoDispatch->FastIoRead                    = Ext2FastIoRead;
-    FastIoDispatch->FastIoWrite                   = Ext2FastIoWrite;
-    FastIoDispatch->FastIoQueryBasicInfo          = Ext2FastIoQueryBasicInfo;
-    FastIoDispatch->FastIoQueryStandardInfo       = Ext2FastIoQueryStandardInfo;
-    FastIoDispatch->FastIoLock                    = Ext2FastIoLock;
-    FastIoDispatch->FastIoUnlockSingle            = Ext2FastIoUnlockSingle;
-    FastIoDispatch->FastIoUnlockAll               = Ext2FastIoUnlockAll;
-    FastIoDispatch->FastIoUnlockAllByKey          = Ext2FastIoUnlockAllByKey;
-    FastIoDispatch->FastIoQueryNetworkOpenInfo    = Ext2FastIoQueryNetworkOpenInfo;
-
-    FastIoDispatch->AcquireForModWrite            = Ext2AcquireFileForModWrite;
-    FastIoDispatch->ReleaseForModWrite            = Ext2ReleaseFileForModWrite;
-    FastIoDispatch->AcquireForCcFlush             = Ext2AcquireFileForCcFlush;
-    FastIoDispatch->ReleaseForCcFlush             = Ext2ReleaseFileForCcFlush;
-    FastIoDispatch->AcquireFileForNtCreateSection = Ext2AcquireForCreateSection;
-    FastIoDispatch->ReleaseFileForNtCreateSection = Ext2ReleaseForCreateSection;
-
-    DriverObject->FastIoDispatch = FastIoDispatch;
-
-    /* initializing structure sizes for statistics
-       1 means flexible/not fixed for all allocations (for different volumes). */
     Ext2Global->PerfStat.Magic   = EXT2_PERF_STAT_MAGIC;
     Ext2Global->PerfStat.Version = EXT2_PERF_STAT_VER2;
     Ext2Global->PerfStat.Length  = sizeof(EXT2_PERF_STATISTICS_V2);
 
-    Ext2Global->PerfStat.Unit.Slot[PS_IRP_CONTEXT] = sizeof(EXT2_IRP_CONTEXT);  /* 0 */
-    Ext2Global->PerfStat.Unit.Slot[PS_VCB] = sizeof(EXT2_VCB);                  /* 1 */
-    Ext2Global->PerfStat.Unit.Slot[PS_FCB] = sizeof(EXT2_FCB);                  /* 2 */
-    Ext2Global->PerfStat.Unit.Slot[PS_CCB] = sizeof(EXT2_CCB);                  /* 3 */
-    Ext2Global->PerfStat.Unit.Slot[PS_MCB] = sizeof(EXT2_MCB);                  /* 4 */
-    Ext2Global->PerfStat.Unit.Slot[PS_EXTENT] = sizeof(EXT2_EXTENT);            /* 5 */
-    Ext2Global->PerfStat.Unit.Slot[PS_RW_CONTEXT] = sizeof(EXT2_RW_CONTEXT);    /* 6 */
-    Ext2Global->PerfStat.Unit.Slot[PS_VPB] = sizeof(VPB);                       /* 7 */
-    Ext2Global->PerfStat.Unit.Slot[PS_FILE_NAME] = 1;                           /* 8 */
-    Ext2Global->PerfStat.Unit.Slot[PS_MCB_NAME] = 1;                            /* 9 */
-    Ext2Global->PerfStat.Unit.Slot[PS_INODE_NAME] = 1;                          /* a */
-    Ext2Global->PerfStat.Unit.Slot[PS_DIR_ENTRY] = sizeof(EXT2_DIR_ENTRY2);     /* b */
-    Ext2Global->PerfStat.Unit.Slot[PS_DIR_PATTERN] = 1;                         /* c */
-    Ext2Global->PerfStat.Unit.Slot[PS_DISK_EVENT] = sizeof(KEVENT);             /* d */
-    Ext2Global->PerfStat.Unit.Slot[PS_DISK_BUFFER] = 1;                         /* e */
-    Ext2Global->PerfStat.Unit.Slot[PS_BLOCK_DATA] = 1;                          /* f */
-    Ext2Global->PerfStat.Unit.Slot[PS_EXT2_INODE] = 1;                          /* 10 */
-    Ext2Global->PerfStat.Unit.Slot[PS_DENTRY] = sizeof(struct dentry);          /* 11 */
-    Ext2Global->PerfStat.Unit.Slot[PS_BUFF_HEAD] = sizeof(struct buffer_head);  /* 12 */
-    Ext2Global->PerfStat.Unit.Slot[PS_ICB] = sizeof(EXT2_ICB);                  /* 13 */
+    Slot[PS_IRP_CONTEXT] = sizeof(EXT2_IRP_CONTEXT);
+    Slot[PS_VCB] = sizeof(EXT2_VCB);
+    Slot[PS_FCB] = sizeof(EXT2_FCB);
+    Slot[PS_CCB] = sizeof(EXT2_CCB);
+    Slot[PS_MCB] = sizeof(EXT2_MCB);
+    Slot[PS_EXTENT] = sizeof(EXT2_EXTENT);
+    Slot[PS_RW_CONTEXT] = sizeof(EXT2_RW_CONTEXT);
+    Slot[PS_VPB] = sizeof(VPB);
+    Slot[PS_FILE_NAME] = 1;
+    Slot[PS_MCB_NAME] = 1;
+    Slot[PS_INODE_NAME] = 1;
+    Slot[PS_DIR_ENTRY] = sizeof(EXT2_DIR_ENTRY2);
+    Slot[PS_DIR_PATTERN] = 1;
+    Slot[PS_DISK_EVENT] = sizeof(KEVENT);
+    Slot[PS_DISK_BUFFER] = 1;
+    Slot[PS_BLOCK_DATA] = 1;
+    Slot[PS_EXT2_INODE] = 1;
+    Slot[PS_DENTRY] = sizeof(struct dentry);
+    Slot[PS_BUFF_HEAD] = sizeof(struct buffer_head);
+    Slot[PS_ICB] = sizeof(EXT2_ICB);
+}
 
-    switch ( MmQuerySystemSize() ) {
+/*
+ * NAME: DriverEntry
+ * FUNCTION: Called by the system to initialize the driver
+ *
+ * ARGUMENTS:
+ *           DriverObject = object describing this driver
+ *           RegistryPath = path to our configuration entries
+ * RETURNS: Success or failure
+ */
+NTSTATUS
+DriverEntry (
+    IN PDRIVER_OBJECT   DriverObject,
+    IN PUNICODE_STRING  RegistryPath
+)
+{
+    PDEVICE_OBJECT  DiskdevObject = NULL;
+    PDEVICE_OBJECT  CdromdevObject = NULL;
+    UNICODE_STRING  DeviceName;
+    UNICODE_STRING  DosDeviceName;
+    NTSTATUS        Status;
+    ULONG           i;
+    int             rc = 0;
+    BOOLEAN         LinuxLib = FALSE;
+    BOOLEAN         JournalModule = FALSE;
 
-    case MmSmallSystem:
+    /* the version names the build; no build time is recorded, so that the
+       same source builds to the same bytes */
+    DbgPrint("ext4 -- version " EXT4_VERSION_STRING4
+#if EXT2_DEBUG
+             " Debug"
+#else
+             " Release"
+#endif
+             "\n");
 
-        Ext2Global->MaxDepth = 64;
-        break;
+    /* initialize winlib structures */
+    if (ext2_init_linux()) {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto errorout;
+    }
+    LinuxLib = TRUE;
 
-    case MmMediumSystem:
+    /* initialize journal module structures */
+    LOAD_MODULE(journal_init);
+    if (rc != 0) {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto errorout;
+    }
+    JournalModule = TRUE;
 
-        Ext2Global->MaxDepth = 128;
-        break;
+    /* per-thread handle registry of the write-ahead journal engine */
+    Ext2JournalGlobalInit();
 
-    case MmLargeSystem:
-    default:
-
-        Ext2Global->MaxDepth = 256;
-        break;
+    Status = Ext2InitializeGlobal(RegistryPath);
+    if (!NT_SUCCESS(Status)) {
+        goto errorout;
     }
 
-    /* Initialize the Cache Manager callbacks */
+    /* for CD-ROM media - the I/O manager offers optical volumes only to CD
+       file systems - and for disks, \ext4, the one mounts come through */
+    Status = Ext2CreateControlDevice(DriverObject, CDROM_NAME, FILE_DEVICE_CD_ROM_FILE_SYSTEM, &CdromdevObject);
+    if (!NT_SUCCESS(Status)) {
+        goto errorout;
+    }
+    Status = Ext2CreateControlDevice(DriverObject, DEVICE_NAME, FILE_DEVICE_DISK_FILE_SYSTEM, &DiskdevObject);
+    if (!NT_SUCCESS(Status)) {
+        goto errorout;
+    }
 
-    CacheManagerCallbacks = &(Ext2Global->CacheManagerCallbacks);
-    CacheManagerCallbacks->AcquireForLazyWrite  = Ext2AcquireForLazyWrite;
-    CacheManagerCallbacks->ReleaseFromLazyWrite = Ext2ReleaseFromLazyWrite;
-    CacheManagerCallbacks->AcquireForReadAhead  = Ext2AcquireForReadAhead;
-    CacheManagerCallbacks->ReleaseFromReadAhead = Ext2ReleaseFromReadAhead;
+    Status = Ext2StartReapers();
+    if (!NT_SUCCESS(Status)) {
+        goto errorout;
+    }
 
-    Ext2Global->CacheManagerNoOpCallbacks.AcquireForLazyWrite  = Ext2NoOpAcquire;
-    Ext2Global->CacheManagerNoOpCallbacks.ReleaseFromLazyWrite = Ext2NoOpRelease;
-    Ext2Global->CacheManagerNoOpCallbacks.AcquireForReadAhead  = Ext2NoOpAcquire;
-    Ext2Global->CacheManagerNoOpCallbacks.ReleaseFromReadAhead = Ext2NoOpRelease;
+    /* nothing below fails */
+    Ext2Global->DiskdevObject  = DiskdevObject;
+    Ext2Global->CdromdevObject = CdromdevObject;
 
-    /* Initialize FS Filter callbacks */
+    for (i = 0; i < ARRAYSIZE(Ext2MajorFunctions); i++) {
+        DriverObject->MajorFunction[Ext2MajorFunctions[i]] = Ext2BuildRequest;
+    }
+    DriverObject->DriverUnload = DriverUnload;
+    Ext2InitializeCallbacks(DriverObject);
+    Ext2InitializePerfStat();
+    Ext2InitializeLookasides();
 
-    RtlZeroMemory(&Ext2Global->FilterCallbacks,  sizeof(FS_FILTER_CALLBACKS));
-    Ext2Global->FilterCallbacks.SizeOfFsFilterCallbacks = sizeof(FS_FILTER_CALLBACKS);
-    Ext2Global->FilterCallbacks.PreAcquireForSectionSynchronization = Ext2PreAcquireForCreateSection;
-    FsRtlRegisterFileSystemFilterCallbacks(DriverObject,  &Ext2Global->FilterCallbacks );
-
-
-    /* Initialize the global data */
-
-    ExInitializeNPagedLookasideList( &(Ext2Global->Ext2IrpContextLookasideList),
-                                     NULL,
-                                     NULL,
-                                     0,
-                                     sizeof(EXT2_IRP_CONTEXT),
-                                     'PRIE',
-                                     0 );
-
-    ExInitializeNPagedLookasideList( &(Ext2Global->Ext2FcbLookasideList),
-                                     NULL,
-                                     NULL,
-                                     0,
-                                     sizeof(EXT2_FCB),
-                                     'BCFE',
-                                     0 );
-
-    ExInitializeNPagedLookasideList( &(Ext2Global->Ext2CcbLookasideList),
-                                    NULL,
-                                    NULL,
-                                    0,
-                                    sizeof(EXT2_CCB),
-                                    'BCCE',
-                                    0 );
-
-    ExInitializeNPagedLookasideList( &(Ext2Global->Ext2McbLookasideList),
-                                    NULL,
-                                    NULL,
-                                    0,
-                                    sizeof(EXT2_MCB),
-                                    'BCME',
-                                    0 );
-
-    ExInitializeNPagedLookasideList( &(Ext2Global->Ext2ExtLookasideList),
-                                    NULL,
-                                    NULL,
-                                    0,
-                                    sizeof(EXT2_EXTENT),
-                                    'STXE',
-                                    0 );
-
-    ExInitializeNPagedLookasideList( &(Ext2Global->Ext2DentryLookasideList),
-                                    NULL,
-                                    NULL,
-                                    0,
-                                    sizeof(struct dentry),
-                                    'TNED',
-                                    0 );
-
+    /* \\.\ext4 for ext4ctl; without it the file system works, the control
+       tool does not reach it */
+    RtlInitUnicodeString(&DeviceName, DEVICE_NAME);
     RtlInitUnicodeString(&DosDeviceName, DOS_DEVICE_NAME);
-    IoCreateSymbolicLink(&DosDeviceName, &DeviceName);
+    (void)IoCreateSymbolicLink(&DosDeviceName, &DeviceName);
 
 #if EXT2_DEBUG
     ProcessNameOffset = Ext2GetProcessNameOffset();
 #endif
 
     Ext2LoadAllNls();
-
-    Ext2Global->Codepage.PageTable =
-        load_nls(Ext2Global->Codepage.AnsiName);
+    Ext2Global->Codepage.PageTable = load_nls(Ext2Global->Codepage.AnsiName);
 
     /* register file system devices for disk and cdrom */
     IoRegisterFileSystem(DiskdevObject);
     ObReferenceObject(DiskdevObject);
-
     IoRegisterFileSystem(CdromdevObject);
     ObReferenceObject(CdromdevObject);
 
@@ -506,51 +486,27 @@ DriverEntry (
     /* last: existing volumes are reported (and probed) right away, so
        everything above must be in place (see DriveLetters.c) */
     Ext2StartLetterService(DriverObject);
+    return STATUS_SUCCESS;
 
 errorout:
 
-    if (!NT_SUCCESS(Status)) {
-
-        /*
-         *  stop reaper thread ...
-         */
-
-
-        /*
-         *  cleanup resources ...
-         */
-
-        if (Ext2Global) {
-            ExDeleteResourceLite(&Ext2Global->Resource);
-            if (Ext2Global->LowMemoryHandle) {
-                ZwClose(Ext2Global->LowMemoryHandle);
-            }
-            if (Ext2Global->RegistryPath.Buffer) {
-                Ext2FreePool(Ext2Global->RegistryPath.Buffer, EXT4_TAG_GLOBAL);
-            }
-            Ext2FreePool(Ext2Global, EXT4_TAG_GLOBAL);
-            Ext2Global = NULL;
-        }
-
-        if (CdromdevObject) {
-            IoDeleteDevice(CdromdevObject);
-        }
-
-        if (DiskdevObject) {
-            IoDeleteDevice(DiskdevObject);
-        }
-
-        if (journal_module_inited) {
-            Ext2JournalGlobalExit();
-            /* cleanup journal related caches */
-            UNLOAD_MODULE(journal_exit);
-        }
-
-        if (linux_lib_inited) {
-            /* cleanup linux lib */
-            ext2_destroy_linux();
-        }
+    if (Ext2Global) {
+        Ext2FreeGlobal();
     }
-
+    if (CdromdevObject) {
+        IoDeleteDevice(CdromdevObject);
+    }
+    if (DiskdevObject) {
+        IoDeleteDevice(DiskdevObject);
+    }
+    if (JournalModule) {
+        Ext2JournalGlobalExit();
+        /* cleanup journal related caches */
+        UNLOAD_MODULE(journal_exit);
+    }
+    if (LinuxLib) {
+        /* cleanup linux lib */
+        ext2_destroy_linux();
+    }
     return Status;
 }

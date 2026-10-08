@@ -14,10 +14,6 @@ Ext2DeviceControlCompletion (
     IN PIRP             Irp,
     IN PVOID            Context);
 
-extern CHAR gVersion[];
-extern CHAR gTime[];
-extern CHAR gDate[];
-
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, Ext2DeviceControl)
 #pragma alloc_text(PAGE, Ext2DeviceControlNormal)
@@ -153,12 +149,13 @@ Ext2ProcessGlobalProperty(
                 __leave;
             }
 
-            RtlZeroMemory(&PVPV->Date[0],   0x20);
-            RtlZeroMemory(&PVPV->Time[0],   0x20);
-            RtlZeroMemory(&PVPV->Version[0],0x1C);
-            strncpy(&PVPV->Version[0], gVersion, 0x1B);
-            strncpy(&PVPV->Date[0], gDate, 0x1F);
-            strncpy(&PVPV->Time[0], gTime, 0x1F);
+            /* the version, terminated; no build date or time - the same
+               source builds to the same bytes */
+            RtlZeroMemory(PVPV->Version, sizeof(PVPV->Version));
+            RtlZeroMemory(PVPV->Time, sizeof(PVPV->Time));
+            RtlZeroMemory(PVPV->Date, sizeof(PVPV->Date));
+            RtlCopyMemory(PVPV->Version, EXT4_VERSION_STRING4,
+                          min(sizeof(EXT4_VERSION_STRING4), sizeof(PVPV->Version)) - 1);
             __leave;
         }
 

@@ -84,25 +84,152 @@ static BOOLEAN Ext2IsUnloadPendingByOpen(VOID);
 #pragma alloc_text(PAGE, Ext2PrepareToUnload)
 #endif
 
+/*
+ * Phase 0: the drive letters this driver created go, and the shell is
+ * told, before anything else. Explorer, Total Commander, the search indexer
+ * keep handles on every drive they can see and let go only when the drive
+ * disappears - so with the letter still there an idle volume that is merely
+ * displayed would keep us loaded for ever. The notification is synchronous
+ * with user mode: the global resource is dropped around it. Called, and
+ * returns, with the global resource held.
+ */
+static VOID
+Ext2UnloadLetters(VOID)
+{
+    for (;;) {
+
+        PEXT2_VCB       Vcb = NULL;
+        PDEVICE_OBJECT  Device = NULL;
+        PLIST_ENTRY     ListEntry;
+
+        for (ListEntry  = Ext2Global->VcbList.Flink;
+             ListEntry != &(Ext2Global->VcbList);
+             ListEntry  = ListEntry->Flink) {
+
+            PEXT2_VCB v = CONTAINING_RECORD(ListEntry, EXT2_VCB, Next);
+
+            if (IsMounted(v) && IsFlagOn(v->Flags, VCB_LETTER_ASSIGNED)) {
+                Vcb = v;
+                Device = v->DeviceObject;
+                ObReferenceObject(Device);
+                break;
+            }
+        }
+        if (Vcb == NULL) {
+            return;
+        }
+
+        ExReleaseResourceLite(&Ext2Global->Resource);
+        /* clears VCB_LETTER_ASSIGNED, so the loop makes progress */
+        Ext2ReleaseLetter(Vcb, TRUE);
+        ObDereferenceObject(Device);
+        ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
+    }
+}
+
+/*
+ * Phases 1 and 2: every mounted volume flushed and dismounted by force.
+ * Existing handles receive STATUS_VOLUME_DISMOUNTED, and the VCB waits on
+ * DismountingVcbList until they are closed. A volume a failed allocation
+ * left mounted fails the unload, never spins it: STATUS_INSUFFICIENT_RESOURCES.
+ * Called, and returns, with the global resource held.
+ */
+static NTSTATUS
+Ext2UnloadDismount(IN PEXT2_IRP_CONTEXT IrpContext)
+{
+    for (;;) {
+
+        PEXT2_VCB   Vcb = NULL;
+        PLIST_ENTRY ListEntry;
+
+        for (ListEntry  = Ext2Global->VcbList.Flink;
+             ListEntry != &(Ext2Global->VcbList);
+             ListEntry  = ListEntry->Flink) {
+
+            PEXT2_VCB v = CONTAINING_RECORD(ListEntry, EXT2_VCB, Next);
+
+            if (IsMounted(v) && !IsFlagOn(v->Flags, VCB_DISMOUNT_PENDING)) {
+                Vcb = v;
+                break;
+            }
+        }
+        if (Vcb == NULL) {
+            return STATUS_SUCCESS;
+        }
+
+        ExReleaseResourceLite(&Ext2Global->Resource);
+
+        ExAcquireResourceExclusiveLite(&Vcb->MainResource, TRUE);
+        if (Vcb->NotifySync != NULL) {
+            FsRtlNotifyCleanup(Vcb->NotifySync, &Vcb->NotifyList, NULL);
+        }
+        (void)Ext2FlushFiles(IrpContext, Vcb, FALSE);
+        (void)Ext2FlushVolume(IrpContext, Vcb, FALSE);
+        ExReleaseResourceLite(&Vcb->MainResource);
+
+        Ext2PurgeVolume(Vcb, TRUE);
+        Ext2CheckDismount(IrpContext, Vcb, TRUE);
+
+        /* the VCB may be gone: only its address is compared */
+        ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
+        for (ListEntry  = Ext2Global->VcbList.Flink;
+             ListEntry != &Ext2Global->VcbList;
+             ListEntry  = ListEntry->Flink) {
+
+            PEXT2_VCB Current = CONTAINING_RECORD(ListEntry, EXT2_VCB, Next);
+
+            if (Current == Vcb && IsMounted(Current) &&
+                !IsFlagOn(Current->Flags, VCB_DISMOUNT_PENDING)) {
+                return STATUS_INSUFFICIENT_RESOURCES;
+            }
+        }
+    }
+}
+
+/*
+ * Phase 3: the dismounting VCBs nobody references any more are torn down
+ * now; one that is being dropped already, or that stays, ends the pass.
+ * Called, and returns, with the global resource held.
+ */
+static VOID
+Ext2UnloadReapDismounting(IN PEXT2_IRP_CONTEXT IrpContext)
+{
+    while (!IsListEmpty(&Ext2Global->DismountingVcbList)) {
+
+        PEXT2_VCB v = CONTAINING_RECORD(Ext2Global->DismountingVcbList.Flink, EXT2_VCB, Next);
+
+        if (IsFlagOn(v->Flags, VCB_BEING_DROPPED)) {
+            return;
+        }
+
+        ExReleaseResourceLite(&Ext2Global->Resource);
+        Ext2DropIdleFcbs(v);
+        if (v->ReferenceCount == 0) {
+            Ext2CheckDismount(IrpContext, v, FALSE);
+        }
+        ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
+
+        if (!IsListEmpty(&Ext2Global->DismountingVcbList) &&
+            CONTAINING_RECORD(Ext2Global->DismountingVcbList.Flink, EXT2_VCB, Next) == v) {
+            return;
+        }
+    }
+}
+
 NTSTATUS
 Ext2PrepareToUnload (IN PEXT2_IRP_CONTEXT IrpContext)
 {
-    PDEVICE_OBJECT  DeviceObject;
     NTSTATUS        Status = STATUS_UNSUCCESSFUL;
     BOOLEAN         GlobalDataResourceAcquired = FALSE;
 
+    ASSERT((IrpContext->Identifier.Type == EXT2ICX) &&
+           (IrpContext->Identifier.Size == sizeof(EXT2_IRP_CONTEXT)));
+
     __try {
-
-        ASSERT(IrpContext != NULL);
-
-        ASSERT((IrpContext->Identifier.Type == EXT2ICX) &&
-               (IrpContext->Identifier.Size == sizeof(EXT2_IRP_CONTEXT)));
-
-        DeviceObject = IrpContext->DeviceObject;
 
         /* only meaningful on the control device (\\.\ext4), never on a
            mounted volume */
-        if (!IsExt2FsDevice(DeviceObject)) {
+        if (!IsExt2FsDevice(IrpContext->DeviceObject)) {
             Status = STATUS_INVALID_DEVICE_REQUEST;
             __leave;
         }
@@ -112,185 +239,42 @@ Ext2PrepareToUnload (IN PEXT2_IRP_CONTEXT IrpContext)
            resource (a probe may be mounting under it right now) */
         Ext2StopLetterService();
 
-        ExAcquireResourceExclusiveLite(
-            &Ext2Global->Resource,
-            TRUE );
-
+        ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
         GlobalDataResourceAcquired = TRUE;
 
         if (FlagOn(Ext2Global->Flags, EXT2_UNLOAD_PENDING)) {
-            DEBUG(DL_ERR, ( "Ext2PrepareUnload:  Already ready to unload.\n"));
-
+            DEBUG(DL_ERR, ("Ext2PrepareUnload: already ready to unload\n"));
             Status = STATUS_ACCESS_DENIED;
-
             __leave;
         }
 
-        /*
-         * Phase 0: take back the drive letters we created and tell the
-         * shell, before anything else. Explorer, Total Commander, the
-         * search indexer keep handles on every drive they can see and let
-         * go only when the drive disappears - so with the letter still
-         * there an idle volume that is merely displayed would keep us
-         * loaded for ever. Done with the global resource dropped: the
-         * notification is synchronous with user mode.
-         */
-        for (;;) {
-
-            PEXT2_VCB               Vcb = NULL;
-            PDEVICE_OBJECT          Device = NULL;
-            PLIST_ENTRY             ListEntry;
-
-            for (ListEntry  = Ext2Global->VcbList.Flink;
-                 ListEntry != &(Ext2Global->VcbList);
-                 ListEntry  = ListEntry->Flink) {
-
-                PEXT2_VCB v = CONTAINING_RECORD(ListEntry, EXT2_VCB, Next);
-
-                if (v && IsMounted(v) && IsFlagOn(v->Flags, VCB_LETTER_ASSIGNED)) {
-                    Vcb = v;
-                    Device = v->DeviceObject;
-                    ObReferenceObject(Device);
-                    break;
-                }
-            }
-
-            if (Vcb == NULL) {
-                break;
-            }
-
-            ExReleaseResourceLite(&Ext2Global->Resource);
-            GlobalDataResourceAcquired = FALSE;
-
-            /* clears VCB_LETTER_ASSIGNED, so the loop makes progress */
-            Ext2ReleaseLetter(Vcb, TRUE);
-            ObDereferenceObject(Device);
-
-            ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
-            GlobalDataResourceAcquired = TRUE;
+        Ext2UnloadLetters();
+        Status = Ext2UnloadDismount(IrpContext);
+        if (!NT_SUCCESS(Status)) {
+            __leave;
         }
 
-        /*
-         * Phase 1 & 2: flush and force-dismount every mounted volume.
-         * Existing handles will receive STATUS_VOLUME_DISMOUNTED, and
-         * the VCB will safely sit on DismountingVcbList until closed.
-         */
-        for (;;) {
-
-            PEXT2_VCB               Vcb = NULL;
-            PLIST_ENTRY             ListEntry;
-
-            if (!GlobalDataResourceAcquired) {
-                ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
-                GlobalDataResourceAcquired = TRUE;
-            }
-
-            for (ListEntry  = Ext2Global->VcbList.Flink;
-                 ListEntry != &(Ext2Global->VcbList);
-                 ListEntry  = ListEntry->Flink) {
-
-                PEXT2_VCB v = CONTAINING_RECORD(ListEntry, EXT2_VCB, Next);
-
-                if (v && IsMounted(v) &&
-                        !IsFlagOn(v->Flags, VCB_DISMOUNT_PENDING)) {
-                    Vcb = v;
-                    break;
-                }
-            }
-
-            ExReleaseResourceLite(&Ext2Global->Resource);
-            GlobalDataResourceAcquired = FALSE;
-
-            if (Vcb == NULL) {
-                break;
-            }
-
-            ExAcquireResourceExclusiveLite(&Vcb->MainResource, TRUE);
-
-            if (Vcb->NotifySync != NULL) {
-                FsRtlNotifyCleanup(Vcb->NotifySync, &Vcb->NotifyList, NULL);
-            }
-
-            (void)Ext2FlushFiles(IrpContext, Vcb, FALSE);
-            (void)Ext2FlushVolume(IrpContext, Vcb, FALSE);
-            ExReleaseResourceLite(&Vcb->MainResource);
-
-            Ext2PurgeVolume(Vcb, TRUE);
-            Ext2CheckDismount(IrpContext, Vcb, TRUE);
-
-            /* Allocation failure can leave the same volume mounted.
-               Do not spin on it or dereference a possibly destroyed VCB. */
-            ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
-            GlobalDataResourceAcquired = TRUE;
-            for (ListEntry = Ext2Global->VcbList.Flink;
-                 ListEntry != &Ext2Global->VcbList; ListEntry = ListEntry->Flink) {
-                PEXT2_VCB Current = CONTAINING_RECORD(ListEntry, EXT2_VCB, Next);
-                if (Current == Vcb && IsMounted(Current) &&
-                    !IsFlagOn(Current->Flags, VCB_DISMOUNT_PENDING)) {
-                    Status = STATUS_INSUFFICIENT_RESOURCES;
-                    __leave;
-                }
-            }
-        }
-
-        /* Wait for any asynchronous lazy writer activity to settle before checking VCBs */
+        /* the lazy writer's work in flight settles first, without the
+           global resource */
+        ExReleaseResourceLite(&Ext2Global->Resource);
+        GlobalDataResourceAcquired = FALSE;
         CcWaitForCurrentLazyWriterActivity();
+        ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
+        GlobalDataResourceAcquired = TRUE;
 
-        /*
-         * Phase 3: reap any dismount-pending VCBs left behind, then confirm
-         * nothing is still mounted before we unregister.
-         */
-        {
-            if (!GlobalDataResourceAcquired) {
-                ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
-                GlobalDataResourceAcquired = TRUE;
-            }
+        Ext2UnloadReapDismounting(IrpContext);
 
-            while (!IsListEmpty(&Ext2Global->DismountingVcbList)) {
-
-                PEXT2_VCB v = CONTAINING_RECORD(Ext2Global->DismountingVcbList.Flink, EXT2_VCB, Next);
-
-                if (IsFlagOn(v->Flags, VCB_BEING_DROPPED)) {
-                    break;
-                }
-
-                ExReleaseResourceLite(&Ext2Global->Resource);
-                GlobalDataResourceAcquired = FALSE;
-
-                Ext2DropIdleFcbs(v);
-
-                if (v->ReferenceCount == 0) {
-                    Ext2CheckDismount(IrpContext, v, FALSE);
-                }
-
-                ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
-                GlobalDataResourceAcquired = TRUE;
-
-                if (!IsListEmpty(&Ext2Global->DismountingVcbList) &&
-                    CONTAINING_RECORD(Ext2Global->DismountingVcbList.Flink, EXT2_VCB, Next) == v) {
-                    break;
-                }
-            }
-        }
-
+        /* nothing still mounted, nothing on its way: a mount in flight has
+           a device of its own (VolumeMount.c) */
         if (!IsListEmpty(&(Ext2Global->VcbList)) ||
             !IsListEmpty(&(Ext2Global->DismountingVcbList))) {
-
-            DEBUG(DL_ERR, ( "Ext2PrepareUnload: volumes still exist.\n"));
-
+            DEBUG(DL_ERR, ("Ext2PrepareUnload: volumes still exist\n"));
             Status = STATUS_ACCESS_DENIED;
-
             __leave;
         }
-
-        /* a mount on its way has a device of its own (VolumeMount.c) */
-        if (Ext2Global->MountsInFlight != 0 ||
-            Ext2Global->VcbTeardownsInFlight != 0) {
-
-            DEBUG(DL_ERR, ( "Ext2PrepareUnload: mount or teardown is in progress.\n"));
-
+        if (Ext2Global->MountsInFlight != 0 || Ext2Global->VcbTeardownsInFlight != 0) {
+            DEBUG(DL_ERR, ("Ext2PrepareUnload: mount or teardown is in progress\n"));
             Status = STATUS_ACCESS_DENIED;
-
             __leave;
         }
 
@@ -302,13 +286,13 @@ Ext2PrepareToUnload (IN PEXT2_IRP_CONTEXT IrpContext)
             __leave;
         }
 
-        /* DriverUnload is already wired up in DriverEntry when EXT2_UNLOAD is on;
-           from here on every mount refuses (VolumeMount.c checks the flag under
-           the global resource), the file systems are unregistered below */
-        SetLongFlag(Ext2Global->Flags ,EXT2_UNLOAD_PENDING);
+        /* from here on every mount refuses (VolumeMount.c checks the flag
+           under the global resource); the file systems are unregistered
+           below */
+        SetLongFlag(Ext2Global->Flags, EXT2_UNLOAD_PENDING);
         Status = STATUS_SUCCESS;
 
-        DEBUG(DL_INF, ( "Ext2PrepareToUnload: Driver is ready to unload.\n"));
+        DEBUG(DL_INF, ("Ext2PrepareToUnload: driver is ready to unload\n"));
 
     } __finally {
 

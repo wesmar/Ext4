@@ -282,10 +282,16 @@
     <ClInclude Include="include\ext4xts.h" />
   </ItemGroup>
   <ItemDefinitionGroup>
+    <!-- reproducible builds: no time stamps (/Brepro), the symbol file named
+         without the build path - the same source builds to the same bytes -->
+    <ClCompile>
+      <AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ResourceCompile>
       <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
+      <AdditionalOptions>/Brepro /PDBALTPATH:%_PDB% %(AdditionalOptions)</AdditionalOptions>
       <!-- wdmsec: IoCreateDeviceSecure (control and LUKS devices for SYSTEM and administrators only); cng: AES for LUKS volumes -->
       <AdditionalDependencies>$(DDK_LIB_PATH)wdmsec.lib;$(DDK_LIB_PATH)cng.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>

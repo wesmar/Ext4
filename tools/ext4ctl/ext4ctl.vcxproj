@@ -34,7 +34,8 @@
       <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\..\src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
-      <AdditionalOptions>/std:clatest %(AdditionalOptions)</AdditionalOptions>
+      <!-- /Brepro: no time stamps, the same source builds to the same bytes -->
+      <AdditionalOptions>/std:clatest /Brepro %(AdditionalOptions)</AdditionalOptions>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <!-- static CRT: one file that runs on Server Core without a redistributable -->
       <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebug</RuntimeLibrary>
@@ -51,6 +52,8 @@
       <SubSystem>Console</SubSystem>
       <AdditionalDependencies>bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <!-- reproducible: no time stamp, the symbol file named without the build path -->
+      <AdditionalOptions>/Brepro /PDBALTPATH:%_PDB% %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
