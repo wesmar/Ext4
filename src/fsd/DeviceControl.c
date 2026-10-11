@@ -630,7 +630,8 @@ Ext2ProcessMountPoint(
 {
     UNICODE_STRING  Link;
     UNICODE_STRING  Target;
-    WCHAR           Buffer[] = L"\\DosDevices\\Global\\Z:";
+    /* the letter goes where the X is: before the colon and the terminator */
+    WCHAR           Buffer[] = L"\\DosDevices\\Global\\X:";
     NTSTATUS        status = STATUS_SUCCESS;
 
     PDEVICE_OBJECT  DeviceObject = NULL;
@@ -663,8 +664,10 @@ Ext2ProcessMountPoint(
             __leave;
         }
 
+        /* it was put at [12], over the G of Global: for Q the link made
+           was \DosDevices\Qlobal\Z:, and no drive letter came of it */
+        Buffer[RTL_NUMBER_OF(Buffer) - 3] = MountPoint->Link[0];
         RtlInitUnicodeString(&Link, Buffer);
-        Buffer[12] = MountPoint->Link[0];
 
         switch (MountPoint->Command) {
 

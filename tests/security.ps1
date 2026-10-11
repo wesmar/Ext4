@@ -170,6 +170,26 @@ public static class SecIo {
             return DeviceIoControl(h, 0x221F40, b, b.Length, b, b.Length, out r, IntPtr.Zero) ? 0 : Marshal.GetLastWin32Error();
         }
     }
+    // --- IOCTL_APP_MOUNT_POINT (1040 bytes, magic 'EAMM') on the control device:
+    //     \DosDevices\Global\<letter>: made (1) or removed (2)
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint QueryDosDevice(string name, System.Text.StringBuilder target, int max);
+    public static string DosDevice(string letter) {
+        var sb = new System.Text.StringBuilder(512);
+        return QueryDosDevice(letter + ":", sb, sb.Capacity) == 0 ? "none" : sb.ToString();
+    }
+    public static int MountPoint(uint command, char letter, string target) {
+        var h = CreateFile(@"\\.\ext4", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+        if (h.IsInvalid) return -Marshal.GetLastWin32Error();
+        using (h) {
+            var b = new byte[1040];
+            BitConverter.GetBytes(0x45414D4Du).CopyTo(b, 0);
+            BitConverter.GetBytes(command).CopyTo(b, 12);
+            BitConverter.GetBytes((ushort)letter).CopyTo(b, 16);
+            if (target != null) System.Text.Encoding.Unicode.GetBytes(target).CopyTo(b, 16 + 512);
+            int r;
+            return DeviceIoControl(h, 0x221F48, b, b.Length, b, b.Length, out r, IntPtr.Zero) ? 0 : Marshal.GetLastWin32Error();
+        }
+    }
     // --- a standard user's view: this thread impersonates a restricted copy of
     //     its own token (Administrators deny-only, no privileges) and runs the probes
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr p, uint a, out IntPtr t);
@@ -283,6 +303,16 @@ try {
     Check 'the name is listed again' 'shown.txt,zzhide-a.txt' (Listed)
 } finally {
     [void][SecIo]::HidePrefix($vol, $null)
+}
+"-- drive letter links (IOCTL_APP_MOUNT_POINT on the control device)"
+$free = [char[]](81..87) | Where-Object { [SecIo]::DosDevice([string]$_) -eq 'none' } | Select-Object -First 1
+try {
+    Check 'a drive letter link made'          0              ([SecIo]::MountPoint(1, $free, '\Device\Null'))
+    Check '... as the letter asked for'       '\Device\Null' ([SecIo]::DosDevice([string]$free))
+    Check 'the link removed'                  0              ([SecIo]::MountPoint(2, $free, $null))
+    Check '... and gone'                      'none'         ([SecIo]::DosDevice([string]$free))
+} finally {
+    if ([SecIo]::DosDevice([string]$free) -eq '\Device\Null') { [void][SecIo]::MountPoint(2, $free, $null) }
 }
 "-- as a standard user (restricted token: Administrators deny-only)"
 try {
