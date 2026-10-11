@@ -904,7 +904,7 @@ Ext2VolumeInterfaceNotify(IN PVOID NotificationStructure, IN PVOID Context)
  * DriverEntry: start listening. Existing volumes are reported right away,
  * on this thread, so the file systems must already be registered.
  */
-NTSTATUS
+VOID
 Ext2StartLetterService(IN PDRIVER_OBJECT DriverObject)
 {
     NTSTATUS    Status;
@@ -944,8 +944,6 @@ Ext2StartLetterService(IN PDRIVER_OBJECT DriverObject)
         DbgPrint("ext4: cannot watch for volumes (%xh)\n", Status);
         Ext2Global->VolumeNotifyEntry = NULL;
     }
-
-    return Status;
 }
 
 /*

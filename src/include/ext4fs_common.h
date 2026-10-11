@@ -18,13 +18,6 @@
 #define FILE_SUPPORTS_EXTENDED_ATTRIBUTES   0x00800000
 #endif
 
-/* The following macro is used to determine if an FSD thread can block
-   for I/O or wait for a resource.  It returns TRUE if the thread can
-   block and FALSE otherwise.  This attribute can then be used to call
-   the FSD & FSP common work routine with the proper wait value. */
-
-#define CanExt2Wait(IRP) IoIsOperationSynchronous(Irp)
-
 /* memory allocation statistics */
 
 /* the statistics block keeps the ULONG layout reported to user mode; its

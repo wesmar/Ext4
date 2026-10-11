@@ -76,30 +76,6 @@ __u32 ext4_itable_unused_count(struct super_block *sb,
             (__u32)le16_to_cpu(bg->bg_itable_unused_hi) << 16 : 0);
 }
 
-void ext4_block_bitmap_set(struct super_block *sb,
-                           struct ext4_group_desc *bg, ext4_fsblk_t blk)
-{
-    bg->bg_block_bitmap_lo = cpu_to_le32((u32)blk);
-    if (EXT4_DESC_SIZE(sb) >= EXT4_MIN_DESC_SIZE_64BIT)
-        bg->bg_block_bitmap_hi = cpu_to_le32(blk >> 32);
-}
-
-void ext4_inode_bitmap_set(struct super_block *sb,
-                           struct ext4_group_desc *bg, ext4_fsblk_t blk)
-{
-    bg->bg_inode_bitmap_lo  = cpu_to_le32((u32)blk);
-    if (EXT4_DESC_SIZE(sb) >= EXT4_MIN_DESC_SIZE_64BIT)
-        bg->bg_inode_bitmap_hi = cpu_to_le32(blk >> 32);
-}
-
-void ext4_inode_table_set(struct super_block *sb,
-                          struct ext4_group_desc *bg, ext4_fsblk_t blk)
-{
-    bg->bg_inode_table_lo = cpu_to_le32((u32)blk);
-    if (EXT4_DESC_SIZE(sb) >= EXT4_MIN_DESC_SIZE_64BIT)
-        bg->bg_inode_table_hi = cpu_to_le32(blk >> 32);
-}
-
 void ext4_free_blks_set(struct super_block *sb,
                         struct ext4_group_desc *bg, __u32 count)
 {
@@ -484,22 +460,4 @@ unsigned long ext4_count_free_inodes(struct super_block *sb)
         fini_bh(&bh);
     }
     return desc_count;
-}
-
-/* Called at mount-time, super-block is locked */
-unsigned long ext4_count_dirs(struct super_block * sb)
-{
-    struct ext4_group_desc *gdp;
-    struct buffer_head *bh = NULL;
-    unsigned long count = 0;
-    ext4_group_t i;
-
-    for (i = 0; i < EXT4_SB(sb)->s_groups_count; i++) {
-        gdp = ext4_get_group_desc(sb, i, &bh);
-        if (!bh)
-            continue;
-        count += ext4_used_dirs_count(sb, gdp);
-        fini_bh(&bh);
-    }
-    return count;
 }

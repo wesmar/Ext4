@@ -205,15 +205,6 @@ void ext4_fs_xattr_iterate(struct ext4_xattr_ref *ref,
 		struct ext4_xattr_item *item,
 		BOOL is_last));
 
-void ext4_fs_xattr_iterate_reset(struct ext4_xattr_ref *ref);
-
-const char *ext4_extract_xattr_name(const char *full_name, size_t full_name_len,
-			      __u8 *name_index, size_t *name_len,
-			      BOOL *found);
-
-const char *ext4_get_xattr_name_prefix(__u8 name_index,
-				       size_t *ret_prefix_len);
-
 void ext4_xattr_purge_items(struct ext4_xattr_ref *xattr_ref);
 
 /* every attribute goes, value inodes included (the inode is deleted) */

@@ -106,14 +106,6 @@ int __jbd2_log_start_commit(journal_t *journal, tid_t target)
 	return 0;
 }
 
-int jbd2_log_start_commit(journal_t *journal, tid_t tid)
-{
-	int ret;
-
-	ret = __jbd2_log_start_commit(journal, tid);
-	return ret;
-}
-
 /*
  * Conversion of logical to physical block numbers for the journal
  *

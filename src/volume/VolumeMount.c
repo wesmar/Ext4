@@ -455,7 +455,7 @@ Ext2VerifyVolume (IN PEXT2_IRP_CONTEXT IrpContext)
         } else {
 
             Status = STATUS_WRONG_VOLUME;
-            Ext2PurgeVolume(Vcb, FALSE);
+            (void)Ext2PurgeVolume(Vcb, FALSE);      /* the media is another: nothing to save */
 
             SetLongFlag(Vcb->Flags, VCB_DISMOUNT_PENDING);
             ClearFlag(Vcb->TargetDeviceObject->Flags, DO_VERIFY_VOLUME);

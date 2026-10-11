@@ -2141,7 +2141,6 @@ extern struct inode *__ext4_new_inode(handle_t *, struct inode *, umode_t,
 extern void ext4_free_inode(handle_t *, struct inode *);
 extern struct inode * ext4_orphan_get(struct super_block *, unsigned long);
 extern unsigned long ext4_count_free_inodes(struct super_block *);
-extern unsigned long ext4_count_dirs(struct super_block *);
 extern void ext4_check_inodes_bitmap(struct super_block *);
 extern void ext4_mark_bitmap_end(int start_bit, int end_bit, char *bitmap);
 extern int ext4_init_inode_table(struct super_block *sb,
@@ -2330,12 +2329,6 @@ extern __u32 ext4_used_dirs_count(struct super_block *sb,
 				struct ext4_group_desc *bg);
 extern __u32 ext4_itable_unused_count(struct super_block *sb,
 				   struct ext4_group_desc *bg);
-extern void ext4_block_bitmap_set(struct super_block *sb,
-				  struct ext4_group_desc *bg, ext4_fsblk_t blk);
-extern void ext4_inode_bitmap_set(struct super_block *sb,
-				  struct ext4_group_desc *bg, ext4_fsblk_t blk);
-extern void ext4_inode_table_set(struct super_block *sb,
-				 struct ext4_group_desc *bg, ext4_fsblk_t blk);
 extern void ext4_free_group_clusters_set(struct super_block *sb,
 					 struct ext4_group_desc *bg,
 					 __u32 count);
@@ -2616,9 +2609,6 @@ extern int ext4_ext_writepage_trans_blocks(struct inode *, int);
 extern int ext4_ext_index_trans_blocks(struct inode *inode, int extents);
 extern int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 			       struct ext4_map_blocks *map, int flags);
-/*extern int ext4_ext_remove_space(struct inode *inode, ext4_lblk_t start,
-				 ext4_lblk_t end);*/
-extern void ext4_ext_init(struct super_block *);
 extern void ext4_ext_release(struct super_block *);
 extern long ext4_fallocate(struct file *file, int mode, loff_t offset,
 			  loff_t len);
@@ -2866,8 +2856,6 @@ ext3_group_first_block_no(struct super_block *sb, unsigned long group_no)
 __u32 ext4_chksum(struct ext4_sb_info *sbi, __u32 crc,
 			      const void *buffer, unsigned int length);
 int ext4_superblock_csum_ok(struct ext4_super_block *es);
-int ext4_superblock_csum_verify(struct super_block *sb,
-				       struct ext4_super_block *es);
 void ext4_superblock_csum_set(struct super_block *sb);
 static __le16 ext4_group_desc_csum(struct super_block *sb, __u32 block_group,
 				   struct ext4_group_desc *gdp);

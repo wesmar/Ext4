@@ -9,13 +9,6 @@
 #ifndef _EXT4_EXT4FS_SUPPORT_H_
 #define _EXT4_EXT4FS_SUPPORT_H_
 
-PMDL
-Ext2CreateMdl (
-    IN PVOID Buffer,
-    IN ULONG Length,
-    IN LOCK_OPERATION Operation
-);
-
 VOID
 Ext2DestroyMdl (IN PMDL Mdl);
 

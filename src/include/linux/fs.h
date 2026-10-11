@@ -138,7 +138,6 @@ struct file {
 #define DT_SOCK		12
 #define DT_WHT		14
 
-void iget(struct inode *inode);
 void iput(struct inode *inode);
 ULONGLONG bmap(struct inode *i, ULONGLONG b);
 

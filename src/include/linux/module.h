@@ -23,7 +23,6 @@ struct buffer_head;
 #include <linux/fs.h>
 #include <linux/log2.h>
 
-
 /* STRUCTS ******************************************************/
 
 #ifndef offsetof
@@ -183,7 +182,6 @@ RtlUlonglongByteSwap(
 #define cpu_to_be16s __cpu_to_be16s
 #define be16_to_cpus __be16_to_cpus
 
-
 /* val may be negative: le16_add_cpu(&count, -1) is how Linux decrements */
 static inline void le16_add_cpu(__le16 *var, int val)
 {
@@ -210,10 +208,8 @@ static inline void le64_add_cpu(__le64 *var, u64 val)
 #define ntohs(x)           ( ( ( ( x ) & 0xff00 ) >> 8 ) | \
                              ( ( ( x ) & 0x00ff ) << 8 ) )
 
-
 #define htonl(x)           ntohl(x)
 #define htons(x)           ntohs(x)
-
 
 /* kernel printk flags */
 
@@ -249,7 +245,6 @@ static inline long IS_ERR(const void *ptr)
 	return IS_ERR_VALUE((unsigned long)(long_ptr_t)ptr);
 }
 
-
 #define BUG_ON(c) assert(!(c))
 
 #define WARN_ON(c) BUG_ON(c)
@@ -266,7 +261,6 @@ static inline long IS_ERR(const void *ptr)
 #define MODULE_LICENSE(x)
 #define MODULE_ALIAS_NLS(x)
 #define EXPORT_SYMBOL(x)
-
 
 #define try_module_get(x) (TRUE)
 #define module_put(x)
@@ -356,7 +350,6 @@ static inline int test_bit(int nr, volatile const unsigned long *addr)
 
 #include <linux/list.h>
 
-
 /*********************************************
  *  linux scheduler related structures      *
 *********************************************/
@@ -376,7 +369,6 @@ struct task_struct {
 extern struct task_struct *current;
 
 /* scheduler routines */
-
 
 static inline int cond_resched() {
     return FALSE;
@@ -401,37 +393,7 @@ typedef struct mutex {
 #define mutex_lock(x)   do { KeEnterCriticalRegion(); ExAcquireFastMutexUnsafe(&((x)->lock)); } while (0)
 #define mutex_unlock(x) do { ExReleaseFastMutexUnsafe(&((x)->lock)); KeLeaveCriticalRegion(); } while (0)
 
-
-/* wait_queue */
-
-
-typedef PVOID wait_queue_t;
-
-#define WQ_FLAG_EXCLUSIVE	    0x01
-#define WQ_FLAG_AUTO_REMOVAL	0x02
-
-struct __wait_queue {
-    unsigned int    flags;
-    void *          private;
-    KEVENT          event;
-    struct list_head task_list;
-};
-
-
-#define DEFINE_WAIT(name) \
-	wait_queue_t name = (PVOID)wait_queue_create();
-
-/*
-struct wait_bit_key {
-	void *flags;
-	int bit_nr;
-};
-
-struct wait_bit_queue {
-	struct wait_bit_key key;
-	wait_queue_t wait;
-};
-*/
+/* wait queues: jbd2 initialises its heads and wakes them; nothing waits on them here */
 
 struct __wait_queue_head {
     spinlock_t lock;
@@ -439,26 +401,8 @@ struct __wait_queue_head {
 };
 typedef struct __wait_queue_head wait_queue_head_t;
 
-#define is_sync_wait(wait)  (TRUE)
-#define set_current_state(state) do {} while(0)
-#define __set_current_state(state)  do {} while(0)
-
 void init_waitqueue_head(wait_queue_head_t *q);
 int wake_up(wait_queue_head_t *queue);
-
-
-/*
- * Waitqueues which are removed from the waitqueue_head at wakeup time
- */
-struct __wait_queue * wait_queue_create();
-void wait_queue_destroy(struct __wait_queue *);
-
-void prepare_to_wait(wait_queue_head_t *q, wait_queue_t *wait, int state);
-void prepare_to_wait_exclusive(wait_queue_head_t *q, wait_queue_t *wait, int state);
-void finish_wait(wait_queue_head_t *q, wait_queue_t *wait);
-int autoremove_wake_function(wait_queue_t *wait, unsigned mode, int sync, void *key);
-int wake_bit_function(wait_queue_t *wait, unsigned mode, int sync, void *key);
-
 
 /* timer structure */
 
@@ -475,7 +419,6 @@ struct timer_list {
     int start_pid;
 #endif
 };
-
 
 typedef struct kmem_cache kmem_cache_t;
 
@@ -577,7 +520,6 @@ typedef struct page {
 #define SetPageActive(page)     set_bit(PG_active, &(page)->flags)
 #define ClearPageActive(page)   clear_bit(PG_active, &(page)->flags)
 
-
 extern unsigned long __get_free_pages(unsigned int gfp_mask, unsigned int order);
 #define __get_free_page(gfp_mask) \
 		__get_free_pages((gfp_mask),0)
@@ -604,7 +546,6 @@ extern void truncate_inode_pages(struct address_space *, loff_t);
 #define GFP_KERNEL	(__GFP_HIGH | __GFP_WAIT | __GFP_IO | __GFP_HIGHIO | __GFP_FS)
 #define GFP_NOFS    0
 #define __GFP_NOFAIL 0
-
 
 #define KM_USER0 0
 
@@ -685,7 +626,6 @@ struct buffer_head {
     LONG           b_jpin;                  /* long-term holders (group desc cache) */
 };
 
-
 /*
  * macro tricks to expand the set_buffer_foo(), clear_buffer_foo()
  * and buffer_foo() functions.
@@ -754,7 +694,6 @@ BUFFER_FNS(Virtual, virtual)
 	)
 #define page_has_buffers(page)	PagePrivate(page)
 
-
 /*
  * Declarations
  */
@@ -787,8 +726,6 @@ struct super_block *freeze_bdev(struct block_device *);
 void thaw_bdev(struct block_device *, struct super_block *);
 int fsync_super(struct super_block *);
 int fsync_no_super(struct block_device *);
-struct buffer_head *__find_get_block(struct block_device *bdev, sector_t block,
-                                                 unsigned long size);
 struct buffer_head *get_block_bh(struct block_device *bdev, sector_t block,
                                  unsigned long size, int zero);
 struct buffer_head *__getblk(struct block_device *bdev, sector_t block,
@@ -805,7 +742,6 @@ void free_buffer_head(struct buffer_head * bh);
 void unlock_buffer(struct buffer_head *bh);
 void __lock_buffer(struct buffer_head *bh);
 void ll_rw_block(int, int, struct buffer_head * bh[]);
-int sync_dirty_buffer(struct buffer_head *bh);
 int submit_bh(int, struct buffer_head *);
 void write_boundary_block(struct block_device *bdev,
                           sector_t bblock, unsigned blocksize);
@@ -825,7 +761,6 @@ extern int buffer_heads_over_limit;
  * Generic address_space_operations implementations for buffer_head-backed
  * address_spaces.
  */
-
 
 void block_invalidatepage(struct page *page, unsigned long offset);
 void page_zero_new_buffers(struct page *page, unsigned from, unsigned to);
@@ -892,12 +827,6 @@ static inline struct buffer_head *
 	return NULL;
     }
     return bh;
-}
-
-static inline struct buffer_head *
-            sb_find_get_block(struct super_block *sb, sector_t block)
-{
-    return __find_get_block(sb->s_bdev, block, sb->s_blocksize);
 }
 
 static inline void
@@ -979,7 +908,6 @@ static inline __u32 JIFFIES()
 
 /* memory routines */
 
-
 PVOID Ext2AllocatePool(
     IN POOL_TYPE PoolType,
     IN SIZE_T NumberOfBytes,
@@ -995,7 +923,6 @@ Ext2FreePool(
 void *kzalloc(size_t size, int flags);
 #define kmalloc(size, gfp) Ext2AllocatePool(NonPagedPool, size, 'JBDM')
 #define kfree(p) Ext2FreePool(p, 'JBDM')
-
 
 /* memory slab */
 
@@ -1015,7 +942,6 @@ struct kmem_cache {
     kmem_cache_cb_t         constructor;
 };
 
-
 kmem_cache_t *
 kmem_cache_create(
     const char *name,
@@ -1029,13 +955,11 @@ void* kmem_cache_alloc(kmem_cache_t *kc, int flags);
 void  kmem_cache_free(kmem_cache_t *kc, void *p);
 int   kmem_cache_destroy(kmem_cache_t *kc);
 
-
 /* block device */
 
 #define BDEVNAME_SIZE      32      /* Largest string for a blockdev identifier */
 
 /* ll_rw_block .... */
-
 
 #define RW_MASK         1
 #define RWA_MASK        2
@@ -1082,7 +1006,6 @@ int   kmem_cache_destroy(kmem_cache_t *kc);
          time_before_eq(a,c))
 
 #define smp_rmb()  do {}while(0)
-
 
 static inline __u32 do_div64 (__u64 * n, __u64 b)
 {

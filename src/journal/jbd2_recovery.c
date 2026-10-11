@@ -332,17 +332,6 @@ int jbd2_journal_skip_recovery(journal_t *journal)
 	return err;
 }
 
-u32 crc32_le(u32 crc, unsigned char const *p, size_t len)
-{
-	int i;
-	while (len--) {
-		crc ^= *p++;
-		for (i = 0; i < 8; i++)
-			crc = (crc >> 1) ^ ((crc & 1) ? CRC32_POLY_LE : 0);
-	}
-	return crc;
-}
-
 u32 crc32_be(u32 crc, unsigned char const *p, size_t len)
 {
 	int i;

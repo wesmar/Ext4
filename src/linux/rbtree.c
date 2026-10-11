@@ -297,18 +297,6 @@ struct rb_node *rb_first(struct rb_root *root)
     return n;
 }
 
-struct rb_node *rb_last(struct rb_root *root)
-{
-    struct rb_node	*n;
-
-    n = root->rb_node;
-    if (!n)
-        return NULL;
-    while (n->rb_right)
-        n = n->rb_right;
-    return n;
-}
-
 struct rb_node *rb_next(struct rb_node *node)
 {
     struct rb_node *parent;
@@ -332,50 +320,6 @@ struct rb_node *rb_next(struct rb_node *node)
         node = parent;
 
     return parent;
-}
-
-struct rb_node *rb_prev(struct rb_node *node)
-{
-    struct rb_node *parent;
-
-    /* If we have a left-hand child, go down and then right as far
-       as we can. */
-    if (node->rb_left) {
-        node = node->rb_left;
-        while (node->rb_right)
-            node=node->rb_right;
-        return node;
-    }
-
-    /* No left-hand children. Go up till we find an ancestor which
-       is a right-hand child of its parent */
-    while ((parent = rb_parent(node)) && node == parent->rb_left)
-        node = parent;
-
-    return parent;
-}
-
-void rb_replace_node(struct rb_node *victim, struct rb_node *new,
-                     struct rb_root *root)
-{
-    struct rb_node *parent = rb_parent(victim);
-
-    /* Set the surrounding nodes to point to the replacement */
-    if (parent) {
-        if (victim == parent->rb_left)
-            parent->rb_left = new;
-        else
-            parent->rb_right = new;
-    } else {
-        root->rb_node = new;
-    }
-    if (victim->rb_left)
-        rb_set_parent(victim->rb_left, new);
-    if (victim->rb_right)
-        rb_set_parent(victim->rb_right, new);
-
-    /* Copy the pointers/colour from the victim to the replacement */
-    *new = *victim;
 }
 
 void rb_insert(struct rb_root *root, struct rb_node *node,

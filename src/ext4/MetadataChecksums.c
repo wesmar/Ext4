@@ -234,15 +234,6 @@ static __le32 ext4_superblock_csum(struct super_block *sb,
 	return cpu_to_le32(csum);
 }
 
-int ext4_superblock_csum_verify(struct super_block *sb,
-				       struct ext4_super_block *es)
-{
-	if (!ext4_has_feature_metadata_csum(sb))
-		return 1;
-
-	return es->s_checksum == ext4_superblock_csum(sb, es);
-}
-
 /* the superblock as read from the disk, before a super_block is built on it */
 int ext4_superblock_csum_ok(struct ext4_super_block *es)
 {

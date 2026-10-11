@@ -28,35 +28,6 @@ Ext2ReadWriteBlockAsyncCompletionRoutine (
 #pragma alloc_text(PAGE, Ext2DiskShutDown)
 #endif
 
-PMDL
-Ext2CreateMdl (
-    IN PVOID Buffer,
-    IN ULONG Length,
-    IN LOCK_OPERATION op
-)
-{
-    NTSTATUS Status;
-    PMDL Mdl = NULL;
-
-    ASSERT (Buffer != NULL);
-    Mdl = IoAllocateMdl (Buffer, Length, FALSE, FALSE, NULL);
-    if (Mdl == NULL) {
-        Status = STATUS_INSUFFICIENT_RESOURCES;
-    } else {
-        __try {
-            /* valid for pageable and non-paged memory alike (the one caller
-               maps views of the volume stream, which are pageable) */
-            MmProbeAndLockPages(Mdl, KernelMode, op);
-            Status = STATUS_SUCCESS;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            IoFreeMdl (Mdl);
-            Mdl = NULL;
-            Status = STATUS_INVALID_USER_BUFFER;
-        }
-    }
-    return Mdl;
-}
-
 VOID
 Ext2DestroyMdl (IN PMDL Mdl)
 {

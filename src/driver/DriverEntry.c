@@ -109,25 +109,21 @@ DriverUnload (IN PDRIVER_OBJECT DriverObject)
     Ext2Global = NULL;
 }
 
-VOID
-Ext2EresourceAlignmentChecking()
-{
-    /* Verify ERESOURCE alignment in structures */
-    CL_ASSERT((FIELD_OFFSET(EXT2_GLOBAL, Resource) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_VCB, MainResource) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_VCB, PagingIoResource) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_VCB, SuperLock) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_VCB, LinkLock) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_VCB, FcbLock) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_VCB, bd.bd_bh_lock) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_VCB, sbi.s_gd_lock) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_FCBVCB, MainResource) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_FCBVCB, PagingIoResource) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_FCB, MainResource) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_FCB, PagingIoResource) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_ICB, DirResource) & 7) == 0);
-    CL_ASSERT((FIELD_OFFSET(EXT2_ICB, EntryResource) & 7) == 0);
-}
+/* an ERESOURCE must be 8-byte aligned wherever it is embedded */
+C_ASSERT((FIELD_OFFSET(EXT2_GLOBAL, Resource) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(EXT2_VCB, MainResource) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(EXT2_VCB, PagingIoResource) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(EXT2_VCB, SuperLock) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(EXT2_VCB, LinkLock) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(EXT2_VCB, FcbLock) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(EXT2_VCB, bd.bd_bh_lock) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(EXT2_VCB, sbi.s_gd_lock) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(EXT2_FCBVCB, MainResource) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(EXT2_FCBVCB, PagingIoResource) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(EXT2_FCB, MainResource) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(EXT2_FCB, PagingIoResource) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(EXT2_ICB, DirResource) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(EXT2_ICB, EntryResource) & 7) == 0);
 
 /* the on-disk superblock is overlaid on this structure: its size and the
    magic's offset are the format's */

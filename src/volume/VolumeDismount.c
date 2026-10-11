@@ -66,14 +66,16 @@ Ext2DismountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
             __leave;
         }
 
-        Ext2FlushFiles(IrpContext, Vcb, FALSE);
-        Ext2FlushVolume(IrpContext, Vcb, FALSE);
+        /* a dismount goes on whatever the flush reports: the data it
+           could not write is lost with the volume either way */
+        (void)Ext2FlushFiles(IrpContext, Vcb, FALSE);
+        (void)Ext2FlushVolume(IrpContext, Vcb, FALSE);
 
         ExReleaseResourceLite(&Vcb->MainResource);
         VcbResourceAcquired = FALSE;
 
-        Ext2PurgeVolume(Vcb, TRUE);
-        Ext2CheckDismount(IrpContext, Vcb, TRUE);
+        (void)Ext2PurgeVolume(Vcb, TRUE);
+        (void)Ext2CheckDismount(IrpContext, Vcb, TRUE);
 
         DEBUG(DL_INF, ( "Ext2Dismount: Volume dismount pending.\n"));
         Status = STATUS_SUCCESS;

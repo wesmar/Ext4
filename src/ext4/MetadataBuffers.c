@@ -226,43 +226,6 @@ errorout:
 }
 
 BOOLEAN
-Ext2LoadBlock (IN PEXT2_VCB Vcb,
-               IN ULONGLONG Index,
-               IN PVOID     Buffer )
-{
-    struct buffer_head *bh = NULL;
-    BOOLEAN             rc = 0;
-
-    __try {
-
-        bh = sb_getblk(&Vcb->sb, (sector_t)Index);
-
-        if (!bh) {
-            DEBUG(DL_ERR, ("Ext2Loadblock: can't load block %I64u\n", Index));
-            __leave;
-        }
-
-        if (!buffer_uptodate(bh)) {
-            int err = bh_submit_read(bh);
-	        if (err < 0) {
-	            DEBUG(DL_ERR, ("Ext2LoadBlock: reading failed %d\n", err));
-		        __leave;
-	        }
-        }
-
-        RtlCopyMemory(Buffer, bh->b_data, BLOCK_SIZE);
-        rc = TRUE;
-
-    } __finally {
-
-        if (bh)
-            fini_bh(&bh);
-    }
-
-    return rc; 
-}
-
-BOOLEAN
 Ext2SaveBlock ( IN PEXT2_IRP_CONTEXT    IrpContext,
                 IN PEXT2_VCB            Vcb,
                 IN ULONGLONG            Index,

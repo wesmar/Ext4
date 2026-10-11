@@ -484,22 +484,6 @@ int bh_submit_read(struct buffer_head *bh)
     return buffer_uptodate(bh) ? 0 : -EIO;
 }
 
-int sync_dirty_buffer(struct buffer_head *bh)
-{
-    int ret = 0;
-
-    ASSERT(atomic_read(&bh->b_count) <= 1);
-    lock_buffer(bh);
-    if (test_clear_buffer_dirty(bh)) {
-        get_bh(bh);
-        ret = submit_bh(WRITE, bh);
-        wait_on_buffer(bh);
-    } else {
-        unlock_buffer(bh);
-    }
-    return ret;
-}
-
 void mark_buffer_dirty(struct buffer_head *bh)
 {
     PEXT2_VCB Vcb = (PEXT2_VCB)bh->b_bdev->bd_priv;
@@ -529,17 +513,6 @@ int sync_blockdev(struct block_device *bdev)
     if (NT_SUCCESS(Status))
         Status = Ext2FlushDisk(Vcb);
     return NT_SUCCESS(Status) ? 0 : Ext2LinuxError(Status);
-}
-
-/*
- * Perform a pagecache lookup for the matching buffer.  If it's there, refre
- * it in the LRU and mark it as accessed.  If it is not present then return
- * NULL
- */
-struct buffer_head *
-__find_get_block(struct block_device *bdev, sector_t block, unsigned long size)
-{
-    return __getblk(bdev, block, size);
 }
 
 /* inode block mapping */

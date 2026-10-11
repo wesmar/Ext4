@@ -9,7 +9,7 @@
 #ifndef _EXT4_EXT4FS_VOLUME_H_
 #define _EXT4_EXT4FS_VOLUME_H_
 
-NTSTATUS
+VOID
 Ext2StartLetterService (IN PDRIVER_OBJECT DriverObject);
 
 VOID

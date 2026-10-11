@@ -104,15 +104,6 @@ __u32 ext4_used_dirs_count(struct super_block *sb,
 __u32 ext4_itable_unused_count(struct super_block *sb,
                                struct ext4_group_desc *bg);
 
-void ext4_block_bitmap_set(struct super_block *sb,
-                           struct ext4_group_desc *bg, ext4_fsblk_t blk);
-
-void ext4_inode_bitmap_set(struct super_block *sb,
-                           struct ext4_group_desc *bg, ext4_fsblk_t blk);
-
-void ext4_inode_table_set(struct super_block *sb,
-                          struct ext4_group_desc *bg, ext4_fsblk_t blk);
-
 void ext4_free_blks_set(struct super_block *sb,
                         struct ext4_group_desc *bg, __u32 count);
 
@@ -367,13 +358,6 @@ Ext2SaveInodeXattr(IN PEXT2_IRP_CONTEXT IrpContext,
 	IN PEXT2_VCB Vcb,
 	IN struct inode *Inode,
 	IN PEXT2_INODE InodeXattr);
-
-BOOLEAN
-Ext2LoadBlock (
-    IN PEXT2_VCB Vcb,
-    IN ULONGLONG dwBlk,
-    IN PVOID     Buffer
-);
 
 BOOLEAN
 Ext2SaveBlock (

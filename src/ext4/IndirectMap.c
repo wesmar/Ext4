@@ -88,7 +88,7 @@ Ext2ExpandLast(
         }
 
         /* add the new run to the block map; on failure the maps are dropped */
-        Ext2AddBlockExtent(Vcb, Mcb, Base, (*Block), *Number);
+        (void)Ext2AddBlockExtent(Vcb, Mcb, Base, (*Block), *Number);
 
     } else {
 

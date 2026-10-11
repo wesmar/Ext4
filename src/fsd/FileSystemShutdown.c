@@ -87,8 +87,9 @@ Ext2ShutDown (IN PEXT2_IRP_CONTEXT IrpContext)
                     /* the volume is free for other nodes again */
                     Ext4MmpStop(Vcb, !IsFlagOn(Vcb->Flags, VCB_DEVICE_REMOVED));
 
-                    /* send shutdown request to underlying disk */
-                    Ext2DiskShutDown(Vcb);
+                    /* the disk is told the system goes down; nothing more can
+                       be done about a disk that does not listen */
+                    (void)Ext2DiskShutDown(Vcb);
                 }
 
                 ExReleaseResourceLite(&Vcb->MainResource);

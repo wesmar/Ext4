@@ -502,14 +502,3 @@ int ext4_ext_tree_init(void *icb, handle_t *handle, struct inode *inode)
 	eh->eh_max = cpu_to_le16(ext4_ext_space_root(inode, 0));
 	return ext4_mark_inode_dirty(icb, handle, inode);
 }
-
-/*
- * called at mount time
- */
-void ext4_ext_init(struct super_block *sb)
-{
-    UNREFERENCED_PARAMETER(sb);
-	/*
-	 * possible initialization would be here
-	 */
-}

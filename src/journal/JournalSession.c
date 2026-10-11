@@ -12,7 +12,7 @@
 
 #define JNL_MAX_GROUP_BLOCKS    128     /* data blocks per descriptor group */
 
-NTSTATUS
+VOID
 Ext2JournalGlobalInit(VOID)
 {
     ULONG i;
@@ -23,7 +23,6 @@ Ext2JournalGlobalInit(VOID)
     ExInitializeNPagedLookasideList(&JnlScopeLookaside, NULL, NULL, 0,
                                     sizeof(EXT2_JSCOPE), JNL_TAG, 0);
     JnlScopeInited = TRUE;
-    return STATUS_SUCCESS;
 }
 
 VOID

@@ -68,11 +68,6 @@ void ext4_fs_xattr_iterate(struct ext4_xattr_ref *ref,
 	}
 }
 
-void ext4_fs_xattr_iterate_reset(struct ext4_xattr_ref *ref)
-{
-	ref->iter_from = NULL;
-}
-
 int ext4_fs_set_xattr(struct ext4_xattr_ref *ref, __u8 name_index,
 		      const char *name, size_t name_len, const void *data,
 		      size_t data_size, BOOL replace)
@@ -310,67 +305,4 @@ int ext4_fs_put_xattr_ref(struct ext4_xattr_ref *ref)
 	ref->inode_ref = NULL;
 	ref->fs = NULL;
 	return ret;
-}
-
-const char *ext4_extract_xattr_name(const char *full_name, size_t full_name_len,
-			      __u8 *name_index, size_t *name_len,
-			      BOOL *found)
-{
-	int i;
-	ASSERT(name_index);
-	ASSERT(found);
-
-	*found = FALSE;
-
-	if (!full_name_len) {
-		if (name_len)
-			*name_len = 0;
-
-		return NULL;
-	}
-
-	for (i = 0; prefix_tbl[i].prefix; i++) {
-		size_t prefix_len = strlen(prefix_tbl[i].prefix);
-		if (full_name_len >= prefix_len &&
-		    !memcmp(full_name, prefix_tbl[i].prefix, prefix_len)) {
-			BOOL require_name =
-				prefix_tbl[i].prefix[prefix_len - 1] == '.';
-			*name_index = prefix_tbl[i].name_index;
-			if (name_len)
-				*name_len = full_name_len - prefix_len;
-
-			if (!(full_name_len - prefix_len) && require_name)
-				return NULL;
-
-			*found = TRUE;
-			if (require_name)
-				return full_name + prefix_len;
-
-			return NULL;
-		}
-	}
-	if (name_len)
-		*name_len = 0;
-
-	return NULL;
-}
-
-const char *ext4_get_xattr_name_prefix(__u8 name_index,
-				       size_t *ret_prefix_len)
-{
-	int i;
-
-	for (i = 0; prefix_tbl[i].prefix; i++) {
-		size_t prefix_len = strlen(prefix_tbl[i].prefix);
-		if (prefix_tbl[i].name_index == name_index) {
-			if (ret_prefix_len)
-				*ret_prefix_len = prefix_len;
-
-			return prefix_tbl[i].prefix;
-		}
-	}
-	if (ret_prefix_len)
-		*ret_prefix_len = 0;
-
-	return NULL;
 }

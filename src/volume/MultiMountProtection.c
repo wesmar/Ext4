@@ -223,7 +223,7 @@ static VOID MmpThread(PVOID Context)
        away, nor when another node holds the volume) */
     if (!M->Lost && M->Release && !IsFlagOn(M->Vcb->Flags, VCB_DEVICE_REMOVED)) {
         M->Block->mmp_seq = cpu_to_le32(EXT4_MMP_SEQ_CLEAN);
-        MmpWrite(M);
+        (void)MmpWrite(M);    /* best effort: the volume is let go either way */
     }
     if (Check) {
         Ext2FreePool(Check, MMP_TAG);
@@ -334,7 +334,7 @@ Ext4MmpStart(IN PEXT2_VCB Vcb)
                clean, not looking like a crash of ours */
             if (NT_SUCCESS(MmpRead(M, M->Block)) && le32_to_cpu(M->Block->mmp_seq) == Seq) {
                 M->Block->mmp_seq = cpu_to_le32(EXT4_MMP_SEQ_CLEAN);
-                MmpWrite(M);
+                (void)MmpWrite(M);    /* best effort: the volume is let go either way */
             }
             goto failed;
         }

@@ -31,7 +31,7 @@ struct buffer_head;
 
 struct journal_s;
 
-NTSTATUS
+VOID
 Ext2JournalGlobalInit(VOID);
 
 VOID

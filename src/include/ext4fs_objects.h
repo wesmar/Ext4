@@ -107,7 +107,6 @@ typedef struct _EXT2_VCB {
     /* Dirty Mcbs of modifications for volume stream */
     EXT4_RUN_MAP                   Extents;
 
-
     /* Share Access for the file object */
     SHARE_ACCESS                ShareAccess;
 
@@ -231,7 +230,6 @@ typedef struct _EXT2_VCB {
 #define VCB_MOUNTED             0x00000004
 #define VCB_DISMOUNT_PENDING    0x00000008
 #define VCB_NEW_VPB             0x00000010
-#define VCB_BEING_CLOSED        0x00000020
 #define VCB_USER_IDS            0x00000040  /* uid/gid specified by user */
 #define VCB_USER_EIDS           0x00000080  /* euid/egid specified by user */
 #define VCB_GD_LOADED           0x00000100  /* group desc loaded */
@@ -244,14 +242,11 @@ typedef struct _EXT2_VCB {
 #define VCB_DEVICE_REMOVED      0x00008000
 #define VCB_WRITE_STOPPED       0x00010000  /* stopped writing on an error: read-only until dismount */
 #define VCB_JOURNAL_RECOVER     0x00080000
-#define VCB_ARRIVAL_NOTIFIED    0x00800000
 #define VCB_RO_COMPAT_READ_ONLY 0x01000000
 #define VCB_READ_ONLY           0x08000000
 #define VCB_WRITE_PROTECTED     0x10000000
 #define VCB_FLOPPY_DISK         0x20000000
-#define VCB_REMOVAL_PREVENTED   0x40000000
 #define VCB_REMOVABLE_MEDIA     0x80000000
-
 
 #define IsVcbInited(Vcb)   (IsFlagOn((Vcb)->Flags, VCB_INITIALIZED))
 #define IsMounted(Vcb)     (IsFlagOn((Vcb)->Flags, VCB_MOUNTED))
@@ -259,7 +254,6 @@ typedef struct _EXT2_VCB {
 #define IsVcbReadOnly(Vcb) (IsFlagOn((Vcb)->Flags, VCB_READ_ONLY) ||    \
                             IsFlagOn((Vcb)->Flags, VCB_RO_COMPAT_READ_ONLY) ||    \
                             IsFlagOn((Vcb)->Flags, VCB_WRITE_PROTECTED))
-
 
 #define IsExt3ForceWrite()   (IsFlagOn(Ext2Global->Flags, EXT3_FORCE_WRITING))
 #define IsVcbForceWrite(Vcb) (IsFlagOn((Vcb)->Flags, VCB_FORCE_WRITING))
@@ -320,7 +314,6 @@ typedef struct _EXT2_FCB {
 
 /* Flags for EXT2_FCB */
 
-#define FCB_FROM_POOL               0x00000001
 #define FCB_PAGE_FILE               0x00000002
 #define FCB_FILE_MODIFIED           0x00000020
 
@@ -449,7 +442,6 @@ struct _EXT2_MCB {
 };
 
 /* Flags for MCB */
-#define MCB_FROM_POOL               0x00000001
 #define MCB_VCB_LINK                0x00000002
 #define MCB_ENTRY_TREE              0x00000004
 #define MCB_FILE_DELETED            0x00000008
@@ -482,12 +474,10 @@ struct _EXT2_MCB {
 #define MCB_TYPE_SPECIAL            0x40000000  /* unresolved symlink + device node */
 #define MCB_TYPE_SYMLINK            0x80000000
 
-#define IsMcbUsed(Mcb)          ((Mcb)->Refercount > 0)
 #define IsMcbSymLink(Mcb)       IsFlagOn((Mcb)->Flags, MCB_TYPE_SYMLINK)
 #define IsZoneInited(Mcb)       IsFlagOn((Mcb)->Icb->Flags, ICB_ZONE_INITED)
 #define IsMcbSpecialFile(Mcb)   IsFlagOn((Mcb)->Flags, MCB_TYPE_SPECIAL)
 #define IsMcbRoot(Mcb)          ((Mcb)->Inode->i_ino == EXT2_ROOT_INO)
-#define IsMcbReadonly(Mcb)      IsFlagOn((Mcb)->FileAttr, FILE_ATTRIBUTE_READONLY)
 #define IsMcbDirectory(Mcb)     IsFlagOn((Mcb)->FileAttr, FILE_ATTRIBUTE_DIRECTORY)
 #define IsFileDeleted(Mcb)      IsFlagOn((Mcb)->Flags, MCB_FILE_DELETED)
 
@@ -576,7 +566,6 @@ typedef struct _EXT2_CCB {
 
 /* Flags for CCB */
 
-#define CCB_FROM_POOL               0x00000001
 #define CCB_VOLUME_DASD_PURGE       0x00000002
 #define CCB_LAST_WRITE_UPDATED      0x00000004
 #define CCB_OPEN_REPARSE_POINT      0x00000008
@@ -634,19 +623,11 @@ typedef struct ext2_icb {
 
 } EXT2_IRP_CONTEXT, *PEXT2_IRP_CONTEXT;
 
-
-#define IRP_CONTEXT_FLAG_FROM_POOL       (0x00000001)
 #define IRP_CONTEXT_FLAG_WAIT            (0x00000002)
 #define IRP_CONTEXT_FLAG_WRITE_THROUGH   (0x00000004)
-#define IRP_CONTEXT_FLAG_FLOPPY          (0x00000008)
-#define IRP_CONTEXT_FLAG_DISABLE_POPUPS  (0x00000020)
 #define IRP_CONTEXT_FLAG_DEFERRED        (0x00000040)
 #define IRP_CONTEXT_FLAG_VERIFY_READ     (0x00000080)
-#define IRP_CONTEXT_STACK_IO_CONTEXT     (0x00000100)
 #define IRP_CONTEXT_FLAG_REQUEUED        (0x00000200)
-#define IRP_CONTEXT_FLAG_USER_IO         (0x00000400)
-#define IRP_CONTEXT_FLAG_FILE_BUSY       (0x00001000)
-
 
 #define Ext2CanIWait() (!IrpContext || IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT))
 
@@ -662,7 +643,6 @@ typedef struct _FCB_LIST_ENTRY {
     PEXT2_FCB    Fcb;
     LIST_ENTRY   Next;
 } FCB_LIST_ENTRY, *PFCB_LIST_ENTRY;
-
 
 /* Block Description List */
 typedef struct _EXT2_EXTENT {

@@ -16,24 +16,9 @@
 # define EXT2_DEBUG   0
 #endif
 
-
 #include "version.h"
 
-
 /* WDK DEFINITIONS ******************************************************/
-
-
-/* COMPILER SWITCH / OPTIONS ********************************************/
-
-/* Ext2Fsd build options */
-
-/* To support driver dynamics unload */
-
-#define EXT2_UNLOAD                     TRUE
-
-/* To support inode size expansion (fallocate) */
-
-#define EXT2_PRE_ALLOCATION_SUPPORT     TRUE
 
 /* Constants */
 
@@ -41,11 +26,7 @@
 #define EXT2_LINKLEN_IN_INODE           (60)
 #define EXT2_BLOCK_TYPES                (0x04)
 
-#define MAXIMUM_RECORD_LENGTH           (0x10000)
-
-#define SECTOR_BITS                     (Vcb->SectorBits)
 #define SECTOR_SIZE                     (Vcb->DiskGeometry.BytesPerSector)
-#define DEFAULT_SECTOR_SIZE             (0x200)
 
 #define SUPER_BLOCK_OFFSET              (0x400)
 #define SUPER_BLOCK_SIZE                (0x400)
@@ -74,9 +55,6 @@ typedef struct ext3_dir_entry EXT2_DIR_ENTRY, *PEXT2_DIR_ENTRY;
 typedef struct ext3_dir_entry_2 EXT2_DIR_ENTRY2, *PEXT2_DIR_ENTRY2;
 
 #define CEILING_ALIGNED(T, A, B) (((A) + (B) - 1) & (~((T)(B) - 1)))
-#define COCKLOFT_ALIGNED(T, A, B) (((A) + (B)) & (~((T)(B) - 1)))
-
-
 
 /*
  * Compile-time assertion: (Lustre version)
@@ -93,8 +71,6 @@ typedef struct ext3_dir_entry_2 EXT2_DIR_ENTRY2, *PEXT2_DIR_ENTRY2;
  *       value  after  conversion...
  *
  */
-
-#define CL_ASSERT(cond) do {switch('x') {case (cond): case 0: break;}} while (0)
 
 /* File System Releated *************************************************/
 
@@ -129,7 +105,6 @@ typedef struct ext3_dir_entry_2 EXT2_DIR_ENTRY2, *PEXT2_DIR_ENTRY2;
 #define IOCTL_PREPARE_TO_UNLOAD \
 CTL_CODE(FILE_DEVICE_UNKNOWN, 2048, METHOD_NEITHER, FILE_WRITE_ACCESS)
 
-
 #include "common.h"
 
 typedef IO_STACK_LOCATION EXTENDED_IO_STACK_LOCATION, *PEXTENDED_IO_STACK_LOCATION;
@@ -159,7 +134,6 @@ typedef IO_STACK_LOCATION EXTENDED_IO_STACK_LOCATION, *PEXTENDED_IO_STACK_LOCATI
 #ifndef max
 #define max(a,b) (((a) > (b)) ? (a) : (b))
 #endif
-
 
 /* Flag words are ULONG bit masks shared between threads and changed
    atomically. The Interlocked primitives are declared on LONG; the bit
@@ -199,11 +173,8 @@ typedef IO_STACK_LOCATION EXTENDED_IO_STACK_LOCATION, *PEXTENDED_IO_STACK_LOCATI
 #define EXT2_DATA_MAGIC         'BD2E'
 #define EXT2_INAME_MAGIC        'NI2E'
 #define EXT2_FNAME_MAGIC        'NF2E'
-#define EXT2_VNAME_MAGIC        'NV2E'
-#define EXT2_DENTRY_MAGIC       'ED2E'
 #define EXT2_DIRSP_MAGIC        'SD2E'
 #define EXT2_SB_MAGIC           'BS2E'
-#define EXT2_GD_MAGIC           'DG2E'
 #define EXT2_INODE_MAGIC        'EI2E'
 #define EXT2_ICB_MAGIC          'BI2E'
 #define EXT2_FLIST_MAGIC        'LF2E'
@@ -222,15 +193,12 @@ typedef IO_STACK_LOCATION EXTENDED_IO_STACK_LOCATION, *PEXTENDED_IO_STACK_LOCATI
 
 #define Ext2BugCheck(A,B,C,D) { KeBugCheckEx(EXT2_FILE_SYSTEM, A | __LINE__, B, C, D ); }
 
-
 /* Ext2 file system definions *******************************************/
 
 /* The second extended file system magic number */
 
 #define EXT2_SUPER_MAGIC        0xEF53
 
-#define EXT2_MIN_BLOCK          1024
-#define EXT2_MIN_FRAG           1024
 #define EXT2_MAX_USER_BLKSIZE   65536
 /* Inode flags (Linux uses octad number, but why ? strange!!!) */
 
@@ -277,24 +245,13 @@ typedef IO_STACK_LOCATION EXTENDED_IO_STACK_LOCATION, *PEXTENDED_IO_STACK_LOCATI
 #define S_IXOTH  0x001              /* 0 0001 */
 
 #define S_IRWXUGO   (S_IRWXU|S_IRWXG|S_IRWXO)
-#define S_IALLUGO   (S_ISUID|S_ISGID|S_ISVTX|S_IRWXUGO)
-#define S_IRUGO     (S_IRUSR|S_IRGRP|S_IROTH)
-#define S_IWUGO     (S_IWUSR|S_IWGRP|S_IWOTH)
-#define S_IXUGO     (S_IXUSR|S_IXGRP|S_IXOTH)
 #define S_IFATTR    (S_IRWNU|S_IRWNG|S_IRWNO)
-
-#define S_ISREADABLE(m)    (((m) & S_IPERMISSION_MASK) == (S_IRUSR | S_IRGRP | S_IROTH))
-#define S_ISWRITABLE(m)    (((m) & S_IPERMISSION_MASK) == (S_IWUSR | S_IWGRP | S_IWOTH))
-
-#define Ext2SetReadable(m) do {(m) = (m) | (S_IRUSR | S_IRGRP | S_IROTH);} while(0)
-#define Ext2SetWritable(m) do {(m) = (m) | (S_IWUSR | S_IWGRP | S_IWOTH);} while(0)
 
 #define Ext2SetOwnerWritable(m) do {(m) |= S_IWUSR;} while(0)
 #define Ext2SetOwnerReadOnly(m) do {(m) &= ~S_IWUSR;} while(0)
 
 #define Ext2IsOwnerWritable(m)  (((m) & S_IWUSR) == S_IWUSR)
 #define Ext2IsOwnerReadable(m)  (((m) & S_IRUSR) == S_IRUSR)
-#define Ext2IsOwnerReadOnly(m)  (!(Ext2IsOwnerWritable(m)) && Ext2IsOwnerReadable(m))
 
 #define Ext2IsGroupWritable(m)  (((m) & S_IWGRP) == S_IWGRP)
 #define Ext2IsGroupReadable(m)  (((m) & S_IRGRP) == S_IRGRP)
@@ -304,13 +261,9 @@ typedef IO_STACK_LOCATION EXTENDED_IO_STACK_LOCATION, *PEXTENDED_IO_STACK_LOCATI
 #define Ext2IsOtherReadable(m)  (((m) & S_IROTH) == S_IROTH)
 #define Ext2IsOtherReadOnly(m)  (!(Ext2IsOtherWritable(m)) && Ext2IsOtherReadable(m))
 
-#define Ext2SetReadOnly(m) do {(m) &= ~(S_IWUSR | S_IWGRP | S_IWOTH);} while(0)
-
-
 #define Ext2FileCanRead         (0x1)
 #define Ext2FileCanWrite        (0x2)
 #define Ext2FileCanExecute      (0x4)
-
 
 /*
  * We need 8-bytes aligned for all the sturctures

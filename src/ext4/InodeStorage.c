@@ -383,46 +383,6 @@ errorout:
  *
  * Note, this does *not* consider any metadata overhead for vfs i_blocks.
  */
-static loff_t ext4_max_size(int blkbits, int has_huge_files)
-{
-    loff_t res;
-    loff_t upper_limit = MAX_LFS_FILESIZE;
-
-    /* small i_blocks in vfs inode? */
-    if (!has_huge_files || sizeof(blkcnt_t) < sizeof(u64)) {
-        /*
-         * CONFIG_LBD is not enabled implies the inode
-         * i_block represent total blocks in 512 bytes
-         * 32 == size of vfs inode i_blocks * 8
-         */
-        upper_limit = (1LL << 32) - 1;
-
-        /* total blocks in file system block size */
-        upper_limit >>= (blkbits - 9);
-        upper_limit <<= blkbits;
-    }
-
-    /* 32-bit extent-start container, ee_block */
-    res = 1LL << 32;
-    res <<= blkbits;
-    res -= 1;
-
-    /* Sanity check against vm- & vfs- imposed limits */
-    if (res > upper_limit)
-        res = upper_limit;
-
-    return res;
-}
-
-/*
- * Maximal extent format file size.
- * Resulting logical blkno at s_maxbytes must fit in our on-disk
- * extent format containers, within a sector_t, and within i_blocks
- * in the vfs.  ext4 inode has 48 bits of i_block in fsblock units,
- * so that won't be a limiting factor.
- *
- * Note, this does *not* consider any metadata overhead for vfs i_blocks.
- */
 loff_t ext3_max_size(int blkbits, int has_huge_files)
 {
     loff_t res;
