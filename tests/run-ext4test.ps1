@@ -32,7 +32,8 @@ param(
     [switch]$Interop,
     [switch]$Luks,                  # LUKS1/LUKS2 through ext4ctl, checked from Linux (luks-image.sh builds the disk)
     [switch]$Features,              # casefold (SteamOS cards) and chattr +i/+a, on a disk features-image.sh builds afresh
-    [switch]$NoFsck
+    [switch]$NoFsck,
+    [switch]$KvcLoader            # load an unsigned test image through the existing guest kvc.exe
 )
 $ErrorActionPreference = 'Stop'
 $Letters = @($Letters | ForEach-Object { $_ -split '[,\s]+' } | Where-Object { $_ })
@@ -98,7 +99,15 @@ function Stop-GuestDriver {
         throw "driver did not stop: $r ($($step -join '; '))"
     }
 }
-function Start-GuestDriver { [void](Remote "sc start $Svc >nul"); $t = Wait-GuestDrives $true 30; if ($t -lt 0) { throw "letters did not come back after sc start (have: $(Guest-Drives))" }; return $t }
+function Start-GuestDriver {
+    $command = if ($KvcLoader) { "kvc.exe driver load $Svc" } else { "sc start $Svc" }
+    & ssh @sshOpt $target $command | ForEach-Object { Write-Host "   $_" }
+    $rc = $LASTEXITCODE
+    if ($rc -ne 0) { throw "driver loader failed (exit $rc): $command" }
+    $t = Wait-GuestDrives $true 30
+    if ($t -lt 0) { throw "letters did not come back after $command (have: $(Guest-Drives))" }
+    return $t
+}
 function Detach-Disk { Remove-VMHardDiskDrive -VMName $Vm -ControllerType SCSI -ControllerNumber 0 -ControllerLocation $TestEnv.ScsiSlot }
 function Attach-Disk { Add-VMHardDiskDrive -VMName $Vm -ControllerType SCSI -ControllerNumber 0 -ControllerLocation $TestEnv.ScsiSlot -Path $Vhd }
 
@@ -217,7 +226,7 @@ if ($Stress) {
 # ---- 3. system tests
 if ($System) {
     "-- service stop/start in the guest"
-    $r = Guest-PS 'ext4sys.ps1' "-Letters $($Letters -join ',') -Service $Svc"
+    $r = Guest-PS 'ext4sys.ps1' "-Letters $($Letters -join ',') -Service $Svc $(if ($KvcLoader) { '-KvcLoader' })"
     $summary['service'] = "$($r.Rc) failed"
 
     "-- hot unplug with the driver running and a handle open"

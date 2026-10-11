@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # ext4sys.ps1 - driver life-cycle checks, run on the test machine by run-ext4test.ps1.
 # Drive letters must be there while the driver runs, `sc stop` must complete promptly
-# even with a shell-style directory handle open, and `sc start` must bring the letters
-# back without help from user mode.
-param([string[]]$Letters = @('D', 'E'), [string]$Service = 'ext4')
+# even with a shell-style directory handle open. Start through SCM for signed
+# images, or the existing kvc.exe loader when -KvcLoader selects an unsigned image.
+param([string[]]$Letters = @('D', 'E'), [string]$Service = 'ext4', [switch]$KvcLoader)
 $ErrorActionPreference = 'Continue'
 if ($Letters.Count -eq 1 -and $Letters[0] -match ',') { $Letters = $Letters[0] -split ',' }
 $fail = 0
@@ -45,6 +45,15 @@ function Wait-Stopped([int]$sec = 10) {
     }
 }
 function Wait-Running([int]$sec) { [void](Poll-Status 'Running' ($sec * 1000)) }
+function Start-Driver {
+    if ($KvcLoader) { & kvc.exe driver load $Service | Out-Host }
+    else { sc.exe start $Service | Out-Host }
+    if ($LASTEXITCODE -ne 0) {
+        "  FAIL loader exited with $LASTEXITCODE"
+        "== SYS RESULT: $($script:fail + 1) failed"
+        exit ($script:fail + 1)
+    }
+}
 
 "-- service and drive letters"
 $s.Refresh(); Check "service running" ($s.Status -eq 'Running') "($($s.Status))"
@@ -71,7 +80,7 @@ Check "stop took no sleep-sized pause" (($sw.ElapsedMilliseconds - $closed) -le 
 
 "-- start"
 $sw.Restart()
-sc.exe start $Service | Out-Null
+Start-Driver
 Wait-Running 30
 $back = WaitDrives $true 30
 Check "letters back after start" ($back -ge 0) "($back ms)"
@@ -82,7 +91,7 @@ Check "file written before stop survived" (([IO.File]::ReadAllText("$($Letters[0
 Start-Sleep 2
 $sw.Restart(); sc.exe stop $Service | Out-Null; Wait-Stopped; $t1 = $sw.ElapsedMilliseconds
 Check "idle stop under 3 s" ($t1 -lt 3000) "($t1 ms)"
-$sw.Restart(); sc.exe start $Service | Out-Null; Wait-Running 30; $back = WaitDrives $true 30
+$sw.Restart(); Start-Driver; Wait-Running 30; $back = WaitDrives $true 30
 Check "letters back again" ($back -ge 0) "($back ms)"
 "-- repeated stop/start: sc stop and net stop, with and without an open handle"
 $worst = 0
@@ -99,7 +108,7 @@ for ($i = 1; $i -le 6; $i++) {
     $s.Refresh(); $t1 = $sw.ElapsedMilliseconds; if ($t1 -gt $worst) { $worst = $t1 }
     if ($useNet) { $p.WaitForExit(30000) | Out-Null }
     $stopped = ($s.Status -eq 'Stopped')
-    $sw.Restart(); sc.exe start $Service | Out-Null
+    $sw.Restart(); Start-Driver
     Wait-Running 30
     $s.Refresh(); $back = WaitDrives $true 30
     Check "cycle $i ($(if ($useNet) { 'net stop' } else { 'sc stop' })$(if ($hold) { ', handle open' })): stopped in $t1 ms, letters back in $back ms" ($stopped -and $back -ge 0 -and $t1 -lt 3500)

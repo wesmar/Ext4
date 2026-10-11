@@ -275,6 +275,7 @@
     <ClInclude Include="include\version.h" />
     <ClInclude Include="journal\jbd2_internal.h" />
     <ClInclude Include="journal\JournalInternal.h" />
+    <ClInclude Include="nls\CharsetMap.h" />
     <ClInclude Include="linux\linux_internal.h" />
     <ClInclude Include="include\ext4crypt.h" />
     <ClInclude Include="include\ext4fs_unicode.h" />

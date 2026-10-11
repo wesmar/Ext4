@@ -653,6 +653,9 @@
     <ClInclude Include="journal\JournalInternal.h">
       <Filter>journal</Filter>
     </ClInclude>
+    <ClInclude Include="nls\CharsetMap.h">
+      <Filter>nls</Filter>
+    </ClInclude>
     <ClInclude Include="linux\linux_internal.h">
       <Filter>linux</Filter>
     </ClInclude>

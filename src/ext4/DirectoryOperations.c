@@ -103,8 +103,11 @@ struct dentry *Ext2BuildEntry(PEXT2_VCB Vcb, PEXT2_MCB Dcb, PUNICODE_STRING File
     } __finally {
 
         if (!NT_SUCCESS(Status)) {
-            if (de)
+            if (de) {
                 Ext2FreeEntry(de);
+                /* The caller owns only a successfully built entry. */
+                de = NULL;
+            }
         }
     }
 

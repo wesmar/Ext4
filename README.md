@@ -22,7 +22,7 @@
 </div>
 > **Engineering status**
 >
-> `ext4.sys` provides native ext2/ext3/ext4 read/write access on bare-metal Windows systems and in virtual machines. The current release passed the full Windows/Linux matrix, dedicated ext2/ext3 and 16 TiB boundary tests, and production-code regression models. Validation also includes Driver Verifier and repeated unload testing. Metadata checksums are verified on read; corruption found on disk is recorded in the superblock and handled as the volume's `errors=` setting asks. Microsoft production signing is pending; loading uses KVC or DrvLoader on systems you administer. Keep a backup of important data.
+> `ext4.sys` provides native ext2/ext3/ext4 read/write access on bare-metal Windows systems and in virtual machines. Validation covers the full Windows/Linux matrix, dedicated ext2/ext3 checks, earlier 16 TiB boundary campaigns and production-code regression models. It also includes Driver Verifier and repeated unload testing. Metadata checksums are verified on read; corruption found on disk is recorded in the superblock and handled as the volume's `errors=` setting asks. Microsoft production signing is pending; loading uses KVC or DrvLoader on systems you administer. Keep a backup of important data.
 
 > **Repository policy:** the release archive is not password-protected. Git tracks the active source, project files, tests and documentation. Build outputs, symbols, local tooling, virtual disks and test logs stay outside the repository. Test passphrase defaults in two PowerShell scripts are represented by `<TEST_LUKS_PASSPHRASE>`.
 
@@ -99,13 +99,13 @@ Design rules the code follows:
 
 ## Code Lineage and Redesign
 
-I replaced or substantially rewrote the active Windows paths for writes, allocation, journaling, mount and unload, security checks and hot-path lookup. I organised the modules by responsibility and verified their behaviour with production-code models and Windows-to-Linux media checks. Mathematical precision guides this work: explicit invariants, bounded state transitions, clear ownership and measured hot paths.
+I developed the current Windows architecture around explicit object lifetimes, per-volume transaction ownership and bounded error handling. The active write, allocation, journal, mount, unload and security paths have been replaced or substantially rewritten, with modules organised by responsibility. I verify their behaviour with production-code models and Windows-to-Linux media checks. Mathematical precision guides this work: explicit invariants, bounded state transitions, clear ownership and measured hot paths.
 
-The table below records the origins of retained code, data structures and algorithms. Their attribution and licence notices remain with the source. The combined work is distributed under the GNU General Public License version 2 (`GPL-2.0-only`).
+The table below records retained components and their technical lineage. Attribution and licence notices remain with the source. I am continuing the rewrite toward self-contained, independently authored modules, with MIT licensing as a long-term goal for an independent implementation. The current combined driver remains `GPL-2.0-only`.
 
 | Source project | Attribution | Retained components and lineage |
 |---|---|---|
-| **Ext2Fsd** | Matt Wu, with KaHo Ng | Windows FSD and ext2/ext3 lineage, including the FCB/MCB model |
+| **Ext2Fsd** | Matt Wu, with KaHo Ng | FCB/MCB model and selected compatibility routines from the original Windows FSD; ext2/ext3 lineage |
 | **Ext4Fsd** | Bo Branten | ext4 structures, checksum and jbd2 lineage, Visual Studio project ancestry |
 | **Linux kernel** — `fs/ext4`, `fs/jbd2`, `lib/rbtree.c`, `fs/nls` | Linus Torvalds, Stephen Tweedie, Red Hat, Cluster File Systems and the ext4 / jbd2 developers | Extent-tree, htree, checksum and journal algorithms; character set tables |
 | **lwext4** | Grzegorz Kostka, KaHo Ng | The original extended-attribute implementation; its BSD notice remains in `ext4_xattr.h` |
@@ -117,6 +117,7 @@ What changed on the way to `ext4.sys`, in short:
 - **Stopping and unloading.** `sc stop` drains mounted volumes and outstanding references before releasing the driver.
 - **Physical addressing.** Allocation, block I/O, extent caches and metadata tracking carry wide physical addresses. A driver-owned red-black run map replaces the Windows mapping interface that discarded the upper physical-block bits. Legacy on-disk pointers retain their specified width.
 - **Journal ownership.** The journal engine belongs to the volume control block. Stopping its session and freeing the engine are separate steps, so a late stream close cannot enter a freed journal during teardown.
+- **Character mappings.** Legacy NLS data uses constant and ascending runs, dense slices and explicit exceptions. Both mapping directions and case tables retain their original values; the compact lookup and generator are shared infrastructure. Conversion failure releases a directory entry once and returns no dangling pointer.
 - **Drive letters** for partitions the mount manager treats as hidden (MBR type `0x83`, GPT "Linux filesystem").
 - **Dozens of fixes** found by the test suite: data exposure past a write into preallocated space, extents created one block at a time, a block allocator that started every file in group 0, registry buffer overruns, uninitialised return values, unload hangs, reapers polling on timers, extended attribute blocks written without their checksum, a Windows EA write that erased the Linux ACLs of the file, a folder's read-only attribute - Explorer and copy tools carry it along - taken for a permission that kept every new name out of the copied folder, a Linux symlink whose `/` separators were turned into `\` in the inode itself - written back to the disk the next time the link changed - while Windows followed it, reparse requests on a volume handle that read the volume as a file, a directory's blocks freed by its removal under a lookup still reading them - recorded as corruption on a sound volume - a full path kept per name, stale under a renamed directory and freed under its readers (a folder renamed while Explorer watched it), the directory attribute accepted for a file, which was then read as one, `HidingPrefix` / `HidingSuffix` settings compared with a volume's instead of given to it - so never in force - xattr blocks leaked on delete, lazily initialised block bitmaps that never reached the disk, and reference leaks - a refused open, a close cut short on a demoted symlink, a delete taken over by the wrong handle - that kept `sc stop` pending for ever, a drive letter asked for through `IOCTL_APP_MOUNT_POINT` written over the `G` of `\DosDevices\Global` - for `Q:` the link made was `\DosDevices\Qlobal\Z:` - and requests sent to the disk cancelled after 30 seconds, a write that completed all the same reported as failed.
 - **Request handlers in steps.** Create, read, write, cleanup, set and query information, directory queries, rename and link, volume I/O and extended attributes run as short steps over explicit request state, instead of single functions several hundred lines long. The split exposed faults those functions had hidden: dropped errors (an inode save, a file expansion, a directory index walk, a cache flush), a 30-second I/O timeout that freed its context under requests still in flight, dirty volume ranges forgotten while an asynchronous write was still in flight, a volume label written into the superblock without its lock, directory listings that skipped the volume's last inode, and extended attributes changed on immutable files.
@@ -265,7 +266,10 @@ The design reduces work per I/O and contention between independent files.
 | Bounded cache reaping, deadlines and release notifications | Reclamation follows pressure and actual teardown progress |
 | Directory name sets alongside htree lookup | Avoids a full directory scan for each case-insensitive create |
 | Hardware CRC32C selected by CPUID and a check vector | Accelerates metadata checksums with a table-based fallback |
+| Immutable, compact legacy character mappings | Bounded O(1) lookup with affine defaults and indexed exceptions; fewer stored values and no writable mapping tables |
 | Journal-aware flush ordering | Preserves durability while avoiding redundant completed device flushes |
+
+Legacy code-page maps use 32-input slices. CJK reverse mappings return both encoded bytes through one 16-bit lookup. The two directions are preserved independently, including duplicate and one-way mappings. Measurements show a few additional milliseconds for several million non-ASCII CJK conversions in exchange for a smaller driver image. ASCII fast paths remain direct; UTF-8 is unchanged. Mapping data is read-only and resident, with no lazy allocation or paging introduced.
 
 Lock stripes use four stripes per logical processor across all processor groups, rounded up to a power of two and capped by the volume's group count. Stripes occupy separate cache lines. Workloads concentrated on one directory or block group remain a separate contention case.
 
@@ -417,9 +421,11 @@ The driver and control tool are split by responsibility. LUKS header formats, ke
 
 ## Testing and Validation
 
-The current Release and Debug builds are warning-free under `/W4 /WX`. With Driver Verifier enabled, the current source passed the full Windows/Linux matrix: **20 sections**, including **480 shrink/regrow cases** across plain and LUKS2 volumes, whole folder trees copied by robocopy, xcopy and .NET, transaction-bound free/reuse checks, LUKS1/LUKS2, read-only LVM and Linux feature interoperability. It also passed the dedicated ext2/ext3 fixture, the planted-corruption fixture and the **219 malformed-media fixtures** of the e2fsprogs corpus, with no crash, hang or harness error; rejected mounts and failed operations remain distinct outcomes. Fixture preparation, host models and targeted regressions run separately.
+The current Release and Debug builds are warning-free under `/W4 /WX`. With Driver Verifier enabled, the final NLS-compacted Release image passed the full Windows/Linux matrix: **20 sections**, including **480 shrink/regrow cases** across plain and LUKS2 volumes, whole folder trees copied by robocopy, xcopy and .NET, transaction-bound free/reuse checks, LUKS1/LUKS2, read-only LVM and Linux feature interoperability. The pre-compaction 11 October build also passed the dedicated ext2/ext3 fixture, the planted-corruption fixture and the **219 malformed-media fixtures** of the e2fsprogs corpus, with no crash, hang or harness error. Those campaigns were not repeated for the representation change; rejected mounts and failed operations remain distinct outcomes. Fixture preparation, host models and targeted regressions run separately.
 
 Earlier campaigns on the previous release covered the fresh 16 TiB boundary fixtures, ENOSPC with and without hole reuse, scaling through **1/2/4/8 threads in one process** and **10 loaded stop/start cycles**.
+
+The compact NLS implementation passed **25,248,431 equivalence checks per architecture** on x86 and x64. These cover 37 converters, the complete BMP encode range, all byte-pair decode inputs, error writes and every lower/upper entry. On Windows, all 37 code pages passed create/read/list/rename/delete with **1189 filenames**, plus refusal of unrepresentable names. This last check exposed a directory entry returned after being freed on conversion failure; the fix and both allocation-failure paths pass the production-code model.
 
 Earlier lifecycle campaigns covered **80 consecutive stop/start cycles**, **20 more cycles with concurrent open/read/close workers**, and **10 concurrent-access cycles with the larger-than-16-TiB fixture attached**. Written proof data survived, drive letters returned and no new bugcheck occurred in these runs. **Three clean Windows restarts** with mounted test volumes also preserved their proof data. Verifier remained enabled for these correctness checks.
 
@@ -449,6 +455,7 @@ I develop this driver as a solo project. The validation combines several hours o
 - **Paths built, never kept:** a name holds only its own component; a path is built from the tree when asked, under a volume lock that every change of a parent or a name takes exclusively. An open file's path follows a renamed directory above it, a watched directory renamed under its watcher stays safe, and a removal is reported with the path the name had.
 - **Links read, never rewritten:** a Linux symlink followed from Windows and then written back (its own times changed) keeps the text Linux gave it; `readlink` checks it after the run. A symlink in a `chattr +i`/`+a` directory stays, as a file does.
 - **Tester correctness:** child exit codes and completion summaries are both required. An unhandled exception counts as failure; an empty or interrupted run is rejected.
+- **Character-map equivalence:** every BMP encode, every two-byte decode input, error results, output bytes and all lower/upper entries match the original converters. Allocation and conversion failures in the production dentry builder return no freed entry.
 
 ```mermaid
 flowchart LR
@@ -460,6 +467,9 @@ flowchart LR
 ```powershell
 # Full matrix on the configured Hyper-V guest, including Linux media checks
 pwsh tests\run-ext4test.ps1 -Interop -Stress -System -Luks -Features
+
+# Use the existing KVC loader for each start of an unsigned guest image
+pwsh tests\run-ext4test.ps1 -Interop -Stress -System -Luks -Features -KvcLoader
 
 # Functional checks and Linux media verification
 pwsh tests\run-ext4test.ps1 -Quick
@@ -496,6 +506,7 @@ Configure the disposable guest and test-image paths in `tests/testenv.local.psd1
 |---|---|
 | File operations | Cached, uncached and write-through I/O; append, overwrite, truncation, regrowth, mappings and ENOSPC |
 | Namespace | Long and international names, directory indexes, rename/replace, hard links, symlinks, share modes, locks and delete-pending |
+| Legacy character maps | Exhaustive converter equivalence on x86/x64; 37 live volume code pages with create/read/list/rename/delete and unrepresentable-name rejection on Windows |
 | Parallel access | Concurrent create/delete churn, write/resize/read-back and opens racing namespace changes |
 | Security | Short and invalid IOCTL buffers, retrieval pointers, restricted-user access and EA namespace preservation |
 | Linux interoperability | Ownership, modes, nanosecond timestamps, links, xattrs, SELinux labels and inherited inode flags |
@@ -657,7 +668,7 @@ The project compiles with `/W4 /WX /std:clatest` in Release and Debug — no war
 
 Builds are reproducible: `/Brepro` for the compiler and the linker, `/PDBALTPATH:%_PDB%` so that no build directory ends up in the binary, and no `__DATE__` or `__TIME__` in the source. The same source built with the same toolset gives the same `ext4.sys` and `ext4ctl.exe` byte for byte, so a binary can be checked against the source it claims to come from by its SHA-256. The driver reports the version from `version.h`, the same one its resources carry, never a build time.
 
-The configurations share the file-system algorithms; Debug adds diagnostic checks and tracing. `DBG`, set by the WDK for Debug only, switches `EXT2_DEBUG`: the Debug build adds assertions, a breakpoint at every internal inconsistency, level-filtered tracing of each IRP with process names and `NTSTATUS` texts, guard bytes and accounting on every pool allocation, and the full object and IRP statistics (`IOCTL_APP_QUERY_PERFSTAT`). The Release build keeps error reporting and functional accounting for allocation, object lifetime and cache reaping; per-operation diagnostic statistics are disabled. The current Release driver is under 1 MB; most of it is character set tables.
+The configurations share the file-system algorithms; Debug adds diagnostic checks and tracing. `DBG`, set by the WDK for Debug only, switches `EXT2_DEBUG`: the Debug build adds assertions, a breakpoint at every internal inconsistency, level-filtered tracing of each IRP with process names and `NTSTATUS` texts, guard bytes and accounting on every pool allocation, and the full object and IRP statistics (`IOCTL_APP_QUERY_PERFSTAT`). The Release build keeps error reporting and functional accounting for allocation, object lifetime and cache reaping; per-operation diagnostic statistics are disabled. The current Release driver is under 1 MB; immutable character mappings are its largest static-data component.
 
 | Output | Description |
 |---|---|

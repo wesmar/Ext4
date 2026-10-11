@@ -868,8 +868,8 @@ struct nls_table {
     int (*uni2char) (wchar_t uni, unsigned char *out, int boundlen);
     int (*char2uni) (const unsigned char *rawstring, int boundlen,
                      wchar_t *uni);
-    unsigned char *charset2lower;
-    unsigned char *charset2upper;
+    const unsigned char *charset2lower;
+    const unsigned char *charset2upper;
     struct module *owner;
     struct nls_table *next;
 };
