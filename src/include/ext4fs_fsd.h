@@ -280,6 +280,14 @@ Ext2IsEaNameValid(
 	IN OEM_STRING Name
 );
 
+/* a FILE_FULL_EA_INFORMATION list applied as NtSetEaFile applies it: each
+   entry adds or replaces its EA of the user namespace, an empty value
+   deletes it, every name is checked first (ExtendedAttributes.c) */
+struct ext4_xattr_ref;
+NTSTATUS
+Ext2SetEaList(IN struct ext4_xattr_ref *ref, IN PCHAR Buffer, IN ULONG Length,
+              OUT PULONG_PTR ErrorOffset);
+
 NTSTATUS
 Ext2SetEa(
 	IN PEXT2_IRP_CONTEXT    IrpContext

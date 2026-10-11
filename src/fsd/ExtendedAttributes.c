@@ -425,7 +425,7 @@ Ext2IsEaNameValid(IN OEM_STRING Name)
  * everything first, so a single EA written by Windows - Smart App Control
  * tags every copied executable - wiped the Linux ACLs of the file.
  */
-static NTSTATUS
+NTSTATUS
 Ext2SetEaList(IN struct ext4_xattr_ref *ref, IN PCHAR Buffer, IN ULONG Length,
               OUT PULONG_PTR ErrorOffset)
 {

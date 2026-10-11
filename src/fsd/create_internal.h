@@ -12,12 +12,13 @@
 NTSTATUS Ext2AddDotEntries(struct ext2_icb *icb, struct inode *dir,
                            struct inode *inode);
 
+/* the EAs of a create's buffer replace the file's Windows EAs */
 NTSTATUS
 Ext2OverwriteEa(
-	PEXT2_IRP_CONTEXT    IrpContext,
-	PEXT2_VCB Vcb,
-	PEXT2_FCB Fcb,
-	PIO_STATUS_BLOCK Iosb
+    IN PEXT2_IRP_CONTEXT    IrpContext,
+    IN PEXT2_VCB            Vcb,
+    IN PEXT2_FCB            Fcb,
+    OUT PIO_STATUS_BLOCK    Iosb
 );
 
 /* a new inode takes the SELinux label of its directory, as on Linux */

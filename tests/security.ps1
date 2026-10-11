@@ -245,6 +245,10 @@ Check 'query in another case finds it'        '0|blue'  ([SecIo]::GetEaList($fil
 Check 'missing name comes back empty'         '0|blue|<none>' ([SecIo]::GetEaList($file, $false, 'color', 'NOSUCH'))
 Check 'set COLOR replaces Color'              0         ([SecIo]::SetEa($file, 'COLOR', 'red'))
 Check 'one attribute left'                    '0|COLOR=red' ([SecIo]::GetEaList($file, $true))
+# CopyFile hands the source's EAs to the create of the copy (Ext2OverwriteEa)
+[IO.File]::WriteAllText("$dir\copy.txt", 'old'); [void][SecIo]::SetEa("$dir\copy.txt", 'OLD', 'gone')
+[IO.File]::Copy($file, "$dir\copy.txt", $true)
+Check 'a copy over a file takes the EAs of its source only' '0|COLOR=red' ([SecIo]::GetEaList("$dir\copy.txt", $true))
 
 "-- reparse points"
 $link = "$dir\link"; $full = "$dir\full"
@@ -290,7 +294,7 @@ try {
     Check 'mount points closed to users'            5  $res['mountpoint-via-file']
     Check 'symlink needs the symlink privilege'     1314 $res['symlink']
 } finally {
-    foreach ($x in $file, "$file.lnk", "$dir\runs.bin", "$dir\sparse.bin", $link, "$full\x.txt", "$hide\zzhide-a.txt", "$hide\shown.txt") { if ([IO.File]::Exists($x)) { [IO.File]::Delete($x) } }
+    foreach ($x in $file, "$file.lnk", "$dir\runs.bin", "$dir\sparse.bin", $link, "$full\x.txt", "$hide\zzhide-a.txt", "$hide\shown.txt", "$dir\copy.txt") { if ([IO.File]::Exists($x)) { [IO.File]::Delete($x) } }
     foreach ($x in $full, $hide, $dir) { if ([IO.Directory]::Exists($x)) { [IO.Directory]::Delete($x) } }
 }
 "security: $fail failed"

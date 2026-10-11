@@ -69,160 +69,80 @@ errorout:
     return Ext2WinntError(rc);
 }
 
-/* The caller holds the Fcb's MainResource. */
-
+/*
+ * The EAs a create brings in its buffer. They replace every Windows EA the
+ * file had - a new file has none, an overwritten or superseded one loses
+ * its old set - and are applied as NtSetEaFile applies them
+ * (Ext2SetEaList); the Linux namespaces of the inode (security labels,
+ * POSIX ACLs) stay. The caller holds the Fcb's MainResource.
+ */
 NTSTATUS
 Ext2OverwriteEa(
-	PEXT2_IRP_CONTEXT    IrpContext,
-	PEXT2_VCB Vcb,
-	PEXT2_FCB Fcb,
-	PIO_STATUS_BLOCK Iosb
+    IN PEXT2_IRP_CONTEXT    IrpContext,
+    IN PEXT2_VCB            Vcb,
+    IN PEXT2_FCB            Fcb,
+    OUT PIO_STATUS_BLOCK    Iosb
 )
 {
-    PEXT2_MCB           Mcb = NULL;
-    PIRP				  Irp;
-    PIO_STACK_LOCATION  IrpSp;
+    PIO_STACK_LOCATION      IrpSp = IoGetCurrentIrpStackLocation(IrpContext->Irp);
+    PCHAR                   Buffer = IrpContext->Irp->AssociatedIrp.SystemBuffer;
+    ULONG                   Length = IrpSp->Parameters.Create.EaLength;
+    struct ext4_xattr_ref   Ref;
+    struct rb_node         *Node;
+    BOOLEAN                 RefAcquired = FALSE;
+    NTSTATUS                Status;
 
-    struct ext4_xattr_ref xattr_ref;
-    BOOLEAN             XattrRefAcquired = FALSE;
-    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
-
-    PFILE_FULL_EA_INFORMATION FullEa;
-    PCHAR EaBuffer;
-    ULONG EaBufferLength;
+    if (Buffer == NULL) {
+        return STATUS_SUCCESS;
+    }
+    /* EAs from a caller that said it knows nothing of them */
+    if (IsFlagOn(IrpSp->Parameters.Create.Options, FILE_NO_EA_KNOWLEDGE)) {
+        return STATUS_ACCESS_DENIED;
+    }
+    Status = IoCheckEaBufferValidity((PFILE_FULL_EA_INFORMATION)Buffer, Length,
+                                     (PULONG)&Iosb->Information);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
 
     __try {
 
-        Irp = IrpContext->Irp;
-        IrpSp = IoGetCurrentIrpStackLocation(Irp);
-        Mcb = Fcb->Mcb;
-
-        EaBuffer = Irp->AssociatedIrp.SystemBuffer;
-        EaBufferLength = IrpSp->Parameters.Create.EaLength;
-
-        if (!Mcb)
-            __leave;
-
-        /* Return peacefully if there is no EaBuffer provided. */
-        if (!EaBuffer) {
-            Status = STATUS_SUCCESS;
-            __leave;
-        }
-
-		/* If the caller specifies an EaBuffer, but has no knowledge about Ea,
-		   we reject the request. */
-		if (EaBuffer != NULL &&
-			FlagOn(IrpSp->Parameters.Create.Options, FILE_NO_EA_KNOWLEDGE)) {
-			Status = STATUS_ACCESS_DENIED;
-			__leave;
-		}
-
-        /* Check Ea Buffer validity. */
-        Status = IoCheckEaBufferValidity((PFILE_FULL_EA_INFORMATION)EaBuffer,
-                                          EaBufferLength, (PULONG)&Iosb->Information);
-        if (!NT_SUCCESS(Status))
-            __leave;
-
-        Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, &xattr_ref));
+        Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, &Ref));
         if (!NT_SUCCESS(Status)) {
-            DbgPrint("ext4_fs_get_xattr_ref() failed!\n");
             __leave;
         }
+        RefAcquired = TRUE;
 
-        XattrRefAcquired = TRUE;
+        /* the old Windows set goes; an old EA must not outlive the set
+           that replaces it */
+        for (Node = rb_first(&Ref.root); Node != NULL; ) {
+            struct ext4_xattr_item *Item = container_of(Node, struct ext4_xattr_item, node);
 
-        /* The EAs of Windows are the user namespace of ext4, and that is
-           what the caller's set replaces. security.selinux, the POSIX ACLs
-           and trusted.* belong to Linux and stay: overwriting a file with
-           an EA buffer used to purge every namespace. */
-        {
-            struct rb_node *Node = rb_first(&xattr_ref.root);
-
-            while (Node) {
-                struct ext4_xattr_item *Item = container_of(Node, struct ext4_xattr_item, node);
-
-                Node = rb_next(Node);
-                if (Item->name_index == EXT4_XATTR_INDEX_USER) {
-                    Status = Ext2WinntError(ext4_fs_remove_xattr(&xattr_ref, Item->name_index,
-                                                                 Item->name, Item->name_len));
-                    if (!NT_SUCCESS(Status)) {
-                        __leave;    /* an old EA would outlive the set that replaces it */
-                    }
+            Node = rb_next(Node);
+            if (Item->name_index == EXT4_XATTR_INDEX_USER) {
+                Status = Ext2WinntError(ext4_fs_remove_xattr(&Ref, Item->name_index,
+                                                             Item->name, Item->name_len));
+                if (!NT_SUCCESS(Status)) {
+                    __leave;
                 }
             }
         }
-        xattr_ref.dirty = TRUE;
-        Status = STATUS_SUCCESS;
+        Ref.dirty = TRUE;
 
-        /* Iterate the whole EA buffer to do inspection */
-        for (FullEa = (PFILE_FULL_EA_INFORMATION)EaBuffer;
-            FullEa < (PFILE_FULL_EA_INFORMATION)&EaBuffer[EaBufferLength];
-            FullEa = (PFILE_FULL_EA_INFORMATION)(FullEa->NextEntryOffset == 0 ?
-                &EaBuffer[EaBufferLength] :
-                (PCHAR)FullEa + FullEa->NextEntryOffset)) {
+        Status = Ext2SetEaList(&Ref, Buffer, Length, &Iosb->Information);
 
-            OEM_STRING EaName;
+    } __finally {
 
-            EaName.MaximumLength = EaName.Length = FullEa->EaNameLength;
-            EaName.Buffer = &FullEa->EaName[0];
-
-            /* Check if EA's name is valid */
-            if (!Ext2IsEaNameValid(EaName)) {
-                Status = STATUS_INVALID_EA_NAME;
-                __leave;
-            }
-        }
-
-        /* Now add EA entries to the inode */
-        for (FullEa = (PFILE_FULL_EA_INFORMATION)EaBuffer;
-            FullEa < (PFILE_FULL_EA_INFORMATION)&EaBuffer[EaBufferLength];
-            FullEa = (PFILE_FULL_EA_INFORMATION)(FullEa->NextEntryOffset == 0 ?
-                &EaBuffer[EaBufferLength] :
-                (PCHAR)FullEa + FullEa->NextEntryOffset)) {
-
-            int ret;
-            OEM_STRING EaName;
-
-            EaName.MaximumLength = EaName.Length = FullEa->EaNameLength;
-            EaName.Buffer = &FullEa->EaName[0];
-
-            Status = Ext2WinntError(ret =
-                ext4_fs_set_xattr(&xattr_ref,
-                    EXT4_XATTR_INDEX_USER,
-                    EaName.Buffer,
-                    EaName.Length,
-                    &FullEa->EaName[0] + FullEa->EaNameLength + 1,
-                    FullEa->EaValueLength,
-                    TRUE));
-            if (!NT_SUCCESS(Status) && ret != -ENODATA)
-                __leave;
-
-            if (ret == -ENODATA) {
-                Status = Ext2WinntError(
-                    ext4_fs_set_xattr(&xattr_ref,
-                        EXT4_XATTR_INDEX_USER,
-                        EaName.Buffer,
-                        EaName.Length,
-                        &FullEa->EaName[0] + FullEa->EaNameLength + 1,
-                        FullEa->EaValueLength,
-                        FALSE));
-                if (!NT_SUCCESS(Status))
-                    __leave;
-
+        if (RefAcquired) {
+            if (NT_SUCCESS(Status)) {
+                Status = Ext2WinntError(ext4_fs_put_xattr_ref(&Ref));
+            } else {
+                Ref.dirty = FALSE;
+                (void)ext4_fs_put_xattr_ref(&Ref);      /* a release: nothing written */
             }
         }
     }
-    __finally {
 
-        if (XattrRefAcquired) {
-            if (!NT_SUCCESS(Status)) {
-                xattr_ref.dirty = FALSE;
-                (void)ext4_fs_put_xattr_ref(&xattr_ref);    /* nothing to write: a release */
-			} else {
-				Status = Ext2WinntError(ext4_fs_put_xattr_ref(&xattr_ref));
-			}
-        }
-    }
     return Status;
 }
 
