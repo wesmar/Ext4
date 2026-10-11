@@ -740,7 +740,11 @@ Ext2CreateAttachCcb(IN PEXT2_VCB Vcb, IN OUT PEXT2_CREATE C)
     if (C->DeleteOnClose) {
         SetLongFlag(Ccb->Flags, CCB_DELETE_ON_CLOSE);
     }
-    Ccb->filp.f_dentry = C->SymLink ? C->SymLink->de : Fcb->Mcb->de;
+    /* The cursor belongs to the opened inode. Htree reads through this
+       dentry; the link's text is not the target directory's index. The
+       separately referenced Ccb->SymLink retains the name opened through. */
+    Ccb->filp.f_dentry = Fcb->Mcb->de;
+    ASSERT(Ccb->filp.f_dentry->d_inode == Fcb->Inode);
     Ccb->filp.f_version = Fcb->Mcb->Inode->i_version;
     Ext2ReferXcb(&Fcb->OpenHandleCount);
     Ext2ReferXcb(&Fcb->ReferenceCount);

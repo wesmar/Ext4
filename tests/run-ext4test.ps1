@@ -33,14 +33,15 @@ param(
     [switch]$Luks,                  # LUKS1/LUKS2 through ext4ctl, checked from Linux (luks-image.sh builds the disk)
     [switch]$Features,              # casefold (SteamOS cards) and chattr +i/+a, on a disk features-image.sh builds afresh
     [switch]$NoFsck,
-    [switch]$KvcLoader            # load an unsigned test image through the existing guest kvc.exe
+    [switch]$KvcLoader,           # load an unsigned test image through the existing guest kvc.exe
+    [string]$Image = ''           # an explicitly attached disposable disk instead of the configured fixture
 )
 $ErrorActionPreference = 'Stop'
 $Letters = @($Letters | ForEach-Object { $_ -split '[,\s]+' } | Where-Object { $_ })
 . "$PSScriptRoot\testenv.ps1"
 if (-not $Ip) { $Ip = Get-TestVmIp }
 $Vm = $TestEnv.Vm
-$Vhd = $TestEnv.Vhd
+$Vhd = if ($Image) { (Resolve-Path -LiteralPath $Image).Path } else { $TestEnv.Vhd }
 $Svc = $TestEnv.Service
 $sshOpt = @(Get-SshOptions) + @('-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=3')
 $target = "$($TestEnv.User)@$Ip"
