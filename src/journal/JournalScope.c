@@ -82,7 +82,6 @@ static PEXT2_JTXN JnlActivate(PEXT2_JOURNAL J)
     PEXT2_JSCOPE    s;
     ULONG           slot = 0;
     KIRQL           irql;
-    LARGE_INTEGER   tick;
     PEXT2_JTXN      t;
 
     s = JnlCurrentScope(J, &slot);
@@ -105,8 +104,6 @@ static PEXT2_JTXN JnlActivate(PEXT2_JOURNAL J)
                      "(thread %p, top-level %p)\n", KeGetCurrentThread(), top);
         }
     }
-
-    tick.QuadPart = -JNL_WAIT_TICK;
 
     for (;;) {
         BOOLEAN full;
@@ -131,8 +128,12 @@ static PEXT2_JTXN JnlActivate(PEXT2_JOURNAL J)
                (t->NumRecords >= J->MaxTxnBlocks * 2 ||
                 JnlLogBlocksNeeded(J, t->NumNormal + 1, t->NumRevokes) + JNL_LOG_SLACK
                     > J->jbd->j_free);
-        if (full && !tid_geq(J->CommitRequest, t->Tid)) {
-            J->CommitRequest = t->Tid;
+        if (full) {
+            /* the thread commits it, or checkpoints until the log has
+               room: told each time, as a pass of its may have stopped
+               short of what this handle needs */
+            if (!tid_geq(J->CommitRequest, t->Tid))
+                J->CommitRequest = t->Tid;
             KeSetEvent(&J->WakeEvent, 0, FALSE);
         }
 
@@ -145,8 +146,15 @@ static PEXT2_JTXN JnlActivate(PEXT2_JOURNAL J)
             JnlUnlock(J, irql);
             return t;
         }
+
+        /* UnlockedEvent says a handle may get in now. Found false, it is
+           cleared under the lock that every change letting a handle in is
+           made under - a new running transaction, log space freed, the
+           end of the session - and each sets it after: none is missed,
+           and none wakes this thread more than once. */
+        KeClearEvent(&J->UnlockedEvent);
         JnlUnlock(J, irql);
-        KeWaitForSingleObject(&J->UnlockedEvent, Executive, KernelMode, FALSE, &tick);
+        KeWaitForSingleObject(&J->UnlockedEvent, Executive, KernelMode, FALSE, NULL);
     }
 }
 
@@ -248,16 +256,24 @@ Ext2JournalJoin(IN PEXT2_VCB Vcb)
 /*
  * __brelse() hook: a buffer the journal holds records for lost a holder.
  * A checkpoint waiting for such buffers to be let go (JnlCheckpointOldest)
- * looks at them again. Reading the event first keeps the common case - no
- * checkpoint waiting, or already woken - free of the dispatcher lock.
+ * looks at them again, and so does the journal thread when its last
+ * checkpoint stopped short of them (JnlThread). Reading the flags first
+ * keeps the common case - nobody waiting, or already woken - free of the
+ * dispatcher lock.
  */
 VOID
 Ext2JournalBufferReleased(IN PEXT2_VCB Vcb)
 {
     PEXT2_JOURNAL J = Vcb->Journal;
 
-    if (J != NULL && J->HeldWaiters != 0 && !KeReadStateEvent(&J->HeldEvent)) {
+    if (J == NULL) {
+        return;
+    }
+    if (J->HeldWaiters != 0 && !KeReadStateEvent(&J->HeldEvent)) {
         KeSetEvent(&J->HeldEvent, IO_NO_INCREMENT, FALSE);
+    }
+    if (J->ThreadBlocked && InterlockedExchange(&J->ThreadBlocked, FALSE)) {
+        KeSetEvent(&J->WakeEvent, IO_NO_INCREMENT, FALSE);
     }
 }
 
@@ -345,6 +361,21 @@ Ext2JournalCommitted(IN PEXT2_VCB Vcb, IN ULONG Tid)
 }
 
 /*
+ * File a record into the running transaction (J->Lock held). The commit
+ * interval runs from the first one, as Linux's runs from the transaction's
+ * first handle: TRUE then, and the caller wakes the thread to time it.
+ */
+static BOOLEAN JnlAddRecord(PEXT2_JTXN t, PEXT2_JREC r)
+{
+    InsertTailList(&t->Records, &r->Link);
+    if (t->NumRecords++ == 0) {
+        KeQuerySystemTime(&t->StartTime);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/*
  * mark_buffer_dirty() hook: file the buffer into the running transaction.
  * Returns TRUE when the engine owns the operation, including an abort.
  * Only an inactive engine permits the legacy dirty-buffer path.
@@ -356,7 +387,7 @@ Ext2JournalDirtyBuffer(IN PEXT2_VCB Vcb, IN struct buffer_head *bh)
     PEXT2_JREC      r, old;
     PEXT2_JTXN      t;
     KIRQL           irql;
-    BOOLEAN         request = FALSE;
+    BOOLEAN         wake = FALSE;
 
     if (!J || !(J->Flags & JF_ACTIVE))
         return FALSE;
@@ -408,19 +439,18 @@ Ext2JournalDirtyBuffer(IN PEXT2_VCB Vcb, IN struct buffer_head *bh)
     bh->b_jrec = r;
     bh->b_jtid = t->Tid;
     bh->b_jrefs++;
-    InsertTailList(&t->Records, &r->Link);
-    t->NumRecords++;
+    wake = JnlAddRecord(t, r);
     t->NumNormal++;
 
     if (t->NumRecords >= J->MaxTxnBlocks && t->State == JTXN_RUNNING &&
         !tid_geq(J->CommitRequest, t->Tid)) {
         J->CommitRequest = t->Tid;
-        request = TRUE;
+        wake = TRUE;
     }
 
     JnlUnlock(J, irql);
 
-    if (request)
+    if (wake)
         KeSetEvent(&J->WakeEvent, 0, FALSE);
 
     return TRUE;
@@ -487,6 +517,7 @@ Ext2JournalRevokeBlocks(IN PEXT2_VCB Vcb, IN ULONGLONG Block, IN ULONG Count)
         PEXT2_JTXN          t;
         KIRQL               irql;
         ULONGLONG           blk;
+        BOOLEAN             wake = FALSE;
 
         if (bh == NULL)
             break;
@@ -524,13 +555,15 @@ Ext2JournalRevokeBlocks(IN PEXT2_VCB Vcb, IN ULONGLONG Block, IN ULONG Count)
             bh->b_jrec = r;
             bh->b_jtid = t->Tid;
             bh->b_jrefs++;
-            InsertTailList(&t->Records, &r->Link);
-            t->NumRecords++;
+            wake = JnlAddRecord(t, r);
             t->NumRevokes++;
             r = NULL;
         }
 
         JnlUnlock(J, irql);
+
+        if (wake)
+            KeSetEvent(&J->WakeEvent, 0, FALSE);
 
         if (r)
             ExFreeToNPagedLookasideList(&J->RecLookaside, r);

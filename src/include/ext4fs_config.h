@@ -22,6 +22,11 @@
 
 /* Constants */
 
+/* waits are counted in 100 ns units, TICKSPERSEC to the second (negative:
+   relative to now) */
+#define EXT2_SECONDS(s)                 ((LONGLONG)(s) * TICKSPERSEC)
+#define EXT2_MILLISECONDS(ms)           ((LONGLONG)(ms) * (TICKSPERSEC / 1000))
+
 #define EXT2_MAX_NESTED_LINKS           (8)
 #define EXT2_LINKLEN_IN_INODE           (60)
 #define EXT2_BLOCK_TYPES                (0x04)
@@ -54,23 +59,12 @@ typedef struct ext4_group_desc EXT2_GROUP_DESC, *PEXT2_GROUP_DESC;
 typedef struct ext3_dir_entry EXT2_DIR_ENTRY, *PEXT2_DIR_ENTRY;
 typedef struct ext3_dir_entry_2 EXT2_DIR_ENTRY2, *PEXT2_DIR_ENTRY2;
 
-#define CEILING_ALIGNED(T, A, B) (((A) + (B) - 1) & (~((T)(B) - 1)))
+/* the label and the UUID are fixed-size arrays in the superblock
+   (a label that fills its array has no terminator) */
+#define EXT2_LABEL_BYTES                RTL_FIELD_SIZE(EXT2_SUPER_BLOCK, s_volume_name)
+#define EXT2_UUID_BYTES                 RTL_FIELD_SIZE(EXT2_SUPER_BLOCK, s_uuid)
 
-/*
- * Compile-time assertion: (Lustre version)
- *
- * Check an invariant described by a constant expression at compile time by
- * forcing a compiler error if it does not hold.  \a cond must be a constant
- * expression as defined by the ISO C Standard:
- *
- *       6.8.4.2  The switch statement
- *       ....
- *       [#3] The expression of each case label shall be  an  integer
- *       constant   expression  and  no  two  of  the  case  constant
- *       expressions in the same switch statement shall have the same
- *       value  after  conversion...
- *
- */
+#define CEILING_ALIGNED(T, A, B) (((A) + (B) - 1) & (~((T)(B) - 1)))
 
 /* File System Releated *************************************************/
 

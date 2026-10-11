@@ -61,10 +61,11 @@
  * the IOCTL unregisters, sc stop marks, the machinery here finishes.
  */
 
-/* 50 ms period: optimal engineering balance between instant sc stop
-   responsiveness (~25 ms avg) and practically zero CPU overhead (fast check
-   at DISPATCH_LEVEL returns in ~5 ns without queuing any work items) */
-#define EXT2_UNLOAD_PROBE_PERIOD    ((LONGLONG)50 * 10 * 1000)
+/* The mark has no notification, so it is read on the timer above: the
+   period is how soon an sc stop is noticed (half of it on average), and
+   nothing the unload's correctness rests on. A read is one word, at
+   DISPATCH_LEVEL, queuing no work unless the mark is there. */
+#define EXT2_UNLOAD_PROBE_PERIOD    EXT2_MILLISECONDS(50)
 
 /* the private part of DEVOBJ_EXTENSION we need one bit of */
 typedef struct _EXT2_DEVOBJ_EXTENSION {
@@ -77,6 +78,9 @@ typedef struct _EXT2_DEVOBJ_EXTENSION {
 } EXT2_DEVOBJ_EXTENSION, *PEXT2_DEVOBJ_EXTENSION;
 
 #define EXT2_DOE_UNLOAD_PENDING     0x00000001
+/* DOE_UNLOAD_PENDING, _DELETE_PENDING, _REMOVE_PENDING, _REMOVE_PROCESSED,
+   _START_PENDING: none is set on a device just created */
+#define EXT2_DOE_PENDING_BITS       0x0000001F
 
 static BOOLEAN Ext2IsUnloadPendingByOpen(VOID);
 
@@ -463,8 +467,10 @@ Ext2UnloadKick(VOID)
     }
 }
 
-/* how soon to look again while the I/O manager finishes a close (see below) */
-#define EXT2_UNLOAD_CLOSE_RECHECK   ((LONGLONG)10 * 10 * 1000)     /* 10 ms */
+/* The I/O manager finishes a close without telling the driver (see below),
+   so that window - the last steps of one close - is looked at again after
+   this long. Every other transition wakes the drain thread itself. */
+#define EXT2_UNLOAD_CLOSE_RECHECK   EXT2_MILLISECONDS(10)
 
 /*
  * TRUE while a dismounting volume waits for nothing but the I/O manager.
@@ -509,6 +515,9 @@ Ext2IoManagerHoldsVolume(VOID)
  * number of files listed is bounded; the counts always cover all of them.
  */
 #define EXT2_UNLOAD_REPORT_FILES    8
+/* the fingerprint's multiplier: a prime, so that a change of any one count
+   changes the picture */
+#define EXT2_PICTURE_PRIME          31
 
 static VOID
 Ext2ReportVolumeHolders(IN OUT PLONGLONG LastPicture)
@@ -529,7 +538,7 @@ Ext2ReportVolumeHolders(IN OUT PLONGLONG LastPicture)
             break;
         }
 
-        for (l = 0; l < 2; l++) {
+        for (l = 0; l < ARRAYSIZE(Lists); l++) {
             for (VcbLink = Lists[l]->Flink; VcbLink != Lists[l]; VcbLink = VcbLink->Flink) {
 
                 PEXT2_VCB   Vcb = CONTAINING_RECORD(VcbLink, EXT2_VCB, Next);
@@ -537,9 +546,9 @@ Ext2ReportVolumeHolders(IN OUT PLONGLONG LastPicture)
                 ULONG       Listed = 0, Holders = 0;
 
                 if (Pass == 0) {
-                    Picture = Picture * 31 + Vcb->ReferenceCount;
-                    Picture = Picture * 31 + Vcb->OpenHandleCount;
-                    Picture = Picture * 31 + (LONG)Vcb->Vpb->ReferenceCount;
+                    Picture = Picture * EXT2_PICTURE_PRIME + Vcb->ReferenceCount;
+                    Picture = Picture * EXT2_PICTURE_PRIME + Vcb->OpenHandleCount;
+                    Picture = Picture * EXT2_PICTURE_PRIME + (LONG)Vcb->Vpb->ReferenceCount;
                     continue;
                 }
 
@@ -798,7 +807,7 @@ Ext2StartUnloadWatch(VOID)
        extension does not look right, only the open fallback is trusted */
     {
         PEXT2_DEVOBJ_EXTENSION Ext = Ext2DevObjExtension(Ext2Global->DiskdevObject);
-        Ext2Global->UnloadFlagUsable = (Ext && !(Ext->ExtensionFlags & 0x1F)) ? TRUE : FALSE;
+        Ext2Global->UnloadFlagUsable = (Ext && !(Ext->ExtensionFlags & EXT2_DOE_PENDING_BITS)) ? TRUE : FALSE;
     }
 
     /* our own handle on the control device: releasing it later is what

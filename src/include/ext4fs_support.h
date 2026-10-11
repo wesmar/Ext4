@@ -191,6 +191,7 @@ Ext2Log2(ULONG Value);
 /* Windows time counts 100 ns ticks since 1601-01-01, ext4 time counts
    seconds since 1970-01-01; 1601 to 1970 is 369 years plus 89 leap days */
 #define TICKSPERSEC         10000000LL
+#define EXT2_NS_PER_TICK    100             /* a tick is 100 ns */
 #define SECSPERDAY          86400LL
 #define SECS_1601_TO_1970   ((369 * 365 + 89) * SECSPERDAY)
 #define TICKS_1601_TO_1970  (SECS_1601_TO_1970 * TICKSPERSEC)

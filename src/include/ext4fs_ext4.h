@@ -267,6 +267,13 @@ Ext2SetSuperRoCompat(
     IN ULONG                Feature
 );
 
+/* the size from which a file needs RO_COMPAT_LARGE_FILE: 2 GiB */
+#define EXT2_LARGE_FILE_SIZE    ((LONGLONG)1 << 31)
+
+/* large_file on the volume once a file grows to Size bytes */
+VOID
+Ext2NoteFileSize(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN LONGLONG Size);
+
 BOOLEAN
 Ext2RefreshSuper(
     IN PEXT2_IRP_CONTEXT    IrpContext,

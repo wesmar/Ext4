@@ -7,7 +7,6 @@
  */
 
 #include "ext4fs.h"
-#include "linux\ext4.h"
 #include "../core/core_internal.h"
 
 /*

@@ -30,7 +30,6 @@
  */
 
 #include "ext4fs.h"
-#include "linux\ext4.h"
 
 #define EXT4_FREED_TAG          'DF4E'
 #define EXT2_BITS_PER_WORD      64

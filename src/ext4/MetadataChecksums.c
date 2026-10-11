@@ -7,8 +7,7 @@
  */
 
 #include "ext4fs.h"
-#include "linux\ext4.h"
-#include "linux\ext4_xattr.h"
+#include <linux/ext4_xattr.h>
 #include <intrin.h>         /* __cpuid */
 #include <nmmintrin.h>      /* _mm_crc32_u8, _mm_crc32_u64 (SSE 4.2) */
 

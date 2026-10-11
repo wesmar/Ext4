@@ -42,14 +42,14 @@ typedef struct _EXT2_MOUNT_STATE {
 
 static inline BOOLEAN Ext2IsNullUuid (__u8 * uuid)
 {
-    int i;
-    for (i = 0; i < 16; i++) {
+    ULONG i;
+
+    for (i = 0; i < RTL_FIELD_SIZE(EXT2_SUPER_BLOCK, s_uuid); i++) {
         if (uuid[i]) {
-            break;
+            return FALSE;
         }
     }
-
-    return (i >= 16);
+    return TRUE;
 }
 
 /* ---------------------------------------------------------------- 1. superblock */
@@ -114,7 +114,7 @@ Ext4CheckGeometry(IN PEXT2_SUPER_BLOCK sb)
         goto bad;
     }
     /* Physical extents have 48-bit addresses; Windows I/O uses signed byte offsets. */
-    if (blocks > (1ULL << 48) || blocks > (ULONGLONG)MAXLONGLONG / bs ||
+    if (blocks > EXT2_EXTENT_BLOCK_LIMIT || blocks > (ULONGLONG)MAXLONGLONG / bs ||
         (blocks > MAXULONG && !(le32_to_cpu(sb->s_feature_incompat) & EXT4_FEATURE_INCOMPAT_64BIT))) {
         why = "physical address range";
         goto bad;

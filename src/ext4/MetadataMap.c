@@ -24,7 +24,6 @@
  */
 
 #include "ext4fs.h"
-#include "linux\ext4.h"
 
 #define EXT4_METAMAP_TAG        'MM4E'
 #define EXT4_METAMAP_FIRST_ROOM 256         /* ranges a collector starts with, then doubles */

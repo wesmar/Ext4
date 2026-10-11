@@ -9,6 +9,8 @@
 #include "ext4fs.h"
 #include <linux/jbd2.h>
 
+static BOOLEAN Ext2CheckJournal(PEXT2_VCB Vcb, PULONG jNo);
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, Ext2LoadInternalJournal)
 #pragma alloc_text(PAGE, Ext2CheckJournal)
@@ -51,7 +53,8 @@ errorout:
     return Jcb;
 }
 
-INT
+/* the internal journal's inode, if the volume has one this driver may use */
+static BOOLEAN
 Ext2CheckJournal(
     PEXT2_VCB          Vcb,
     PULONG             jNo
@@ -115,14 +118,14 @@ Ext2RecoverJournal(
 
     /* check journal inode number */
     if (!Ext2CheckJournal(Vcb, &jNo)) {
-        rc = -1;
+        rc = -EOPNOTSUPP;     /* read-only, or an external journal */
         goto errorout;
     }
 
     /* allocate journal Mcb */
     jcb =  Ext2LoadInternalJournal(Vcb, jNo);
     if (!jcb) {
-        rc = -6;
+        rc = -EIO;
         goto errorout;
     }
 
@@ -135,7 +138,7 @@ Ext2RecoverJournal(
     /* initialzation succeeds ? */
     if (!journal) {
         DEBUG(DL_ERR, ( "jbd2_journal_init_inode failed\n"));
-        rc = -8;
+        rc = -ENOMEM;
         goto errorout;
     }
 
@@ -145,7 +148,6 @@ Ext2RecoverJournal(
         rc = jbd2_journal_wipe(journal, !IsVcbReadOnly(Vcb));
         if (rc != 0) {
             DEBUG(DL_ERR, ( "ext4: recover_journal: failed to wipe journal. rc=%d\n", rc));
-            rc = -7;
             goto errorout;
         }
     } else {
@@ -158,7 +160,6 @@ Ext2RecoverJournal(
     if (rc != 0) {
         DEBUG(DL_ERR, ( "ext4: recover_journal: failed "
                         "to recover journal data. rc=%d\n", rc));
-        rc = -9;
         goto errorout;
     }
 
@@ -192,7 +193,7 @@ Ext2RecoverJournal(
             jcb = NULL;
         } else {
             DEBUG(DL_ERR, ( "ext4: recover_journal: failed to start journal: %xh\n", Status));
-            rc = -10;
+            rc = Ext2LinuxError(Status);
         }
     }
 

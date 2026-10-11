@@ -10,9 +10,9 @@
 #include <linux/jbd2.h>
 #include "JournalInternal.h"
 
-#define JNL_COMMIT_INTERVAL     ((LONGLONG)5 * 10 * 1000 * 1000)   /* 5 s   */
-#define JNL_IDLE_CHECKPOINT     ((LONGLONG)30 * 10 * 1000 * 1000)  /* 30 s  */
-#define JNL_THREAD_TICK         ((LONGLONG)1 * 10 * 1000 * 1000)   /* 1 s   */
+#define JNL_COMMIT_INTERVAL     EXT2_SECONDS(5)
+#define JNL_IDLE_CHECKPOINT     EXT2_SECONDS(30)
+#define JNL_POLICY_BATCH        64      /* retired per hold of CommitLock */
 
 typedef struct _JNL_CPENTRY {
     PEXT2_JREC  Rec;
@@ -252,52 +252,80 @@ NTSTATUS JnlCheckpointOldest(PEXT2_JOURNAL J, BOOLEAN Wait, BOOLEAN AllowCommit)
     return Status;
 }
 
+/* where a checkpoint pass of the thread stopped */
+typedef enum _JNL_PASS {
+    JnlPassDone,        /* nothing more is due now */
+    JnlPassMore,        /* a batch retired: CommitLock is offered, then on */
+    JnlPassBlocked      /* the oldest transaction's buffers are held */
+} JNL_PASS;
+
 /*
  * Retire transactions while the log or the pinned-page budget is under
  * pressure, and everything when idle.
  */
-static VOID JnlCheckpointPolicy(PEXT2_JOURNAL J)
+static JNL_PASS JnlCheckpointPolicy(PEXT2_JOURNAL J)
 {
     journal_t *jbd = J->jbd;
     KIRQL      irql;
-    ULONG      guard = 0;
+    ULONG      retired;
 
-    for (;;) {
+    for (retired = 0; ; retired++) {
         BOOLEAN   pressure, idle, empty;
         LONGLONG  now = JnlNow();
-        NTSTATUS  Status;
 
         JnlLock(J, irql);
         empty    = IsListEmpty(&J->Checkpoint);
         pressure = (jbd->j_free < jbd->j_maxlen / 2) ||
                    (J->CheckpointRecords > J->MaxTxnBlocks * 2);
         idle     = (J->Running->NumRecords == 0) &&
-                   (now - J->LastCommitTime.QuadPart > JNL_IDLE_CHECKPOINT);
+                   (now - J->LastCommitTime.QuadPart >= JNL_IDLE_CHECKPOINT);
         JnlUnlock(J, irql);
 
-        if (empty || (!pressure && !idle) || guard++ > 64)
-            break;
-
-        Status = JnlCheckpointOldest(J, pressure, TRUE);
-        if (Status != STATUS_SUCCESS)
-            break;
+        if (empty || (!pressure && !idle))
+            return JnlPassDone;
+        if (retired == JNL_POLICY_BATCH)
+            return JnlPassMore;
+        if (JnlCheckpointOldest(J, pressure, TRUE) != STATUS_SUCCESS)
+            return JnlPassBlocked;
     }
 }
 
+/*
+ * The journal thread commits the running transaction when its interval is
+ * up or a commit is asked for, and checkpoints (JnlCheckpointPolicy). It
+ * sleeps until the next of these is due, and keeps no clock of its own:
+ *  - the commit interval runs from the transaction's first record, which
+ *    wakes the thread to time it (JnlAddRecord);
+ *  - the idle checkpoint runs from the last commit, which wakes it too;
+ *  - a commit asked for, or a handle that found no room, wakes it;
+ *  - a checkpoint stopped by held buffers goes on when one is let go
+ *    (ThreadBlocked, Ext2JournalBufferReleased).
+ */
 VOID JnlThread(PVOID Context)
 {
     PEXT2_JOURNAL   J = Context;
-    LARGE_INTEGER   tick;
     KIRQL           irql;
-
-    tick.QuadPart = -JNL_THREAD_TICK;
 
     for (;;) {
 
-        BOOLEAN  commit, stop;
-        LONGLONG now;
+        BOOLEAN         commit, stop;
+        LONGLONG        now, due = 0;
+        LARGE_INTEGER   wait;
+        JNL_PASS        pass = JnlPassDone;
 
-        KeWaitForSingleObject(&J->WakeEvent, Executive, KernelMode, FALSE, &tick);
+        now = JnlNow();
+        JnlLock(J, irql);
+        if (!(J->Flags & JF_ABORTED)) {
+            if (J->Running->NumRecords > 0)
+                due = J->Running->StartTime.QuadPart + JNL_COMMIT_INTERVAL;
+            else if (!IsListEmpty(&J->Checkpoint) && !J->ThreadBlocked)
+                due = J->LastCommitTime.QuadPart + JNL_IDLE_CHECKPOINT;
+        }
+        JnlUnlock(J, irql);
+
+        wait.QuadPart = -max(due - now, 0);
+        KeWaitForSingleObject(&J->WakeEvent, Executive, KernelMode, FALSE,
+                              due != 0 ? &wait : NULL);
 
         now = JnlNow();
 
@@ -317,9 +345,23 @@ VOID JnlThread(PVOID Context)
         /* a commit that fails aborts the journal itself */
         if (commit && !(J->Flags & JF_ABORTED))
             (void)JnlCommitTransaction(J);
-        if (!(J->Flags & JF_ABORTED))
-            JnlCheckpointPolicy(J);
+        if (!(J->Flags & JF_ABORTED)) {
+            pass = JnlCheckpointPolicy(J);
+            if (pass == JnlPassBlocked) {
+                /* a release wakes the thread from here on; one that came
+                   after the pass looked, but before this, is caught by
+                   looking once more */
+                InterlockedExchange(&J->ThreadBlocked, TRUE);
+                pass = JnlCheckpointPolicy(J);
+                if (pass != JnlPassBlocked)
+                    InterlockedExchange(&J->ThreadBlocked, FALSE);
+            }
+        }
         KeReleaseMutex(&J->CommitLock, FALSE);
+
+        /* a waiting flusher got the lock as it was let go: go on after it */
+        if (pass == JnlPassMore)
+            KeSetEvent(&J->WakeEvent, 0, FALSE);
     }
 
     PsTerminateSystemThread(STATUS_SUCCESS);

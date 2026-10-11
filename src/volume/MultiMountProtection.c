@@ -33,7 +33,10 @@
 #define MMP_NODENAME_KEY        L"\\Registry\\Machine\\System\\CurrentControlSet\\Control\\ComputerName\\ActiveComputerName"
 #define MMP_NODENAME_VALUE      L"ComputerName"
 #define MMP_DEVICE_NAME         "ext4.sys"
-#define MMP_SECOND              (10 * 1000 * 1000LL)    /* in 100 ns units */
+/* the wait for a node that left the volume unreleased: twice its check
+   interval and a second, at most a minute over the interval (Linux,
+   ext4_multi_mount_protect) */
+#define MMP_WAIT_MORE_MAX       60
 #define MMP_RETRY_SEQ           16                      /* draws for a seq <= SEQ_MAX */
 
 typedef struct _EXT4_MMP {
@@ -141,7 +144,7 @@ static NTSTATUS MmpWait(ULONG Seconds)
 {
     LARGE_INTEGER Interval;
 
-    Interval.QuadPart = -(LONGLONG)Seconds * MMP_SECOND;
+    Interval.QuadPart = -(LONGLONG)Seconds * TICKSPERSEC;
     if (KeWaitForSingleObject(&Ext2Global->UnloadStarted, Executive, KernelMode,
                               FALSE, &Interval) == STATUS_SUCCESS) {
         DbgPrint("ext4: MMP: wait cut short, the driver is unloading\n");
@@ -197,14 +200,14 @@ static VOID MmpThread(PVOID Context)
         }
 
         Elapsed = (LONGLONG)KeQueryInterruptTime() - Written;
-        Due.QuadPart = -max((LONGLONG)M->UpdateInterval * MMP_SECOND - Elapsed, 0);
+        Due.QuadPart = -max((LONGLONG)M->UpdateInterval * TICKSPERSEC - Elapsed, 0);
         if (KeWaitForSingleObject(&M->Stop, Executive, KernelMode, FALSE, &Due) == STATUS_SUCCESS) {
             break;
         }
 
         /* late: someone else may have written meanwhile */
         Elapsed = (LONGLONG)KeQueryInterruptTime() - Written;
-        if (Check && Elapsed > (LONGLONG)CheckInterval * MMP_SECOND) {
+        if (Check && Elapsed > (LONGLONG)CheckInterval * TICKSPERSEC) {
             if (NT_SUCCESS(MmpRead(M, Check)) &&
                 (Check->mmp_seq != M->Block->mmp_seq ||
                  memcmp(Check->mmp_nodename, M->Block->mmp_nodename, sizeof(Check->mmp_nodename)))) {
@@ -214,7 +217,7 @@ static VOID MmpThread(PVOID Context)
             }
         }
 
-        CheckInterval = (ULONG)max(min((ULONGLONG)EXT4_MMP_CHECK_MULT * (ULONGLONG)(Elapsed / MMP_SECOND),
+        CheckInterval = (ULONG)max(min((ULONGLONG)EXT4_MMP_CHECK_MULT * (ULONGLONG)(Elapsed / TICKSPERSEC),
                                        (ULONGLONG)EXT4_MMP_MAX_CHECK_INTERVAL),
                                    (ULONGLONG)EXT4_MMP_MIN_CHECK_INTERVAL);
     }
@@ -300,7 +303,7 @@ Ext4MmpStart(IN PEXT2_VCB Vcb)
     }
     if (Seq != EXT4_MMP_SEQ_CLEAN) {
         /* in use, or left so by a node that died: give it time to write */
-        Wait = min(CheckInterval * 2 + 1, CheckInterval + 60);
+        Wait = min(CheckInterval * EXT4_MMP_CHECK_MULT + 1, CheckInterval + MMP_WAIT_MORE_MAX);
         DbgPrint("ext4: MMP: volume not cleanly released (node \"%.64s\"), "
                  "waiting %u s for a sign of life\n", M->Block->mmp_nodename, Wait);
         Status = MmpWait(Wait);

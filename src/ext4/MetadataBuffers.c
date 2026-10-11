@@ -7,12 +7,17 @@
  */
 
 #include "ext4fs.h"
-#include "linux\ext4.h"
+
+/* At a volume's end a buffer is held by nobody but the reaper or a driver
+   thread finishing its step, and a release signals nothing: the buffers
+   are looked at every EXT2_BH_DRAIN_TICK, and one still referenced after
+   EXT2_BH_DRAIN_WAIT is reported and freed as a leak (Ext2DrainBH). */
+#define EXT2_BH_DRAIN_WAIT      EXT2_SECONDS(5)
+#define EXT2_BH_DRAIN_TICK      EXT2_MILLISECONDS(10)
 
 VOID
 Ext2DropBH(IN PEXT2_VCB Vcb)
 {
-
     /* nothing to drop before the buffer head cache exists (a mount that
        failed early), or after it is gone */
     if (Vcb->bd.bd_bh_cache == NULL)
@@ -69,7 +74,7 @@ Ext2DrainBH(IN PEXT2_VCB Vcb)
     if (Vcb->bd.bd_bh_cache == NULL)
         return;
 
-    tick.QuadPart = -(LONGLONG)10 * 1000 * 10;      /* 10 ms */
+    tick.QuadPart = -EXT2_BH_DRAIN_TICK;
 
     for (;;) {
 
@@ -85,7 +90,7 @@ Ext2DrainBH(IN PEXT2_VCB Vcb)
         if (!busy)
             return;
 
-        if (waited++ >= 500)                         /* 5 s */
+        if (waited++ >= EXT2_BH_DRAIN_WAIT / EXT2_BH_DRAIN_TICK)
             break;
 
         KeWaitForSingleObject(&Vcb->bd.bd_bh_notify, Executive,

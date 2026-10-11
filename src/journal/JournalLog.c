@@ -78,6 +78,9 @@ VOID JnlAdvanceTail(PEXT2_JOURNAL J)
     jbd->j_free += freed;
     jbd->j_tail = block;
     jbd->j_tail_sequence = tid;
+
+    /* a handle that found the log full may fit now (JnlActivate) */
+    KeSetEvent(&J->UnlockedEvent, IO_NO_INCREMENT, FALSE);
 }
 
 /*

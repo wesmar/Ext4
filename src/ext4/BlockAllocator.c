@@ -24,7 +24,6 @@
  */
 
 #include "ext4fs.h"
-#include "linux\ext4.h"
 #include "BlockSearch.h"
 
 /* ---------------------------------------------------------------- geometry */

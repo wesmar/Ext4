@@ -12,10 +12,6 @@
 #include "../core/core_internal.h"
 #include "vcb_internal.h"
 
-/* the longest the teardown waits for the metadata stream's last close (a
-   cache manager work item drops it), in 100 ns units: 5 s */
-#define EXT2_STREAM_CLOSE_WAIT  (5LL * 1000 * 1000 * 10)
-
 /*
  * The last reference of ours to the metadata stream (its cache map gone,
  * its section closed). It is not always the last one: the cache manager
@@ -26,23 +22,20 @@
  * resources, and the per-stream contexts Filter Manager looks up through
  * FsContext. So the stream no longer points at the Vcb (FsContext2 only
  * marks it as ours for Ext2Close), and, when its close is to come to this
- * volume, the Vcb stays until it has.
+ * volume, the Vcb stays until it has - however long that is: the close
+ * signals StreamClosed in this Vcb, so giving up on it first would only
+ * move the wait into freed memory.
  */
 VOID
 Ext2ReleaseStream(IN PEXT2_VCB Vcb, IN PFILE_OBJECT Stream)
 {
-    BOOLEAN       Ours = Stream->Vpb != NULL && Stream->Vpb->DeviceObject == Vcb->DeviceObject;
-    LARGE_INTEGER Wait;
+    BOOLEAN Ours = Stream->Vpb != NULL && Stream->Vpb->DeviceObject == Vcb->DeviceObject;
 
     Stream->FsContext = NULL;
     Stream->FsContext2 = Vcb;
     ObDereferenceObject(Stream);
     if (Ours) {
-        Wait.QuadPart = -(LONGLONG)EXT2_STREAM_CLOSE_WAIT;
-        if (KeWaitForSingleObject(&Vcb->StreamClosed, Executive, KernelMode,
-                                  FALSE, &Wait) == STATUS_TIMEOUT) {
-            DbgPrint("ext4: the metadata stream of %p is not closed yet\n", Vcb);
-        }
+        KeWaitForSingleObject(&Vcb->StreamClosed, Executive, KernelMode, FALSE, NULL);
     }
 }
 
@@ -91,17 +84,18 @@ Ext2InitializeLabel(
     UNICODE_STRING      Label;
     OEM_STRING          OemName;
 
-    Label.MaximumLength = 16 * sizeof(WCHAR);
+    /* no code page makes more characters of a label than it has bytes */
+    Label.MaximumLength = EXT2_LABEL_BYTES * sizeof(WCHAR);
     Label.Length    = 0;
     Label.Buffer    = Vcb->Vpb->VolumeLabel;
     Vcb->Vpb->VolumeLabelLength = 0;
     RtlZeroMemory(Label.Buffer, Label.MaximumLength);
 
-    Length = 16;
-    while (  (Length > 0) &&
-             ((Sb->s_volume_name[Length -1]  == 0x00) ||
-              (Sb->s_volume_name[Length - 1] == 0x20)  )
-          ) {
+    /* the label ends at its last byte that is neither a NUL nor a space */
+    Length = EXT2_LABEL_BYTES;
+    while (Length > 0 &&
+           (Sb->s_volume_name[Length - 1] == '\0' ||
+            Sb->s_volume_name[Length - 1] == ' ')) {
         Length--;
     }
 
@@ -109,8 +103,8 @@ Ext2InitializeLabel(
         return STATUS_SUCCESS;
     }
 
-    OemName.Buffer =  Sb->s_volume_name;
-    OemName.MaximumLength = 16;
+    OemName.Buffer = Sb->s_volume_name;
+    OemName.MaximumLength = EXT2_LABEL_BYTES;
     OemName.Length = Length;
 
     status = Ext2OEMToUnicode(Vcb, &Label, &OemName);

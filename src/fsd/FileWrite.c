@@ -501,10 +501,7 @@ Ext2WriteExtend(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEXT2_
     W->FileObject->Flags |= FO_FILE_SIZE_CHANGED | FO_FILE_MODIFIED;
     W->FileSizesChanged = TRUE;
 
-    if (Fcb->Header.FileSize.QuadPart >= 0x80000000 &&
-        !IsFlagOn(SUPER_BLOCK->s_feature_ro_compat, EXT2_FEATURE_RO_COMPAT_LARGE_FILE)) {
-        Ext2SetSuperRoCompat(IrpContext, Vcb, EXT2_FEATURE_RO_COMPAT_LARGE_FILE);
-    }
+    Ext2NoteFileSize(IrpContext, Vcb, Fcb->Header.FileSize.QuadPart);
 
     DEBUG(DL_IO, ("Ext2WriteFile: expanding %wZ to FS: %I64xh FA: %I64xh\n",
                   &Fcb->Mcb->ShortName, Fcb->Header.FileSize.QuadPart,

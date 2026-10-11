@@ -57,7 +57,7 @@ Ext2SetInodeTime(
 {
     LONGLONG    Seconds = Ext2UnixTime(SysTime);
     ULONG       Epoch = (ULONG)((ULONGLONG)(Seconds - (LONG)Seconds) >> 32) & EXT4_EPOCH_MASK;
-    ULONG       Nanoseconds = (ULONG)(SysTime->QuadPart % TICKSPERSEC) * 100;
+    ULONG       Nanoseconds = (ULONG)(SysTime->QuadPart % TICKSPERSEC) * EXT2_NS_PER_TICK;
 
     *i_time = (__u32)Seconds;
     *i_time_extra = Epoch | (Nanoseconds << EXT4_EPOCH_BITS);
@@ -72,7 +72,7 @@ Ext2GetInodeTime(
     ULONG           Nanoseconds = (i_time_extra & EXT4_NSEC_MASK) >> EXT4_EPOCH_BITS;
     LARGE_INTEGER   SysTime = Ext2SystemTime(Seconds);
 
-    SysTime.QuadPart += Nanoseconds / 100;
+    SysTime.QuadPart += Nanoseconds / EXT2_NS_PER_TICK;
     return SysTime;
 }
 

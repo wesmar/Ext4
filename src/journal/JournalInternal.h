@@ -84,9 +84,7 @@
 #define JREC_NORMAL         0           /* block is logged and checkpointed */
 #define JREC_REVOKE         1           /* block was freed: revoke record */
 
-#define JNL_WAIT_TICK           ((LONGLONG)50 * 10 * 1000)         /* 50 ms */
-#define JNL_STOP_DRAIN          ((LONGLONG)5 * 1000 * 1000 * 10)   /* 5 s: handles at stop */
-#define JNL_HELD_STUCK          ((LONGLONG)100 * 1000 * 1000 * 10) /* 100 s: buffers held */
+#define JNL_HELD_STUCK          EXT2_SECONDS(100)       /* buffers held    */
 
 #define JNL_LOG_SLACK           32      /* free log blocks always kept    */
 #define JNL_SCOPE_BUCKETS       64
@@ -116,7 +114,7 @@ struct _EXT2_JTXN {
     ULONG                   NumRevokes;
     LONG                    Updates;    /* active handles */
     BOOLEAN                 Sealed;     /* no more joins: copy in progress */
-    LARGE_INTEGER           StartTime;
+    LARGE_INTEGER           StartTime;  /* of its first record */
     unsigned long           LogStart;   /* first log block used */
 };
 
@@ -136,10 +134,11 @@ struct _EXT2_JOURNAL {
 
     KMUTEX                  CommitLock; /* serializes commit/checkpoint */
     KEVENT                  WakeEvent;  /* commit thread wake-up */
-    KEVENT                  UnlockedEvent;  /* running txn accepts handles */
+    KEVENT                  UnlockedEvent;  /* a handle may get in (JnlActivate) */
     KEVENT                  UpdatesEvent;   /* handles drained on LOCKED txn */
     KEVENT                  HeldEvent;      /* a journaled buffer was released */
     volatile LONG           HeldWaiters;    /* a checkpoint is waiting for one */
+    volatile LONG           ThreadBlocked;  /* the thread's checkpoint is too */
     PKTHREAD                Thread;
     NPAGED_LOOKASIDE_LIST   RecLookaside;
     NPAGED_LOOKASIDE_LIST   TxnLookaside;

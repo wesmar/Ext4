@@ -16,12 +16,6 @@ Ext2LoadInternalJournal(
 );
 
 INT
-Ext2CheckJournal(
-    PEXT2_VCB          Vcb,
-    PULONG             jNo
-);
-
-INT
 Ext2RecoverJournal(
     PEXT2_IRP_CONTEXT  IrpContext,
     PEXT2_VCB          Vcb

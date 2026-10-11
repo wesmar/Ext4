@@ -46,8 +46,13 @@
 #define LETTER_TAG          'TL2E'
 #define FIRST_LETTER        L'D'
 
+/* a letter's link is \DosDevices\X:, the letter right after the prefix */
+#define LETTER_PREFIX       L"\\DosDevices\\"
+#define LETTER_LINK_CHARS   RTL_NUMBER_OF(LETTER_PREFIX L"X:")
+#define LETTER_INDEX        (RTL_NUMBER_OF(LETTER_PREFIX) - 1)
+
 /* how long a new interface may take to show up in the mount manager */
-#define ARRIVAL_TIMEOUT     ((LONGLONG)3 * 1000 * 1000 * 10)    /* 3 s, 100 ns units */
+#define ARRIVAL_TIMEOUT     EXT2_SECONDS(3)
 
 /* GUID_DEVINTERFACE_HIDDEN_VOLUME: volmgr registers it, instead of the
    volume interface, for partition types the mount manager ignores. Spelled
@@ -228,7 +233,7 @@ Ext2QueryVolumeDeviceName(
 static BOOLEAN
 Ext2QueryLetter(IN WCHAR Letter, OUT PUNICODE_STRING Target)
 {
-    WCHAR               Buffer[16];
+    WCHAR               Buffer[RTL_NUMBER_OF(L"\\GLOBAL??\\X:")];
     UNICODE_STRING      Name;
     OBJECT_ATTRIBUTES   Attributes;
     HANDLE              Handle;
@@ -296,13 +301,13 @@ Ext2LetterInUse(IN WCHAR Letter)
 NTSTATUS
 Ext2CreateLetter(IN WCHAR Letter, IN PUNICODE_STRING DeviceName)
 {
-    WCHAR                       Link[16];
+    WCHAR                       Link[LETTER_LINK_CHARS];
     USHORT                      LinkLength;
     PMOUNTMGR_CREATE_POINT_INPUT In;
     ULONG                       InLen;
     NTSTATUS                    Status;
 
-    RtlStringCbPrintfW(Link, sizeof(Link), L"\\DosDevices\\%c:", Letter);
+    RtlStringCbPrintfW(Link, sizeof(Link), LETTER_PREFIX L"%c:", Letter);
     LinkLength = (USHORT)(wcslen(Link) * sizeof(WCHAR));
 
     InLen = sizeof(MOUNTMGR_CREATE_POINT_INPUT) + LinkLength + DeviceName->Length;
@@ -332,10 +337,10 @@ Ext2CreateLetter(IN WCHAR Letter, IN PUNICODE_STRING DeviceName)
 static NTSTATUS
 Ext2RestoreLetterLink(IN WCHAR Letter, IN PUNICODE_STRING DeviceName)
 {
-    WCHAR           Link[16];
+    WCHAR           Link[LETTER_LINK_CHARS];
     UNICODE_STRING  LinkName;
 
-    RtlStringCbPrintfW(Link, sizeof(Link), L"\\DosDevices\\%c:", Letter);
+    RtlStringCbPrintfW(Link, sizeof(Link), LETTER_PREFIX L"%c:", Letter);
     RtlInitUnicodeString(&LinkName, Link);
     return IoCreateSymbolicLink(&LinkName, DeviceName);
 }
@@ -350,10 +355,10 @@ Ext2RestoreLetterLink(IN WCHAR Letter, IN PUNICODE_STRING DeviceName)
 static NTSTATUS
 Ext2DeleteLetter(IN WCHAR Letter)
 {
-    WCHAR               Link[16];
+    WCHAR               Link[LETTER_LINK_CHARS];
     UNICODE_STRING      LinkName;
 
-    RtlStringCbPrintfW(Link, sizeof(Link), L"\\DosDevices\\%c:", Letter);
+    RtlStringCbPrintfW(Link, sizeof(Link), LETTER_PREFIX L"%c:", Letter);
     RtlInitUnicodeString(&LinkName, Link);
     return IoDeleteSymbolicLink(&LinkName);
 }
@@ -447,7 +452,7 @@ Ext2MountMgrTracks(IN PUNICODE_STRING DeviceName, OUT PWCHAR Letter)
             Link.Length = Link.MaximumLength = Out->MountPoints[i].SymbolicLinkNameLength;
             Link.Buffer = (PWCHAR)((PUCHAR)Out + Out->MountPoints[i].SymbolicLinkNameOffset);
             if (MOUNTMGR_IS_DRIVE_LETTER(&Link)) {
-                *Letter = Link.Buffer[12];
+                *Letter = Link.Buffer[LETTER_INDEX];
                 break;
             }
         }
@@ -760,7 +765,7 @@ Ext2ProbeVolumeWorker(IN PDEVICE_OBJECT DeviceObject, IN PVOID Context)
     UNICODE_STRING      DeviceName = { 0, 0, NULL };
     UNICODE_STRING      ProbePath;
     PUNICODE_STRING     ProbeName = &Work->Link;
-    WCHAR               ProbeBuffer[20];
+    WCHAR               ProbeBuffer[RTL_NUMBER_OF(L"\\GLOBAL??\\X:\\")];
     WCHAR               Existing = 0, Live = 0;
     BOOLEAN             LinkCreated = FALSE;
     NTSTATUS            Status;

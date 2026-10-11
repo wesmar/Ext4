@@ -42,7 +42,7 @@ Ext2CreateVolume(PEXT2_IRP_CONTEXT IrpContext, PEXT2_VCB Vcb)
     DirectoryFile = IsFlagOn(Options, FILE_DIRECTORY_FILE);
     OpenTargetDirectory = IsFlagOn(IrpSp->Flags, SL_OPEN_TARGET_DIRECTORY);
 
-    CreateDisposition = (Options >> 24) & 0x000000ff;
+    CreateDisposition = EXT2_CREATE_DISPOSITION(Options);
 
     DesiredAccess = IrpSp->Parameters.Create.SecurityContext->DesiredAccess;
     ShareAccess   = IrpSp->Parameters.Create.ShareAccess;

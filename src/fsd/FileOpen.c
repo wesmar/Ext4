@@ -137,9 +137,6 @@ Ext2CheckOpenAccess(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN ACCESS_MASK DesiredAc
 
 /* ---------------------------------------------------------------- one create, step by step */
 
-/* the disposition rides in the top byte of the create options */
-#define EXT2_CREATE_DISPOSITION(Options)    (((Options) >> 24) & 0xFF)
-
 /*
  * One IRP_MJ_CREATE as it goes: what it asks for, then what it found or
  * made. Each pointer below holds a reference of its own, dropped once by

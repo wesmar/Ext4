@@ -7,7 +7,6 @@
  */
 
 #include "ext4fs.h"
-#include "linux\ext4.h"
 
 static inline int test_root(ext3_group_t a, ext3_group_t b)
 {

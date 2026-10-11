@@ -7,8 +7,7 @@
  */
 
 #include "ext4fs.h"
-#include "linux\ext4.h"
-#include "linux\ext4_xattr.h"
+#include <linux/ext4_xattr.h>
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, Ext2QueryFileInformation)

@@ -9,6 +9,9 @@
 #ifndef _EXT4_FSD_CREATE_INTERNAL_H_
 #define _EXT4_FSD_CREATE_INTERNAL_H_
 
+/* the disposition rides in the top byte of the create options */
+#define EXT2_CREATE_DISPOSITION(Options)    (((Options) >> 24) & 0xFF)
+
 NTSTATUS Ext2AddDotEntries(struct ext2_icb *icb, struct inode *dir,
                            struct inode *inode);
 

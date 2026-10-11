@@ -15,8 +15,6 @@ u32 crc32_be(u32 crc, unsigned char const *p, size_t len);
 #define JTXN_COMMITTING     3           /* log I/O in progress */
 #define JTXN_COMMITTED      4           /* on the checkpoint list */
 
-#define JNL_DRAIN_TIMEOUT       ((LONGLONG)30 * 10 * 1000 * 1000)  /* 30 s  */
-
 static __inline PUCHAR JnlRecordData(PEXT2_JREC r)
 {
     return r->Snapshot ? r->Snapshot : (PUCHAR)r->bh->b_data;
@@ -30,7 +28,6 @@ PEXT2_JTXN JnlAllocTxn(PEXT2_JOURNAL J, tid_t Tid)
         InitializeListHead(&t->Records);
         t->Tid = Tid;
         t->State = JTXN_RUNNING;
-        KeQuerySystemTime(&t->StartTime);
     }
     return t;
 }
@@ -355,8 +352,8 @@ static VOID JnlFillCommitBlock(PEXT2_JOURNAL J, PEXT2_JTXN t, PUCHAR Buffer, __u
 
     if (now < 0)
         now = 0;
-    h->h_commit_sec  = cpu_to_be64((__u64)(now / 10000000LL));
-    h->h_commit_nsec = cpu_to_be32((__u32)((now % 10000000LL) * 100));
+    h->h_commit_sec  = cpu_to_be64((__u64)(now / TICKSPERSEC));
+    h->h_commit_nsec = cpu_to_be32((__u32)((now % TICKSPERSEC) * EXT2_NS_PER_TICK));
 
     if (jbd2_journal_has_csum_v2or3(jbd)) {
         h->h_chksum_type = 0;
@@ -424,15 +421,12 @@ NTSTATUS JnlCommitTransaction(PEXT2_JOURNAL J)
     journal_t      *jbd = J->jbd;
     PEXT2_JTXN      t, next = NULL;
     KIRQL           irql;
-    LARGE_INTEGER   tick;
     NTSTATUS        Status = STATUS_SUCCESS;
     PLIST_ENTRY     e;
     PUCHAR          snapshot = NULL;
     ULONG           normal, revokes, needed, n;
     __u32           crc32_sum = ~0u;
     BOOLEAN         unlocked = FALSE;
-
-    tick.QuadPart = -JNL_WAIT_TICK;
 
     /* 0. everything that does disk I/O of its own happens before the
        transaction is locked, so that the sealed window (during which
@@ -441,8 +435,7 @@ NTSTATUS JnlCommitTransaction(PEXT2_JOURNAL J)
     JnlLock(J, irql);
     t = J->Running;
     if (t->NumRecords == 0) {
-        /* nothing to do; just restart the clock */
-        KeQuerySystemTime(&t->StartTime);
+        /* nothing to commit (the interval runs from the first record) */
         JnlUnlock(J, irql);
         return STATUS_SUCCESS;
     }
@@ -475,7 +468,6 @@ NTSTATUS JnlCommitTransaction(PEXT2_JOURNAL J)
        the active handles have drained */
     JnlLock(J, irql);
     if (t->NumRecords == 0) {
-        KeQuerySystemTime(&t->StartTime);
         JnlUnlock(J, irql);
         JnlFreeTxn(J, next);
         return STATUS_SUCCESS;
@@ -483,31 +475,26 @@ NTSTATUS JnlCommitTransaction(PEXT2_JOURNAL J)
     t->State = JTXN_LOCKED;
     JnlUnlock(J, irql);
 
-    /* 2. wait for handles in flight to finish. A handle holder never
-       waits for the journal, so this terminates unless a flusher waits
-       for us while holding a resource a handle holder needs - a bug in
-       the caller, which we report and survive instead of hanging. */
-    {
-        LONGLONG deadline = JnlNow() + JNL_DRAIN_TIMEOUT;
-        for (;;) {
-            LONG updates;
-            JnlLock(J, irql);
-            updates = t->Updates;
-            if (updates <= 0) {
-                /* seal: from now on modifications wait for the next txn */
-                t->Sealed = TRUE;
-                KeClearEvent(&J->UnlockedEvent);
-                JnlUnlock(J, irql);
-                break;
-            }
+    /* 2. wait for handles in flight to finish - never snapshot buffers
+       while a metadata writer is active. They all finish: no commit runs
+       on a thread that holds a handle (its callers detach first, or are
+       the journal thread), a handle holder never waits for the journal,
+       and whoever commits holds no lock a handle holder waits for (a
+       file's fsync commits with none held, a volume flush holds the
+       volume exclusively, which no handle holder takes). The last one
+       out signals UpdatesEvent under the lock this check is made under
+       (JnlDetach), so the signal is not missed. */
+    for (;;) {
+        JnlLock(J, irql);
+        if (t->Updates <= 0) {
+            /* seal: from now on modifications wait for the next txn */
+            t->Sealed = TRUE;
+            KeClearEvent(&J->UnlockedEvent);
             JnlUnlock(J, irql);
-            /* Never snapshot buffers while a metadata writer is active. */
-            if (JnlNow() > deadline) {
-                Status = STATUS_IO_TIMEOUT;
-                goto errorout;
-            }
-            KeWaitForSingleObject(&J->UpdatesEvent, Executive, KernelMode, FALSE, &tick);
+            break;
         }
+        JnlUnlock(J, irql);
+        KeWaitForSingleObject(&J->UpdatesEvent, Executive, KernelMode, FALSE, NULL);
     }
 
     /* 3. the block set is now frozen: nobody modifies these buffers */
@@ -635,6 +622,10 @@ NTSTATUS JnlCommitTransaction(PEXT2_JOURNAL J)
     KeSetEvent(&J->UnlockedEvent, 0, FALSE);
 
     KeQuerySystemTime(&J->LastCommitTime);
+
+    /* the log is fuller and the idle clock starts again: the thread looks
+       at both (when it committed this itself, one look more) */
+    KeSetEvent(&J->WakeEvent, 0, FALSE);
 
     DEBUG(DL_JNL, ("Ext2Jnl: committed tid %u (%u blocks, %u revokes) head=%lu free=%lu\n",
                    t->Tid, t->NumNormal, t->NumRevokes, jbd->j_head, jbd->j_free));

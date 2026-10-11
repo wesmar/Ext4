@@ -201,7 +201,7 @@ Ext2ParseRegistryVolumeParams(
 
     if (bMountPoint) {
         Property->DrvLetter = DrvLetter[0];
-        Property->DrvLetter |= 0x80;
+        Property->DrvLetter |= EXT2_LETTER_FROM_SETTINGS;
     }
 
     if (bUID && bGID) {

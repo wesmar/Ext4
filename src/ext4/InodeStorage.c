@@ -7,7 +7,6 @@
  */
 
 #include "ext4fs.h"
-#include "linux\ext4.h"
 
 #define MAX_LFS_FILESIZE 	0x7fffffffffffffff
 

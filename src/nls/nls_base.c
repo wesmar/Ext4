@@ -12,10 +12,6 @@
 #include <linux/module.h>
 #include <linux/config.h>
 #include <linux/errno.h>
-#ifdef CONFIG_KMOD
-#include <linux/kmod.h>
-#endif
-//#include <linux/spinlock.h>
 
 struct nls_table *tables;
 spinlock_t nls_lock;
@@ -215,24 +211,8 @@ static struct nls_table *find_nls(char *charset)
 
 struct nls_table *load_nls(char *charset)
 {
-    struct nls_table *nls;
-#ifdef CONFIG_KMOD
-    int ret;
-#endif
-
-    nls = find_nls(charset);
-    if (nls)
-        return nls;
-
-#ifdef CONFIG_KMOD
-    ret = request_module("nls_%s", charset);
-    if (ret != 0) {
-        printk("Unable to load NLS charset %s\n", charset);
-        return NULL;
-    }
-    nls = find_nls(charset);
-#endif
-    return nls;
+    /* the tables are built in: there is no module to load one from */
+    return find_nls(charset);
 }
 
 void unload_nls(struct nls_table *nls)

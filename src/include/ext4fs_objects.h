@@ -195,7 +195,8 @@ typedef struct _EXT2_VCB {
     gid_t                       egid;
 
     /* mountpoint: symlink to DesDevices */
-    UCHAR                       DrvLetter;
+    UCHAR                       DrvLetter;  /* the letter, EXT2_LETTER_FROM_SETTINGS when the
+                                               volume's registry settings name it */
 
     /* the mounted-device interface DriveLetters.c registered on the volume's
        PDO so that the mount manager tracks a hidden volume */
@@ -223,6 +224,10 @@ typedef struct _EXT2_VCB {
     loff_t                      max_bitmap_bytes;
     loff_t                      max_bytes;
 } EXT2_VCB, *PEXT2_VCB;
+
+/* Vcb->DrvLetter: the letter in the low bits, marked when the settings name it */
+#define EXT2_LETTER_MASK            0x7F
+#define EXT2_LETTER_FROM_SETTINGS   0x80
 
 /* Flags for EXT2_VCB */
 #define VCB_INITIALIZED         0x00000001

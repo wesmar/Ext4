@@ -147,6 +147,7 @@ Ext2JournalStart(IN PEXT2_VCB Vcb, IN journal_t *journal, IN PEXT2_MCB Jcb)
     J->MountState = Vcb->SuperBlock->s_state;
     J->CheckpointRecords = 0;
     J->NoScopeReports = 0;
+    J->ThreadBlocked = FALSE;
     KeSetEvent(&J->UnlockedEvent, 0, FALSE);
     KeClearEvent(&J->WakeEvent);
     KeClearEvent(&J->UpdatesEvent);
@@ -444,7 +445,9 @@ static LONG JnlDropScopes(PEXT2_JOURNAL J)
                     PEXT2_JTXN t = s->Txn[k];
                     s->Txn[k] = NULL;
                     JnlLock(J, irql2);
-                    t->Updates--;
+                    /* as JnlDetach: the last one out tells the waiter */
+                    if (--t->Updates == 0)
+                        KeSetEvent(&J->UpdatesEvent, 0, FALSE);
                     JnlUnlock(J, irql2);
                     dropped++;
                 }
@@ -467,7 +470,6 @@ Ext2JournalStop(IN PEXT2_VCB Vcb, IN BOOLEAN MarkClean)
     KIRQL           irql;
     LIST_ENTRY      records, txns;
     PEXT2_JTXN      running;
-    ULONGLONG       deadline;
 
     if (!J || !(J->Flags & JF_ACTIVE))
         return;
@@ -496,22 +498,20 @@ Ext2JournalStop(IN PEXT2_VCB Vcb, IN BOOLEAN MarkClean)
     /* requests still in flight lose their handles; a request that is
        between "scope removed" and "handle detached" finishes on its own */
     JnlDropScopes(J);
-    /* JnlDetach signals UpdatesEvent when the last one goes, now that
-       JF_STOPPING is set (the commit thread, its other waiter, is gone) */
-    deadline = KeQueryInterruptTime() + JNL_STOP_DRAIN;
+    /* What is left are requests between "scope removed" and "handle
+       detached" (Ext2JournalLeaveScope, JnlDetachSelf): nothing waits in
+       between, so they finish, and no handle starts any more (JF_ACTIVE
+       is off). The last one out signals UpdatesEvent, now that JF_STOPPING
+       is set, under the lock this check is made under (JnlDetach). */
     for (;;) {
-        LONG            updates;
-        LONGLONG        left;
-        LARGE_INTEGER   wait;
+        LONG updates;
 
         JnlLock(J, irql);
         updates = J->Running ? J->Running->Updates : 0;
         JnlUnlock(J, irql);
-        left = (LONGLONG)(deadline - KeQueryInterruptTime());
-        if (updates <= 0 || left <= 0)
+        if (updates <= 0)
             break;
-        wait.QuadPart = -left;
-        KeWaitForSingleObject(&J->UpdatesEvent, Executive, KernelMode, FALSE, &wait);
+        KeWaitForSingleObject(&J->UpdatesEvent, Executive, KernelMode, FALSE, NULL);
     }
 
     /* whatever is left (aborted journal, or a modification that raced
@@ -536,11 +536,8 @@ Ext2JournalStop(IN PEXT2_VCB Vcb, IN BOOLEAN MarkClean)
             JnlUnlinkRecord(J, running, r);
             InsertTailList(&records, &r->Link);
         }
-        if (running->Updates <= 0)
-            InsertTailList(&txns, &running->Link);
-        else
-            DbgPrint("ext4: journal stop with %d handles open, transaction leaked\n",
-                     running->Updates);
+        InsertTailList(&txns, &running->Link);
+
     }
     JnlUnlock(J, irql);
 

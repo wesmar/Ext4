@@ -13,9 +13,6 @@
 #pragma alloc_text(PAGE, Ext2SetVolumeInformation)
 #endif
 
-/* the label's bytes in the superblock (s_volume_name, not terminated when full) */
-#define EXT2_LABEL_BYTES    RTL_FIELD_SIZE(EXT2_SUPER_BLOCK, s_volume_name)
-
 /*
  * A structure that ends in a name: Header bytes, then the name, cut to what
  * fits - with STATUS_BUFFER_OVERFLOW, and Information covering what was

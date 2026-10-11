@@ -7,7 +7,6 @@
  */
 
 #include "ext4fs.h"
-#include "linux\ext4.h"
 
 NTSTATUS
 Ext2LoadSuper(IN PEXT2_VCB      Vcb,
@@ -82,6 +81,17 @@ Ext2SetSuperRoCompat(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG
         (void)Ext2SaveSuper(IrpContext, Vcb);
     }
     Ext2UnlockSuper(Vcb);
+}
+
+/* a file of Size bytes: from 2 GiB on the volume needs large_file, as
+   Linux marks it when such a file is written */
+VOID
+Ext2NoteFileSize(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN LONGLONG Size)
+{
+    if (Size >= EXT2_LARGE_FILE_SIZE &&
+        !IsFlagOn(Vcb->SuperBlock->s_feature_ro_compat, EXT2_FEATURE_RO_COMPAT_LARGE_FILE)) {
+        Ext2SetSuperRoCompat(IrpContext, Vcb, EXT2_FEATURE_RO_COMPAT_LARGE_FILE);
+    }
 }
 
 BOOLEAN

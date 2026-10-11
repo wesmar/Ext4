@@ -101,7 +101,7 @@ Ext2VolumeDosName(IN PEXT2_VCB Vcb, OUT PUNICODE_STRING Name)
     if (Name->Buffer == NULL) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    Name->Buffer[0] = (WCHAR)(Vcb->DrvLetter & 0x7F);
+    Name->Buffer[0] = (WCHAR)(Vcb->DrvLetter & EXT2_LETTER_MASK);
     Name->Buffer[1] = L':';
     Name->Buffer[2] = 0;
     Name->Length = 2 * sizeof(WCHAR);

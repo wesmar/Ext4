@@ -7,8 +7,7 @@
  */
 
 #include "ext4fs.h"
-#include "linux\ext4.h"
-#include "linux\ext4_xattr.h"
+#include <linux/ext4_xattr.h>
 
 static BOOLEAN Ext2ZeroResizeRange(PFILE_OBJECT FileObject,
                                    PLARGE_INTEGER Start, PLARGE_INTEGER End);
@@ -379,10 +378,7 @@ Ext2SetEndOfFileInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE
             CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
         }
 
-        if (Fcb->Header.FileSize.QuadPart >= 0x80000000 &&
-                !IsFlagOn(SUPER_BLOCK->s_feature_ro_compat, EXT2_FEATURE_RO_COMPAT_LARGE_FILE)) {
-            Ext2SetSuperRoCompat(IrpContext, Vcb, EXT2_FEATURE_RO_COMPAT_LARGE_FILE);
-        }
+        Ext2NoteFileSize(IrpContext, Vcb, Fcb->Header.FileSize.QuadPart);
 
         SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
         SetLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
@@ -443,6 +439,48 @@ Ext2SetPositionInfo(IN PDEVICE_OBJECT DeviceObject, IN PFILE_OBJECT FileObject,
     }
     FileObject->CurrentByteOffset = FPI->CurrentByteOffset;
     return STATUS_SUCCESS;
+}
+
+/*
+ * What a class needs of the buffer at least. The I/O manager checks it for
+ * NtSetInformationFile; a driver that builds the request itself is checked
+ * here - the classes used to be read whatever the length was.
+ */
+static ULONG
+Ext2SetInfoLength(IN FILE_INFORMATION_CLASS Class)
+{
+    switch (Class) {
+    case FileBasicInformation:              return sizeof(FILE_BASIC_INFORMATION);
+    case FileAllocationInformation:         return sizeof(FILE_ALLOCATION_INFORMATION);
+    case FileEndOfFileInformation:          return sizeof(FILE_END_OF_FILE_INFORMATION);
+    case FileValidDataLengthInformation:    return sizeof(FILE_VALID_DATA_LENGTH_INFORMATION);
+    case FileDispositionInformation:        return sizeof(FILE_DISPOSITION_INFORMATION);
+    case FileRenameInformation:             return FIELD_OFFSET(FILE_RENAME_INFORMATION, FileName);
+    case FileLinkInformation:               return FIELD_OFFSET(FILE_LINK_INFORMATION, FileName);
+    case FilePositionInformation:           return sizeof(FILE_POSITION_INFORMATION);
+    default:                                return 0;
+    }
+}
+
+/* the buffer holds what the class says it does: its fixed part, and the
+   name of a rename or a link whole */
+static NTSTATUS
+Ext2CheckSetInfoBuffer(IN FILE_INFORMATION_CLASS Class, IN PVOID Buffer, IN ULONG Length)
+{
+    ULONG   Fixed = Ext2SetInfoLength(Class);
+    ULONG   Name;
+
+    if (Length < Fixed || (Fixed != 0 && Buffer == NULL)) {
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    if (Class == FileRenameInformation) {
+        Name = ((PFILE_RENAME_INFORMATION)Buffer)->FileNameLength;
+    } else if (Class == FileLinkInformation) {
+        Name = ((PFILE_LINK_INFORMATION)Buffer)->FileNameLength;
+    } else {
+        return STATUS_SUCCESS;
+    }
+    return Name <= Length - Fixed ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
 }
 
 NTSTATUS
@@ -521,6 +559,11 @@ Ext2SetFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 
         if (IsInodeDeleted(Fcb)) {
             Status = STATUS_FILE_DELETED;
+            __leave;
+        }
+
+        Status = Ext2CheckSetInfoBuffer(FileInformationClass, Buffer, Length);
+        if (!NT_SUCCESS(Status)) {
             __leave;
         }
 
