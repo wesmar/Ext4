@@ -22,12 +22,13 @@
 typedef uint32_t ULONG;
 typedef uint64_t ULONGLONG;
 typedef int BOOLEAN,NTSTATUS,KIRQL;
+typedef struct { int64_t QuadPart; } LARGE_INTEGER;
 typedef struct _LIST { struct _LIST *Flink,*Blink; } LIST_ENTRY;
 struct rb_node { struct rb_node *rb_left,*rb_right; };
 struct rb_root { struct rb_node *rb_node; };
 struct buffer_head { struct rb_node b_rb_node; ULONGLONG b_blocknr; int b_count,b_jrefs; ULONG b_jtid; void *b_jrec; };
 typedef struct _REC { LIST_ENTRY Link; struct buffer_head *bh; ULONGLONG Block; int Type; void *Snapshot; } REC,*PEXT2_JREC;
-typedef struct { LIST_ENTRY Records; ULONG Tid,NumRevokes,NumNormal,NumRecords; int State; } TXN,*PEXT2_JTXN;
+typedef struct { LIST_ENTRY Records; ULONG Tid,NumRevokes,NumNormal,NumRecords; int State; LARGE_INTEGER StartTime; } TXN,*PEXT2_JTXN;
 typedef struct { TXN *Running; ULONG Flags,MaxTxnBlocks,CommitRequest; int RecLookaside,WakeEvent; } JOURNAL,*PEXT2_JOURNAL;
 struct block_device { struct rb_root bd_bh_root; int bd_bh_lock; void *bd_priv; volatile long bd_write_error; };
 typedef struct { JOURNAL *Journal; struct block_device bd; } VCB,*PEXT2_VCB;
@@ -35,7 +36,8 @@ static TXN txn;
 static JOURNAL journal;
 static VCB vcb;
 static struct buffer_head buffer;
-static unsigned checks,aborts,allocated,freed,flushes,disk_flushes;
+static unsigned checks,aborts,allocated,freed,flushes,disk_flushes,wakes;
+static int64_t now;
 static int fail_allocate,fail_activate;
 static NTSTATUS flush_status,disk_status;
 static REC *last_record;
@@ -53,7 +55,8 @@ static TXN *JnlActivate(JOURNAL *j) { return fail_activate?NULL:j->Running; }
 #define JnlUnlock(j,irql) do { (void)(j);(void)(irql); } while(0)
 static void JnlAbort(JOURNAL *j,NTSTATUS s) { (void)s;aborts++;j->Flags|=JF_ABORTED; }
 static void InsertTailList(LIST_ENTRY *h,LIST_ENTRY *e) { h->Flink=e;last_record=container_of(e,REC,Link); }
-static void KeSetEvent(int *e,int p,int w) { (void)e;(void)p;(void)w; }
+static void KeSetEvent(int *e,int p,int w) { (void)e;(void)p;(void)w;wakes++; }
+static void KeQuerySystemTime(LARGE_INTEGER *t) { t->QuadPart=++now; }
 static long InterlockedCompareExchange(volatile long *p,long n,long old) { long previous=*p;if(previous==old)*p=n;return previous; }
 static NTSTATUS Ext2FlushVolume(void *c,VCB *v,int shutdown) { (void)c;(void)v;(void)shutdown;flushes++;return flush_status; }
 static NTSTATUS Ext2FlushDisk(VCB *v) { (void)v;disk_flushes++;return disk_status; }
@@ -68,7 +71,7 @@ static void reset(void) {
     journal.Running=&txn;journal.Flags=JF_ACTIVE;journal.MaxTxnBlocks=32;txn.Tid=1;
     vcb.Journal=&journal;vcb.bd.bd_priv=&vcb;vcb.bd.bd_bh_root.rb_node=&buffer.b_rb_node;
     buffer.b_blocknr=100;buffer.b_count=1;buffer.b_jrefs=1;
-    fail_allocate=fail_activate=0;aborts=flushes=disk_flushes=0;flush_status=disk_status=0;
+    fail_allocate=fail_activate=0;aborts=flushes=disk_flushes=wakes=0;flush_status=disk_status=0;
 }
 int main(void) {
     REC existing={0};
@@ -83,6 +86,14 @@ int main(void) {
     reset();fail_allocate=1;check(Ext2JournalDirtyBuffer(&vcb,&buffer)&&aborts==1,"registration OOM cannot select legacy write path");
     reset();journal.Flags|=JF_ABORTED;check(Ext2JournalDirtyBuffer(&vcb,&buffer),"aborted engine cannot select legacy write path");
     reset();buffer.b_jrefs=0;check(Ext2JournalDirtyBuffer(&vcb,&buffer),"normal buffer registration");check(last_record&&txn.NumNormal==1&&buffer.b_jrefs==1,"normal record accounting");
+    reset();buffer.b_jrefs=0;check(Ext2JournalDirtyBuffer(&vcb,&buffer)&&txn.StartTime.QuadPart!=0&&wakes==1,"first record starts the commit interval and wakes the thread");
+    {
+        struct buffer_head other={0};REC *first=last_record;int64_t started=txn.StartTime.QuadPart;
+        other.b_blocknr=101;other.b_count=1;
+        check(Ext2JournalDirtyBuffer(&vcb,&other)&&txn.NumRecords==2&&txn.StartTime.QuadPart==started&&wakes==1,"later records leave the interval and the thread alone");
+        free(first);freed++;
+    }
+    reset();check(Ext2JournalRevokeBlocks(&vcb,100,1)&&txn.StartTime.QuadPart!=0&&wakes==1,"a revoke as first record starts the interval too");
     reset();vcb.bd.bd_write_error=-9;check(sync_blockdev(&vcb.bd)==-9&&!flushes&&!disk_flushes,"retained write failure reaches recovery");
     reset();flush_status=-7;check(sync_blockdev(&vcb.bd)==-7&&flushes==1&&!disk_flushes,"cache flush failure reaches recovery");
     reset();disk_status=-8;check(sync_blockdev(&vcb.bd)==-8&&disk_flushes==1,"device flush failure reaches recovery");

@@ -8,7 +8,10 @@ $journalOutput = $Output
 $Output = $journalOutput
 New-Item -ItemType Directory -Force -Path $Output | Out-Null
 $Output = (Resolve-Path -LiteralPath $Output).Path
-$source = [IO.File]::ReadAllText("$PSScriptRoot/journal-error-model.c") + "`n" +
+$scopeSource = [IO.File]::ReadAllText("$PSScriptRoot/../src/journal/JournalScope.c").Replace("`r`n","`n")
+$addRecord = [regex]::Match($scopeSource,'(?ms)^static BOOLEAN JnlAddRecord\([^)]*\)\n\{.*?^\}')
+if (-not $addRecord.Success) { throw 'Cannot locate the production JnlAddRecord function.' }
+$source = [IO.File]::ReadAllText("$PSScriptRoot/journal-error-model.c") + "`n" + $addRecord.Value + "`n" +
     (ProductionFunction 'journal/JournalScope.c' 'Ext2JournalDirtyBuffer' 'Ext2JournalRevokeBlocks' 'BOOLEAN') + "`n" +
     (ProductionFunction 'journal/JournalScope.c' 'Ext2JournalRevokeBlocks' '' 'BOOLEAN') + "`n"
 $bufferSource = [IO.File]::ReadAllText("$PSScriptRoot/../src/linux/buffer_head.c").Replace("`r`n","`n")
