@@ -158,6 +158,7 @@
     <ClCompile Include="linux\ext4_jbd2.c" />
     <ClCompile Include="linux\kernel.c" />
     <ClCompile Include="linux\rbtree.c" />
+    <ClCompile Include="nls\CharsetMap.c" />
     <ClCompile Include="nls\nls.c" />
     <ClCompile Include="nls\nls_ascii.c" />
     <ClCompile Include="nls\nls_base.c" />

@@ -16,13 +16,18 @@ struct nls_table {
     char *alias;
     int (*uni2char)(wchar_t, unsigned char *, int);
     int (*char2uni)(const unsigned char *, int, wchar_t *);
+#ifdef MODEL_INHERITED
+    /* The inherited converters still carry case maps the driver never read. */
     const unsigned char *charset2lower;
     const unsigned char *charset2upper;
+#endif
     struct module *owner;
     struct nls_table *next;
 };
 static inline int register_nls(struct nls_table *nls) { return nls ? 0 : -EINVAL; }
 static inline int unregister_nls(struct nls_table *nls) { return nls ? 0 : -EINVAL; }
+struct nls_table *load_nls(char *charset);
+void unload_nls(struct nls_table *table);
 #define module_init(fn) \
     const struct nls_table *MODEL_GETTER(void) { (void)fn(); return &table; }
 #define module_exit(fn) void MODEL_EXIT(void) { fn(); }

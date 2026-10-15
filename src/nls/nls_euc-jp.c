@@ -545,7 +545,6 @@ static struct nls_table table = {
     /* .alias */   0,
     /* .uni2char */ uni2char,
     /* .char2uni */ char2uni,
-    0, 0,
     /* .owner */ THIS_MODULE,
 };
 
@@ -553,11 +552,8 @@ static int __init init_nls_euc_jp(void)
 {
     p_nls = load_nls("cp932");
 
-    if (p_nls) {
-        table.charset2upper = p_nls->charset2upper;
-        table.charset2lower = p_nls->charset2lower;
+    if (p_nls)
         return register_nls(&table);
-    }
 
     return -EINVAL;
 }

@@ -300,6 +300,9 @@
     <ClCompile Include="linux\rbtree.c">
       <Filter>linux</Filter>
     </ClCompile>
+    <ClCompile Include="nls\CharsetMap.c">
+      <Filter>nls</Filter>
+    </ClCompile>
     <ClCompile Include="nls\nls.c">
       <Filter>nls</Filter>
     </ClCompile>

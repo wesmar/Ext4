@@ -630,8 +630,6 @@ struct nls_table {
     int (*uni2char) (wchar_t uni, unsigned char *out, int boundlen);
     int (*char2uni) (const unsigned char *rawstring, int boundlen,
                      wchar_t *uni);
-    const unsigned char *charset2lower;
-    const unsigned char *charset2upper;
     struct module *owner;
     struct nls_table *next;
 };
@@ -644,7 +642,6 @@ extern int register_nls(struct nls_table *);
 extern int unregister_nls(struct nls_table *);
 extern struct nls_table *load_nls(char *);
 extern void unload_nls(struct nls_table *);
-extern struct nls_table *load_nls_default(void);
 
 extern int utf8_mbtowc(wchar_t *, const __u8 *, int);
 extern int utf8_wctomb(__u8 *, wchar_t, int);

@@ -1,0 +1,3 @@
+# cp874: where the driver's mapping differs from VENDORS/MICSFT/WINDOWS/CP874.TXT.
+# Its converters came from earlier tables; names on disk depend on them.
+decode 0x80 0x0000

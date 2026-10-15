@@ -39,12 +39,21 @@ try {
             $source=$file.FullName
             if($side-eq'after') {$source=Join-Path "$PSScriptRoot/../src/nls" $file.Name}
             $obj=Join-Path $Output "$page-$side.obj"
-            & $compiler.FullName @options /c "/DMODEL_GETTER=$($side)_$page" "/DMODEL_EXIT=exit_$($side)_$page" $source "/Fo$obj"
+            $inherited = @(if ($side -eq 'before') {'/DMODEL_INHERITED'})
+            & $compiler.FullName @options @inherited /c "/DMODEL_GETTER=$($side)_$page" "/DMODEL_EXIT=exit_$($side)_$page" $source "/Fo$obj"
             if($LASTEXITCODE) {throw "Converter model compilation failed: $page/$side"}
             $objects.Add($obj)
             $decl.Add("const struct nls_table *$($side)_$page(void);")
         }
         $rows.Add("    { `"$page`", before_$page, after_$page },")
+    }
+    # The converters the rebuilt code pages share, and koi8-ru, which delegates to koi8-u.
+    foreach($unit in @(@{Source="$PSScriptRoot/../src/nls/CharsetMap.c"; Name='charset-map'; Defines=@()},
+            @{Source="$PSScriptRoot/../src/nls/nls_koi8-ru.c"; Name='koi8_ru-after'; Defines=@('/DMODEL_GETTER=after_koi8_ru','/DMODEL_EXIT=exit_after_koi8_ru')})) {
+        $obj=Join-Path $Output "$($unit.Name).obj"
+        & $compiler.FullName @options @($unit.Defines) /c $unit.Source "/Fo$obj"
+        if($LASTEXITCODE) {throw "Model compilation failed: $($unit.Name)"}
+        $objects.Add($obj)
     }
     $header="/* Generated declarations for this model run. */`n" + ($decl-join"`n") +
         "`ntypedef struct { const char *Name; const struct nls_table *(*Before)(void); const struct nls_table *(*After)(void); } PROFILE;`n" +
