@@ -50,6 +50,7 @@ The code page converters - `src/nls/CharsetMap.c`, `src/nls/CharsetMap.h` and th
 Wesolowski under the MIT license. They reproduce the mappings of the converters the driver
 inherited from Linux `fs/nls` (commit 4706af9, the test reference); the code page registry,
 UTF-8 and the EUC-JP and KOI8-RU adapters in `src/nls` remain Linux code under GPL-2.0.
+`tools/lineage/lineage.py`, which measures how much of the code is new, is MIT-licensed as well.
 
 The restructuring into its present layout, the rewritten subsystems (service stop and unload,
 drive letters, reapers, registry, journal commit engine, extent conversion) and the test
