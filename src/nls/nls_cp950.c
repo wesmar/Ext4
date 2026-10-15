@@ -4461,39 +4461,27 @@ static const NLS_BITS c2u_F9[8] = {
     0x40000000u, 0x40000000u, 0x000034aeu, 0x000034ceu, 0x40000000u, 0x000034eeu, 0x0000350eu, 0x0000352eu,
 };
 
-static const NLS_BITS *const page_charset2uni[256] = {
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   c2u_A1, c2u_A2, c2u_A3, c2u_A4, c2u_A5, c2u_A6, c2u_A7,
-    c2u_A8, c2u_A9, c2u_AA, c2u_AB, c2u_AC, c2u_AD, c2u_AE, c2u_AF,
-    c2u_B0, c2u_B1, c2u_B2, c2u_B3, c2u_B4, c2u_B5, c2u_B6, c2u_B7,
-    c2u_B8, c2u_B9, c2u_BA, c2u_BB, c2u_BC, c2u_BD, c2u_BE, c2u_BF,
-    c2u_C0, c2u_C1, c2u_C2, c2u_C3, c2u_C4, c2u_C5, c2u_C6, NULL,
-    NULL,   c2u_C9, c2u_CA, c2u_CB, c2u_CC, c2u_CD, c2u_CE, c2u_CF,
-    c2u_D0, c2u_D1, c2u_D2, c2u_D3, c2u_D4, c2u_D5, c2u_D6, c2u_D7,
-    c2u_D8, c2u_D9, c2u_DA, c2u_DB, c2u_DC, c2u_DD, c2u_DE, c2u_DF,
-    c2u_E0, c2u_E1, c2u_E2, c2u_E3, c2u_E4, c2u_E5, c2u_E6, c2u_E7,
-    c2u_E8, c2u_E9, c2u_EA, c2u_EB, c2u_EC, c2u_ED, c2u_EE, c2u_EF,
-    c2u_F0, c2u_F1, c2u_F2, c2u_F3, c2u_F4, c2u_F5, c2u_F6, c2u_F7,
-    c2u_F8, c2u_F9, NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
+/* page_charset2uni: the page of each high byte, as its place in page_charset2uni_list plus one (0: none) */
+static const NLS_BYTE page_charset2uni_index[256] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+    0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x00, 0x00, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d,
+    0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d,
+    0x3e, 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d,
+    0x4e, 0x4f, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static const NLS_BITS *const page_charset2uni_list[87] = {
+    c2u_A1, c2u_A2, c2u_A3, c2u_A4, c2u_A5, c2u_A6, c2u_A7, c2u_A8, c2u_A9, c2u_AA, c2u_AB, c2u_AC, c2u_AD, c2u_AE, c2u_AF, c2u_B0, c2u_B1, c2u_B2, c2u_B3, c2u_B4, c2u_B5, c2u_B6, c2u_B7, c2u_B8, c2u_B9, c2u_BA, c2u_BB, c2u_BC, c2u_BD, c2u_BE, c2u_BF, c2u_C0, c2u_C1, c2u_C2, c2u_C3, c2u_C4, c2u_C5, c2u_C6, c2u_C9, c2u_CA, c2u_CB, c2u_CC, c2u_CD, c2u_CE, c2u_CF, c2u_D0, c2u_D1, c2u_D2, c2u_D3, c2u_D4, c2u_D5, c2u_D6, c2u_D7, c2u_D8, c2u_D9, c2u_DA, c2u_DB, c2u_DC, c2u_DD, c2u_DE, c2u_DF, c2u_E0, c2u_E1, c2u_E2, c2u_E3, c2u_E4, c2u_E5, c2u_E6, c2u_E7, c2u_E8, c2u_E9, c2u_EA, c2u_EB, c2u_EC, c2u_ED, c2u_EE, c2u_EF, c2u_F0, c2u_F1, c2u_F2, c2u_F3, c2u_F4, c2u_F5, c2u_F6, c2u_F7, c2u_F8, c2u_F9,
 };
 
 static const NLS_BITS u2c_02[8] = {
@@ -4892,39 +4880,27 @@ static const NLS_BITS u2c_FF[8] = {
     0xc0000264u, 0xc0000265u, 0xc0000266u, 0xc0000267u, 0x40000000u, 0x40000000u, 0x40000000u, 0xc0000268u,
 };
 
-static const NLS_BITS *const page_uni2charset[256] = {
-    NULL,   NULL,   u2c_02, u2c_03, NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    u2c_20, u2c_21, u2c_22, u2c_23, NULL,   u2c_25, u2c_26, NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    u2c_30, u2c_31, u2c_32, u2c_33, NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   u2c_4E, u2c_4F,
-    u2c_50, u2c_51, u2c_52, u2c_53, u2c_54, u2c_55, u2c_56, u2c_57,
-    u2c_58, u2c_59, u2c_5A, u2c_5B, u2c_5C, u2c_5D, u2c_5E, u2c_5F,
-    u2c_60, u2c_61, u2c_62, u2c_63, u2c_64, u2c_65, u2c_66, u2c_67,
-    u2c_68, u2c_69, u2c_6A, u2c_6B, u2c_6C, u2c_6D, u2c_6E, u2c_6F,
-    u2c_70, u2c_71, u2c_72, u2c_73, u2c_74, u2c_75, u2c_76, u2c_77,
-    u2c_78, u2c_79, u2c_7A, u2c_7B, u2c_7C, u2c_7D, u2c_7E, u2c_7F,
-    u2c_80, u2c_81, u2c_82, u2c_83, u2c_84, u2c_85, u2c_86, u2c_87,
-    u2c_88, u2c_89, u2c_8A, u2c_8B, u2c_8C, u2c_8D, u2c_8E, u2c_8F,
-    u2c_90, u2c_91, u2c_92, u2c_93, u2c_94, u2c_95, u2c_96, u2c_97,
-    u2c_98, u2c_99, u2c_9A, u2c_9B, u2c_9C, u2c_9D, u2c_9E, u2c_9F,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   u2c_DC, NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,   NULL,
-    NULL,   u2c_F9, u2c_FA, NULL,   NULL,   NULL,   u2c_FE, u2c_FF,
+/* page_uni2charset: the page of each high byte, as its place in page_uni2charset_list plus one (0: none) */
+static const NLS_BYTE page_uni2charset_index[256] = {
+    0x00, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x03, 0x04, 0x05, 0x06, 0x00, 0x07, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x09, 0x0a, 0x0b, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0d, 0x0e,
+    0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e,
+    0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e,
+    0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e,
+    0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e,
+    0x4f, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5f, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x61, 0x00, 0x00, 0x00, 0x62, 0x63,
+};
+static const NLS_BITS *const page_uni2charset_list[99] = {
+    u2c_02, u2c_03, u2c_20, u2c_21, u2c_22, u2c_23, u2c_25, u2c_26, u2c_30, u2c_31, u2c_32, u2c_33, u2c_4E, u2c_4F, u2c_50, u2c_51, u2c_52, u2c_53, u2c_54, u2c_55, u2c_56, u2c_57, u2c_58, u2c_59, u2c_5A, u2c_5B, u2c_5C, u2c_5D, u2c_5E, u2c_5F, u2c_60, u2c_61, u2c_62, u2c_63, u2c_64, u2c_65, u2c_66, u2c_67, u2c_68, u2c_69, u2c_6A, u2c_6B, u2c_6C, u2c_6D, u2c_6E, u2c_6F, u2c_70, u2c_71, u2c_72, u2c_73, u2c_74, u2c_75, u2c_76, u2c_77, u2c_78, u2c_79, u2c_7A, u2c_7B, u2c_7C, u2c_7D, u2c_7E, u2c_7F, u2c_80, u2c_81, u2c_82, u2c_83, u2c_84, u2c_85, u2c_86, u2c_87, u2c_88, u2c_89, u2c_8A, u2c_8B, u2c_8C, u2c_8D, u2c_8E, u2c_8F, u2c_90, u2c_91, u2c_92, u2c_93, u2c_94, u2c_95, u2c_96, u2c_97, u2c_98, u2c_99, u2c_9A, u2c_9B, u2c_9C, u2c_9D, u2c_9E, u2c_9F, u2c_DC, u2c_F9, u2c_FA, u2c_FE, u2c_FF,
 };
 
 static const unsigned char charset2lower[256] = {
@@ -5010,7 +4986,7 @@ static int uni2char(const wchar_t uni,
         return -ENAMETOOLONG;
 
 
-    uni2charset = page_uni2charset[ch];
+    uni2charset = NLS_PAGE(page_uni2charset, ch);
     if (uni2charset) {
         if (boundlen <= 1)
             return -ENAMETOOLONG;
@@ -5048,7 +5024,7 @@ static int char2uni(const unsigned char *rawstring, int boundlen,
     ch = rawstring[0];
     cl = rawstring[1];
 
-    charset2uni = page_charset2uni[ch];
+    charset2uni = NLS_PAGE(page_charset2uni, ch);
     if (charset2uni && cl) {
         *uni = NlsMapWord(charset2uni, MapWords, MapExceptions, cl);
         if (*uni == 0x0000)

@@ -37,6 +37,47 @@ function EmitValues([string]$type, [string]$name, $values, [int]$digits) {
     $lines -join "`n"
 }
 
+function CompactDirectories([string]$source, [string]$fileName) {
+    # A page directory holds 256 pointers, most of them NULL: 2 KiB on x64
+    # for a handful of pages. It becomes a byte per high byte - the page's
+    # place in a list of the pages that exist, plus one; 0 for none - and
+    # the list. Duplicate entries keep pointing at one page.
+    $pattern = '(?s)static const (\w+(?: \w+)?) \*const (page_\w+)\[256\]\s*=\s*\{(.*?)\};'
+    foreach ($match in @([regex]::Matches($source, $pattern) | Sort-Object Index -Descending)) {
+        $type = $match.Groups[1].Value
+        $name = $match.Groups[2].Value
+        $entries = @(([regex]::Replace($match.Groups[3].Value, '(?s)/\*.*?\*/', '') -split ',') |
+            ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if ($entries.Count -gt 256) { throw "Directory too long: $fileName/$name" }
+        $list = [Collections.Generic.List[string]]::new()
+        $index = [int[]]::new(256)
+        for ($i = 0; $i -lt $entries.Count; $i++) {
+            if ($entries[$i] -eq 'NULL') { continue }
+            if ($entries[$i] -notmatch '^\w+$') { throw "Unexpected directory entry: $fileName/$name/$i" }
+            if (!$list.Contains($entries[$i])) { $list.Add($entries[$i]) }
+            $index[$i] = $list.IndexOf($entries[$i]) + 1
+        }
+        if ($list.Count -gt 255) { throw "Too many pages for a byte index: $fileName/$name" }
+        $lines = [Collections.Generic.List[string]]::new()
+        $lines.Add("/* ${name}: the page of each high byte, as its place in ${name}_list plus one (0: none) */")
+        $lines.Add("static const NLS_BYTE ${name}_index[256] = {")
+        for ($i = 0; $i -lt 256; $i += 16) {
+            $lines.Add('    ' + ((@($index[$i..($i+15)] | ForEach-Object { '0x' + $_.ToString('x2') })) -join ', ') + ',')
+        }
+        $lines.Add('};')
+        $lines.Add("static const $type *const ${name}_list[$([Math]::Max(1, $list.Count))] = {")
+        $lines.Add('    ' + $(if ($list.Count) { $list -join ', ' } else { 'NULL' }) + ',')
+        $lines.Add('};')
+        $source = $source.Remove($match.Index, $match.Length).Insert($match.Index, ($lines -join "`n"))
+        $source = [regex]::Replace($source, "\b$name\[([^\]]+)\]", "NLS_PAGE($name, `$1)")
+    }
+    if ($source.Contains('NLS_PAGE(') -and !$source.Contains('#include "CharsetMap.h"')) {
+        if (!$source.Contains('#include <linux/errno.h>')) { throw "No include to follow: $fileName" }
+        $source = $source.Replace('#include <linux/errno.h>', "#include <linux/errno.h>`n#include `"CharsetMap.h`"")
+    }
+    return $source
+}
+
 foreach ($file in @(Get-ChildItem -LiteralPath $Reference -Filter 'nls_cp*.c' | Sort-Object Name)) {
     $source = [IO.File]::ReadAllText($file.FullName).Replace("`r`n", "`n")
     $doubleByte = $source -match 'wchar_t \*charset2uni;'
@@ -230,6 +271,7 @@ foreach ($file in @(Get-ChildItem -LiteralPath $Reference -Filter 'nls_cp*.c' | 
     }
     $data.Add('};')
     $source = $source.Replace('#include <linux/errno.h>', '#include <linux/errno.h>' + "`n" + '#include "CharsetMap.h"' + "`n`n" + ($data -join "`n"))
+    $source = CompactDirectories $source $file.Name
     $storage = $sliceCount*4 + $wordValues.Count*2 + $byteValues.Count + $exceptions.Count*12
     $summary += [pscustomobject]@{File=$file.Name;Original=$plainBytes;Compact=$storage;Slices=$sliceCount;Affine=$simpleCount;Sparse=$sparseCount}
     if (!$DryRun) {
@@ -242,7 +284,10 @@ $summary | Measure-Object Original,Compact,Slices,Affine,Sparse -Sum | Select-Ob
 
 # Other registered NLS maps retain their representation, but their data is immutable.
 # UTF-8's identity array is initialized at registration and has no initializer here.
-foreach ($file in @(Get-ChildItem -LiteralPath $Reference -Filter 'nls_*.c' | Where-Object Name -NotLike 'nls_cp*')) {
+# nls_base.c is the NLS registry, maintained in place: only its default table's
+# page directory is compacted below.
+foreach ($file in @(Get-ChildItem -LiteralPath $Reference -Filter 'nls_*.c' |
+        Where-Object { $_.Name -notlike 'nls_cp*' -and $_.Name -ne 'nls_base.c' })) {
     $source = [IO.File]::ReadAllText($file.FullName).Replace("`r`n", "`n")
     $source = [regex]::Replace($source,
         '(?m)^static (wchar_t|unsigned char) (\w+)\[([^\r\n]*?)\]\s*=\s*\{',
@@ -252,7 +297,15 @@ foreach ($file in @(Get-ChildItem -LiteralPath $Reference -Filter 'nls_*.c' | Wh
         'static const $1 *const $2[$3] = {')
     $source = $source.Replace('unsigned char *uni2charset;', 'const unsigned char *uni2charset;')
     $source = $source.Replace('wchar_t *charset2uni;', 'const wchar_t *charset2uni;')
+    $source = CompactDirectories $source $file.Name
     if (!$DryRun) {
         [IO.File]::WriteAllText((Join-Path $Destination $file.Name), $source.Replace("`n","`r`n"), [Text.UTF8Encoding]::new($false))
     }
+}
+
+$base = Join-Path $Destination 'nls_base.c'
+$source = [IO.File]::ReadAllText($base).Replace("`r`n", "`n")
+$source = CompactDirectories $source 'nls_base.c'
+if (!$DryRun) {
+    [IO.File]::WriteAllText($base, $source.Replace("`n","`r`n"), [Text.UTF8Encoding]::new($false))
 }

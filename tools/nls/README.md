@@ -18,6 +18,12 @@ the two output bytes into one 16-bit value; the existing adapter retains its
 single-byte fallbacks and error behavior. Omitted C initializers remain zero.
 Case maps retain the contiguous 256-byte interface and the original values.
 
+A page directory of 256 pointers - 2 KiB on x64 for a handful of pages - is
+emitted as `page_X_index[256]`, each high byte's place in `page_X_list` plus
+one (0 for no page), and the list of pages that exist; `NLS_PAGE()` reads it.
+`nls_base.c`, the NLS registry, is maintained in place: the generator only
+compacts the page directory of its default table.
+
 Numeric maps and pointer directories are `const`. Registration objects remain
 mutable because the NLS list updates their `next` field. The generated tables
 stay resident; this change introduces neither pageable data nor lazy allocation.

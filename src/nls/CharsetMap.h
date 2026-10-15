@@ -74,6 +74,12 @@ static inline NLS_BYTE NlsMapByte(const NLS_BITS *slices, const NLS_BYTE *values
     return value == NLS_BITS_C(0xffffffff) ? values[offset] : (NLS_BYTE)value;
 }
 
+/* A page directory: the page of high byte i, or NULL. dir_index holds each
+ * page's place in dir_list plus one, 0 where there is no page.
+ */
+#define NLS_PAGE(dir, i) \
+    (dir##_index[(i)] ? dir##_list[dir##_index[(i)] - 1] : NULL)
+
 /* Constant-expression spelling for identity runs in the retained case maps.
  * These fields retain their contiguous 256-byte NLS interface.
  */
