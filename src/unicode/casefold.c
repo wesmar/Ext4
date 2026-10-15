@@ -15,60 +15,19 @@
 #include "utf8n.h"
 #include "ext4fs_unicode.h"
 
-/* UNICODE_AGE(12, 1, 0): the version of EXT4_ENC_UTF8_12_1 */
-#define EXT4_UNICODE_VERSION    ((12 << 16) | (1 << 8) | 0)
-
-/* the entry of a table for Version: the newest one not newer */
-static const struct utf8data *
-Ext4Utf8Table(const struct utf8data *Table, int Entries, unsigned int Version)
-{
-    int i = Entries - 1;
-
-    while (i > 0 && Version < Table[i].maxage) {
-        i--;
-    }
-    return Version == Table[i].maxage ? &Table[i] : NULL;
-}
-
-/* the tables of Unicode 12.1, looked up once; a race only repeats it */
-static const struct unicode_map *
-Ext4Utf8Map(VOID)
-{
-    static struct unicode_map   Map;
-    static volatile LONG        Ready;
-
-    if (!Ready) {
-        Map.version = EXT4_UNICODE_VERSION;
-        Map.tables = &utf8_data_table;
-        Map.ntab[UTF8_NFDI] = Ext4Utf8Table(utf8_data_table.utf8nfdidata,
-                                            utf8_data_table.utf8nfdidata_size,
-                                            EXT4_UNICODE_VERSION);
-        Map.ntab[UTF8_NFDICF] = Ext4Utf8Table(utf8_data_table.utf8nfdicfdata,
-                                              utf8_data_table.utf8nfdicfdata_size,
-                                              EXT4_UNICODE_VERSION);
-        if (Map.ntab[UTF8_NFDI] == NULL || Map.ntab[UTF8_NFDICF] == NULL) {
-            return NULL;
-        }
-        InterlockedExchange(&Ready, TRUE);
-    }
-    return &Map;
-}
-
 BOOLEAN
 Ext4Utf8Supported(IN USHORT Encoding)
 {
-    return Encoding == EXT4_ENC_UTF8_12_1 && Ext4Utf8Map() != NULL;
+    return Encoding == EXT4_ENC_UTF8_12_1;
 }
 
 int
 Ext4Utf8Casefold(IN const char *Name, IN int Length, OUT unsigned char *Out, IN int OutLength)
 {
-    const struct unicode_map   *Map = Ext4Utf8Map();
-    struct utf8cursor           Cursor;
-    int                         n;
+    struct utf8cursor   Cursor;
+    int                 n;
 
-    if (Map == NULL || Length < 0 ||
-        utf8ncursor(&Cursor, Map, UTF8_NFDICF, Name, (size_t)Length) < 0) {
+    if (Length < 0 || utf8ncursor(&Cursor, Name, (size_t)Length) < 0) {
         return -1;
     }
     for (n = 0; n < OutLength; n++) {
@@ -88,13 +47,12 @@ Ext4Utf8Casefold(IN const char *Name, IN int Length, OUT unsigned char *Out, IN 
 int
 Ext4Utf8CasefoldCompare(IN const char *A, IN int ALength, IN const char *B, IN int BLength)
 {
-    const struct unicode_map   *Map = Ext4Utf8Map();
-    struct utf8cursor           Ca, Cb;
-    int                         a, b;
+    struct utf8cursor   Ca, Cb;
+    int                 a, b;
 
-    if (Map == NULL || ALength < 0 || BLength < 0 ||
-        utf8ncursor(&Ca, Map, UTF8_NFDICF, A, (size_t)ALength) < 0 ||
-        utf8ncursor(&Cb, Map, UTF8_NFDICF, B, (size_t)BLength) < 0) {
+    if (ALength < 0 || BLength < 0 ||
+        utf8ncursor(&Ca, A, (size_t)ALength) < 0 ||
+        utf8ncursor(&Cb, B, (size_t)BLength) < 0) {
         return -1;
     }
     do {
@@ -111,20 +69,10 @@ Ext4Utf8CasefoldCompare(IN const char *A, IN int ALength, IN const char *B, IN i
     return 0;
 }
 
+/* utf8_validate() of Linux: every character position, stepping by the
+   length its first byte announces, starts a known code point */
 BOOLEAN
 Ext4Utf8Valid(IN const char *Name, IN int Length)
 {
-    const struct unicode_map   *Map = Ext4Utf8Map();
-    struct utf8cursor           Cursor;
-    int                         c;
-
-    if (Map == NULL || Length < 0 ||
-        utf8ncursor(&Cursor, Map, UTF8_NFDI, Name, (size_t)Length) < 0) {
-        return FALSE;
-    }
-    do {
-        c = utf8byte(&Cursor);
-    } while (c > 0);
-
-    return c == 0;
+    return Length >= 0 && utf8nvalid(Name, (size_t)Length);
 }

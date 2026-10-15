@@ -31,8 +31,15 @@ source files they apply to.
 |---|---|---|
 | Ext2Fsd — Ext2 File System Driver for Windows | Matt Wu, KaHo Ng | GPL-2.0 |
 | Ext4Fsd — continuation of Ext2Fsd | Bo Branten | GPL-2.0 |
-| Linux kernel: `fs/ext4`, `fs/jbd2`, `lib/rbtree.c`, `fs/nls` | Linus Torvalds, Stephen C. Tweedie, Red Hat, Cluster File Systems and other Linux contributors | GPL-2.0 |
+| Linux kernel: `fs/ext4`, `fs/jbd2`, `lib/rbtree.c`, `fs/nls`, `fs/unicode` | Linus Torvalds, Stephen C. Tweedie, Red Hat, Cluster File Systems, SGI and other Linux contributors | GPL-2.0 |
 | lwext4 — extended attribute code | Grzegorz Kostka, KaHo Ng | BSD-3-Clause, notice kept in `src/include/linux/ext4_xattr.h` |
+| Unicode Character Database 12.1.0 — the data in `src/unicode/utf8data.c` | Unicode, Inc. | Unicode Data Files and Software License |
+
+`src/unicode/utf8data.c` and its generator `tools/unicode/make-utf8data.py` are new work by
+Marek Wesolowski under the MIT license (MIT is compatible with the GPL; the driver as a whole
+remains under GPL-2.0). The tables hold data of the Unicode Character Database, Copyright (c)
+1991-2019 Unicode, Inc., distributed under the Unicode terms of use
+(https://www.unicode.org/copyright.html).
 
 The restructuring into its present layout, the rewritten subsystems (service stop and unload,
 drive letters, reapers, registry, journal commit engine, extent conversion) and the test

@@ -394,7 +394,7 @@ Ext4/
 │   ├── volume/        # Mount and verify, VCB, dismount, volume lock, drive letters,
 │   │                  # LUKS disk devices (LuksVolume.c), LVM volumes inside them (LvmVolume.c)
 │   ├── crypto/        # AES-XTS over CNG, shared by the driver and ext4ctl
-│   ├── unicode/       # Casefolded directories: Linux's UTF-8 NFD / case folding tables
+│   ├── unicode/       # Casefolded directories: Unicode 12.1 case folding tables, normalizer
 │   ├── core/          # FCB/CCB, MCB name cache, ICB inode table, 64-bit run maps, reapers
 │   ├── ext4/          # Extent tree, htree, directory entries, block and inode allocators,
 │   │                  # group descriptors, superblock, xattr, metadata checksums,
@@ -408,6 +408,8 @@ Ext4/
 │   └── ext4.rc        # Version resource, generated from include/version.h
 ├── tools/ext4ctl/     # LUKS unlock and driver control: LUKS1/2, Argon2, BLAKE2b, JSON,
 │                      # LVM metadata and dm-thin mappings
+├── tools/nls/         # Generator of the compact character set tables
+├── tools/unicode/     # Generator of the case folding tables from the Unicode Character Database
 ├── tests/             # Guest and host test scripts (see Testing and Validation)
 ├── build.ps1          # Finds VS and the WDK by evidence, builds bin\ext4.sys and bin\ext4ctl.exe
 └── ext4.slnx
@@ -490,6 +492,10 @@ pwsh tests\journal-error-model.ps1 -Architecture x86
 # Malformed extended-attribute parser inputs
 pwsh tests\xattr-model.ps1
 
+# Case folding against the Linux trie it replaced: every code point, every
+# string of up to three bytes (all four-byte strings with -Full), random names
+pwsh tests\unicode-model.ps1
+
 # One dedicated ext2/ext3 write and independent Linux read-back run
 pwsh tests\legacy-vm.ps1 -Image <new .vhdx>
 
@@ -535,7 +541,7 @@ Driver Verifier runs are correctness checks. Throughput measurements use a separ
 | `large_dir` (three-level htree, directories past 2 GiB) | Read / write: index blocks split at every level and a level is added under the root when all are full, as in Linux; tested with a three-level index the kernel built and one this driver grew from empty (45 000 names), both checked by `e2fsck` and by the kernel looking every name up through the index |
 | `metadata_csum`, `gdt_csum`, `csum_seed` | Read / write; every checksum is verified before use - superblock, group descriptors, block and inode bitmaps, inodes, extent nodes, directory leaves and htree nodes, xattr blocks, MMP and journal - and a block that fails is refused and recorded as a superblock error. A superblock that fails its own checksum, which Linux refuses to mount, is mounted read-only and never written: the files can be copied off, and Windows does not offer to format the partition |
 | `orphan_file` (the `mkfs.ext4` default since e2fsprogs 1.47) | Read / write on clean volumes; `orphan_present` mounts read-only. An inode the driver cannot finish releasing goes on the classic orphan list, which Linux and `e2fsck` empty with or without the orphan file; orphans Linux left behind are not processed by the driver |
-| `casefold` (`mkfs -O casefold`, `chattr +F`; SteamOS formats its microSD cards so) | Read / write. Names in a casefolded directory are folded as Linux folds them (NFD and full case folding, Unicode 12.1, with the kernel's own tables): the index is hashed on the folded names, `ŁÓDŹ.TXT` finds `Łódź.txt` and `STRASSE.TXT` finds `straße.txt`, a name that folds to an existing one is refused, strict mode refuses names that are not UTF-8, and directories made inside inherit the flag |
+| `casefold` (`mkfs -O casefold`, `chattr +F`; SteamOS formats its microSD cards so) | Read / write. Names in a casefolded directory are folded as Linux folds them (NFD and full case folding, Unicode 12.1, with tables generated from the Unicode Character Database and equal to the kernel's for every code point): the index is hashed on the folded names, `ŁÓDŹ.TXT` finds `Łódź.txt` and `STRASSE.TXT` finds `straße.txt`, a name that folds to an existing one is refused, strict mode refuses names that are not UTF-8, and directories made inside inherit the flag |
 | Unwritten (preallocated) extents | Read / write |
 | Extended attributes | Read / write, exposed as Windows EAs in the `user.` namespace, names matched without regard to case as Windows expects; other namespaces (POSIX ACLs, security labels, `trusted.`) are neither shown nor touched - replacing a file's EA set replaces its `user.` attributes only. A value longer than an EA can carry (65 535 bytes) is kept but not shown |
 | SELinux labels (`security.selinux`) | A file or directory made from Windows takes the label of its directory, as the kernel labels when the policy names no transition, so Fedora sees a labelled file, not `unlabeled_t` |

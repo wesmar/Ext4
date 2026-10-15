@@ -5,16 +5,20 @@
  * Derived from Linux fs/unicode/utf8-norm.c (Copyright (c) 2014 SGI).
  * SPDX-License-Identifier: GPL-2.0-only
  *
- * A port of the Linux normalizer, with the logic unchanged: a casefolded
- * ext4 directory hashes and compares names in exactly this form, so any
- * deviation would put entries where Linux does not look for them.
+ * A port of the Linux normalizer, with the ordering logic unchanged: a
+ * casefolded ext4 directory hashes and compares names in exactly this
+ * form, so any deviation would put entries where Linux does not look.
  *
- * The trie (utf8data.c) decodes one UTF-8 sequence to a leaf: the Unicode
- * version that defined the code point, its canonical combining class and,
- * if it decomposes, the decomposition. utf8byte() walks a string and emits
- * the normalized form one byte at a time, sorting combining marks by class
- * with repeated scans instead of a buffer. Hangul syllables are decomposed
- * algorithmically (Unicode 3.12).
+ * Linux finds the leaf of a character by walking a trie over the bits of
+ * its UTF-8 encoding. That trie accepts exactly strict UTF-8, so here the
+ * sequence is decoded and its code point indexes the tables of utf8data.c.
+ * A leaf holds the canonical combining class and, if the character folds
+ * or decomposes, its form. Linux also tests each leaf's Unicode version
+ * against the one asked for; ext4 asks for 12.1, the newest the tables
+ * know, so that test never holds and the tables carry no versions.
+ * utf8byte() walks a string and emits the folded form one byte at a time,
+ * sorting combining marks by class with repeated scans instead of a
+ * buffer. Hangul syllables are decomposed algorithmically (Unicode 3.12).
  */
 
 #include "utf8n.h"
@@ -54,33 +58,13 @@ static int utf8encode3(char *str, unsigned int val)
 }
 
 /*
- * The trie: internal nodes are one byte plus up to three bytes of offset.
- *  NEXTBYTE  - advance to the next input byte
- *  BITNUM    - the bit of the byte tested
- *  OFFLEN    - bytes of offset (0: a non-branching node)
- * non-branching: RIGHTPATH - the node follows for a set bit,
- *                TRIENODE  - what follows is a node, not a leaf
- * branching:     LEFTNODE / RIGHTNODE - that side is a node, not a leaf
- */
-typedef const unsigned char utf8trie_t;
-#define BITNUM          0x07
-#define NEXTBYTE        0x08
-#define OFFLEN          0x30
-#define OFFLEN_SHIFT    4
-#define RIGHTPATH       0x40
-#define TRIENODE        0x80
-#define RIGHTNODE       0x40
-#define LEFTNODE        0x80
-
-/*
- * A leaf: [0] the generation (index into utf8agetab), [1] the canonical
- * combining class, or DECOMPOSE; then the NUL-terminated decomposition.
+ * A leaf: [0] the canonical combining class, or DECOMPOSE; then the
+ * NUL-terminated decomposition.
  */
 typedef const unsigned char utf8leaf_t;
 
-#define LEAF_GEN(LEAF)  ((LEAF)[0])
-#define LEAF_CCC(LEAF)  ((LEAF)[1])
-#define LEAF_STR(LEAF)  ((const char *)((LEAF) + 2))
+#define LEAF_CCC(LEAF)  ((LEAF)[0])
+#define LEAF_STR(LEAF)  ((const char *)((LEAF) + 1))
 
 #define MINCCC          (0)
 #define MAXCCC          (254)
@@ -114,9 +98,8 @@ static utf8leaf_t *utf8hangul(const char *str, unsigned char *hangul)
     ti = si % TC;
 
     h = hangul;
-    LEAF_GEN(h) = 2;
     LEAF_CCC(h) = DECOMPOSE;
-    h += 2;
+    h += 1;
 
     h += utf8encode3((char *)h, li + LB);
     h += utf8encode3((char *)h, vi + VB);
@@ -129,84 +112,84 @@ static utf8leaf_t *utf8hangul(const char *str, unsigned char *hangul)
 }
 
 /*
- * The leaf of the sequence at s, touching at most len bytes; NULL when it
- * is not valid UTF-8 of a known code point.
+ * The leaf of the sequence at s, touching at most len bytes; NULL unless
+ * it is strict UTF-8 of a scalar value - the shortest form, no surrogate,
+ * nothing past U+10FFFF - which is exactly what the Linux trie accepts.
  */
-static utf8leaf_t *utf8nlookup(const struct unicode_map *um, enum utf8_normalization n,
-                               unsigned char *hangul, const char *s, size_t len)
+static utf8leaf_t *utf8nlookup(unsigned char *hangul, const char *s, size_t len)
 {
-    utf8trie_t *trie = um->tables->utf8data + um->ntab[n]->offset;
-    int         offlen;
-    int         offset;
-    int         mask;
-    int         node;
+    const unsigned char *u = (const unsigned char *)s;
+    utf8leaf_t          *leaf;
+    unsigned int         cp;
+    size_t               n;
+    size_t               i;
 
     if (len == 0) {
         return NULL;
     }
-
-    node = 1;
-    while (node) {
-        offlen = (*trie & OFFLEN) >> OFFLEN_SHIFT;
-        if (*trie & NEXTBYTE) {
-            if (--len == 0) {
-                return NULL;
-            }
-            s++;
+    if (u[0] < 0x80) {
+        n = 1;
+        cp = u[0];
+    } else if (u[0] < 0xC2) {
+        return NULL;                    /* a continuation, or an overlong lead */
+    } else if (u[0] < 0xE0) {
+        n = 2;
+        cp = u[0] & 0x1F;
+    } else if (u[0] < 0xF0) {
+        n = 3;
+        cp = u[0] & 0x0F;
+    } else if (u[0] < 0xF5) {
+        n = 4;
+        cp = u[0] & 0x07;
+    } else {
+        return NULL;
+    }
+    if (len < n) {
+        return NULL;
+    }
+    for (i = 1; i < n; i++) {
+        if ((u[i] & 0xC0) != 0x80) {
+            return NULL;
         }
-        mask = 1 << (*trie & BITNUM);
-        if (*s & mask) {
-            /* right leg */
-            if (offlen) {
-                node = (*trie & RIGHTNODE);
-                offset = trie[offlen];
-                while (--offlen) {
-                    offset <<= 8;
-                    offset |= trie[offlen];
-                }
-                trie += offset;
-            } else if (*trie & RIGHTPATH) {
-                node = (*trie & TRIENODE);
-                trie++;
-            } else {
-                return NULL;
-            }
-        } else {
-            /* left leg */
-            if (offlen) {
-                node = (*trie & LEFTNODE);
-                trie += offlen + 1;
-            } else if (*trie & RIGHTPATH) {
-                return NULL;
-            } else {
-                node = (*trie & TRIENODE);
-                trie++;
-            }
-        }
+        cp = (cp << 6) | (u[i] & 0x3F);
+    }
+    if ((n == 3 && cp < 0x800) || (n == 4 && (cp < 0x10000 || cp > 0x10FFFF)) ||
+        (cp >= 0xD800 && cp <= 0xDFFF)) {
+        return NULL;
     }
 
-    /* Hangul syllables (U+AC00..U+D7A3) are 3 bytes; s is at the last */
-    if (LEAF_CCC(trie) == DECOMPOSE && (unsigned char)LEAF_STR(trie)[0] == HANGUL) {
-        trie = utf8hangul(s - 2, hangul);
+    leaf = utf8leaf(cp);
+    if (LEAF_CCC(leaf) == DECOMPOSE && (unsigned char)LEAF_STR(leaf)[0] == HANGUL) {
+        leaf = utf8hangul(s, hangul);
     }
-    return trie;
+    return leaf;
 }
 
 /* the same, for a NUL-terminated decomposition */
-static utf8leaf_t *utf8lookup(const struct unicode_map *um, enum utf8_normalization n,
-                              unsigned char *hangul, const char *s)
+static utf8leaf_t *utf8lookup(unsigned char *hangul, const char *s)
 {
-    return utf8nlookup(um, n, hangul, s, (size_t)-1);
+    return utf8nlookup(hangul, s, (size_t)-1);
 }
 
-int utf8ncursor(struct utf8cursor *u8c, const struct unicode_map *um,
-                enum utf8_normalization n, const char *s, size_t len)
+int utf8nvalid(const char *s, size_t len)
+{
+    unsigned char hangul[UTF8HANGULLEAF];
+
+    while (len && *s) {
+        if (!utf8nlookup(hangul, s, len)) {
+            return 0;
+        }
+        len -= (size_t)utf8clen(s);
+        s += utf8clen(s);
+    }
+    return 1;
+}
+
+int utf8ncursor(struct utf8cursor *u8c, const char *s, size_t len)
 {
     if (!s) {
         return -1;
     }
-    u8c->um = um;
-    u8c->n = n;
     u8c->s = s;
     u8c->p = NULL;
     u8c->ss = NULL;
@@ -263,9 +246,9 @@ int utf8byte(struct utf8cursor *u8c)
         }
 
         if (u8c->p) {
-            leaf = utf8lookup(u8c->um, u8c->n, u8c->hangul, u8c->s);
+            leaf = utf8lookup(u8c->hangul, u8c->s);
         } else {
-            leaf = utf8nlookup(u8c->um, u8c->n, u8c->hangul, u8c->s, u8c->len);
+            leaf = utf8nlookup(u8c->hangul, u8c->s, u8c->len);
         }
 
         /* not UTF-8: a binary name */
@@ -274,10 +257,7 @@ int utf8byte(struct utf8cursor *u8c)
         }
 
         ccc = LEAF_CCC(leaf);
-        /* code points newer than the version asked for have class 0 */
-        if (u8c->um->tables->utf8agetab[LEAF_GEN(leaf)] > u8c->um->ntab[u8c->n]->maxage) {
-            ccc = STOPPER;
-        } else if (ccc == DECOMPOSE) {
+        if (ccc == DECOMPOSE) {
             u8c->len -= (unsigned int)utf8clen(u8c->s);
             u8c->p = u8c->s + utf8clen(u8c->s);
             u8c->s = LEAF_STR(leaf);
@@ -290,7 +270,7 @@ int utf8byte(struct utf8cursor *u8c)
                 goto ccc_mismatch;
             }
 
-            leaf = utf8lookup(u8c->um, u8c->n, u8c->hangul, u8c->s);
+            leaf = utf8lookup(u8c->hangul, u8c->s);
             if (!leaf) {
                 return -1;
             }
