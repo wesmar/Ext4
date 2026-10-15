@@ -638,17 +638,6 @@ typedef struct ext2_icb {
 
 /* EXT2_ALLOC_HEADER
 
-   In the checked version of the driver this header is put in the beginning of
-   every memory allocation */
-typedef struct _EXT2_ALLOC_HEADER {
-    EXT2_IDENTIFIER Identifier;
-} EXT2_ALLOC_HEADER, *PEXT2_ALLOC_HEADER;
-
-typedef struct _FCB_LIST_ENTRY {
-    PEXT2_FCB    Fcb;
-    LIST_ENTRY   Next;
-} FCB_LIST_ENTRY, *PFCB_LIST_ENTRY;
-
 /* Block Description List */
 typedef struct _EXT2_EXTENT {
     LONGLONG    Lba;

@@ -587,9 +587,6 @@
     <ClInclude Include="include\linux\atomic.h">
       <Filter>include\linux</Filter>
     </ClInclude>
-    <ClInclude Include="include\linux\bit_spinlock.h">
-      <Filter>include\linux</Filter>
-    </ClInclude>
     <ClInclude Include="include\linux\bitops.h">
       <Filter>include\linux</Filter>
     </ClInclude>
@@ -612,12 +609,6 @@
       <Filter>include\linux</Filter>
     </ClInclude>
     <ClInclude Include="include\linux\fs.h">
-      <Filter>include\linux</Filter>
-    </ClInclude>
-    <ClInclude Include="include\linux\group.h">
-      <Filter>include\linux</Filter>
-    </ClInclude>
-    <ClInclude Include="include\linux\jbd.h">
       <Filter>include\linux</Filter>
     </ClInclude>
     <ClInclude Include="include\linux\jbd2.h">

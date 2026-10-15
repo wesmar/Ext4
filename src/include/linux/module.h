@@ -12,7 +12,6 @@
 #ifndef _EXT2_MODULE_HEADER_
 #define _EXT2_MODULE_HEADER_
 
-struct address_space;
 struct buffer_head;
 
 /* INCLUDES *************************************************************/
@@ -86,25 +85,6 @@ RtlUlonglongByteSwap(
 #define __swab32(x) RtlUlongByteSwap(x)
 #define __swab64(x) RtlUlonglongByteSwap(x)
 
-#define __constant_swab32  __swab32
-#define __constant_swab64  __swab64
-
-#define __constant_htonl(x) __constant_swab32((x))
-#define __constant_ntohl(x) __constant_swab32((x))
-#define __constant_htons(x) __constant_swab16((x))
-#define __constant_ntohs(x) __constant_swab16((x))
-#define __constant_cpu_to_le64(x) ((__u64)(x))
-#define __constant_le64_to_cpu(x) ((__u64)(x))
-#define __constant_cpu_to_le32(x) ((__u32)(x))
-#define __constant_le32_to_cpu(x) ((__u32)(x))
-#define __constant_cpu_to_le16(x) ((__u16)(x))
-#define __constant_le16_to_cpu(x) ((__u16)(x))
-#define __constant_cpu_to_be64(x) __constant_swab64((x))
-#define __constant_be64_to_cpu(x) __constant_swab64((x))
-#define __constant_cpu_to_be32(x) __constant_swab32((x))
-#define __constant_be32_to_cpu(x) __constant_swab32((x))
-#define __constant_cpu_to_be16(x) __constant_swab16((x))
-#define __constant_be16_to_cpu(x) __constant_swab16((x))
 #define __cpu_to_le64(x) ((__u64)(x))
 #define __le64_to_cpu(x) ((__u64)(x))
 #define __cpu_to_le32(x) ((__u32)(x))
@@ -117,30 +97,6 @@ RtlUlonglongByteSwap(
 #define __be32_to_cpu(x) __swab32((x))
 #define __cpu_to_be16(x) __swab16((x))
 #define __be16_to_cpu(x) __swab16((x))
-#define __cpu_to_le64p(x) (*(__u64*)(x))
-#define __le64_to_cpup(x) (*(__u64*)(x))
-#define __cpu_to_le32p(x) (*(__u32*)(x))
-#define __le32_to_cpup(x) (*(__u32*)(x))
-#define __cpu_to_le16p(x) (*(__u16*)(x))
-#define __le16_to_cpup(x) (*(__u16*)(x))
-#define __cpu_to_be64p(x) __swab64p((x))
-#define __be64_to_cpup(x) __swab64p((x))
-#define __cpu_to_be32p(x) __swab32p((x))
-#define __be32_to_cpup(x) __swab32p((x))
-#define __cpu_to_be16p(x) __swab16p((x))
-#define __be16_to_cpup(x) __swab16p((x))
-#define __cpu_to_le64s(x) ((__s64)(x))
-#define __le64_to_cpus(x) ((__s64)(x))
-#define __cpu_to_le32s(x) ((__s32)(x))
-#define __le32_to_cpus(x) ((__s32)(x))
-#define __cpu_to_le16s(x) ((__s16)(x))
-#define __le16_to_cpus(x) ((__s16)(x))
-#define __cpu_to_be64s(x) __swab64s((x))
-#define __be64_to_cpus(x) __swab64s((x))
-#define __cpu_to_be32s(x) __swab32s((x))
-#define __be32_to_cpus(x) __swab32s((x))
-#define __cpu_to_be16s(x) __swab16s((x))
-#define __be16_to_cpus(x) __swab16s((x))
 
 #ifndef cpu_to_le64
 #define cpu_to_le64 __cpu_to_le64
@@ -157,30 +113,6 @@ RtlUlonglongByteSwap(
 #define be32_to_cpu __be32_to_cpu
 #define cpu_to_be16 __cpu_to_be16
 #define be16_to_cpu __be16_to_cpu
-#define cpu_to_le64p __cpu_to_le64p
-#define le64_to_cpup __le64_to_cpup
-#define cpu_to_le32p __cpu_to_le32p
-#define le32_to_cpup __le32_to_cpup
-#define cpu_to_le16p __cpu_to_le16p
-#define le16_to_cpup __le16_to_cpup
-#define cpu_to_be64p __cpu_to_be64p
-#define be64_to_cpup __be64_to_cpup
-#define cpu_to_be32p __cpu_to_be32p
-#define be32_to_cpup __be32_to_cpup
-#define cpu_to_be16p __cpu_to_be16p
-#define be16_to_cpup __be16_to_cpup
-#define cpu_to_le64s __cpu_to_le64s
-#define le64_to_cpus __le64_to_cpus
-#define cpu_to_le32s __cpu_to_le32s
-#define le32_to_cpus __le32_to_cpus
-#define cpu_to_le16s __cpu_to_le16s
-#define le16_to_cpus __le16_to_cpus
-#define cpu_to_be64s __cpu_to_be64s
-#define be64_to_cpus __be64_to_cpus
-#define cpu_to_be32s __cpu_to_be32s
-#define be32_to_cpus __be32_to_cpus
-#define cpu_to_be16s __cpu_to_be16s
-#define be16_to_cpus __be16_to_cpus
 
 /* val may be negative: le16_add_cpu(&count, -1) is how Linux decrements */
 static inline void le16_add_cpu(__le16 *var, int val)
@@ -193,23 +125,7 @@ static inline void le32_add_cpu(__le32 *var, int val)
 	*var = cpu_to_le32((u32)(le32_to_cpu(*var) + val));
 }
 
-static inline void le64_add_cpu(__le64 *var, u64 val)
-{
-	*var = cpu_to_le64(le64_to_cpu(*var) + val);
-}
-
 /* Network to host byte swap functions */
-
-#define ntohl(x)           ( ( ( ( x ) & 0x000000ff ) << 24 ) | \
-                             ( ( ( x ) & 0x0000ff00 ) << 8 ) | \
-                             ( ( ( x ) & 0x00ff0000 ) >> 8 ) | \
-                             ( ( ( x ) & 0xff000000 ) >> 24 )   )
-
-#define ntohs(x)           ( ( ( ( x ) & 0xff00 ) >> 8 ) | \
-                             ( ( ( x ) & 0x00ff ) << 8 ) )
-
-#define htonl(x)           ntohl(x)
-#define htons(x)           ntohs(x)
 
 /* kernel printk flags */
 
@@ -247,8 +163,6 @@ static inline long IS_ERR(const void *ptr)
 
 #define BUG_ON(c) assert(!(c))
 
-#define WARN_ON(c) BUG_ON(c)
-
 /* Linux module definitions */
 
 #define likely
@@ -260,7 +174,6 @@ static inline long IS_ERR(const void *ptr)
 #define THIS_MODULE NULL
 #define MODULE_LICENSE(x)
 #define MODULE_ALIAS_NLS(x)
-#define EXPORT_SYMBOL(x)
 
 #define try_module_get(x) (TRUE)
 #define module_put(x)
@@ -293,25 +206,6 @@ typedef struct _spinlock_t {
 #define spin_lock_init(sl)    KeInitializeSpinLock(&((sl)->lock))
 #define spin_lock(sl)         KeAcquireSpinLock(&((sl)->lock), &((sl)->irql))
 #define spin_unlock(sl)       KeReleaseSpinLock(&((sl)->lock), (sl)->irql)
-#define spin_lock_irqsave(sl, flags) do {spin_lock(sl); flags=(sl)->irql;} while(0)
-#define spin_unlock_irqrestore(sl, flags) do {ASSERT((KIRQL)(flags)==(sl)->irql); spin_unlock(sl);} while(0)
-
-#define assert_spin_locked(x)   do {} while(0)
-
-/*
- * Does a critical section need to be broken due to another
- * task waiting?: (technically does not depend on CONFIG_PREEMPT,
- * but a general need for low latency)
- */
-static inline int spin_needbreak(spinlock_t *lock)
-{
-    UNREFERENCED_PARAMETER(lock);
-#ifdef CONFIG_PREEMPT
-    return spin_is_contended(lock);
-#else
-    return 0;
-#endif
-}
 
 /* bit operations */
 
@@ -373,11 +267,7 @@ extern struct task_struct *current;
 static inline int cond_resched() {
     return FALSE;
 }
-static inline int need_resched() {
-    return FALSE;
-}
 
-#define yield()        do {} while(0)
 #define might_sleep()  do {} while(0)
 
 /* mutex */
@@ -448,12 +338,6 @@ struct block_device {
 
 /* page information */
 
-/* vom trata paginile in felul urmator:
-   alocam la sfarsitul structurii inca PAGE_SIZE octeti cand alocam o structura
-   de tip pagina - acolo vor veni toate buffer-headurile
-   deci -> page_address(page) = page + sizeof(page) */
-#define page_address(_page) ((char*)_page + sizeof(struct page))
-
 typedef struct page {
     void           *addr;
     void           *mapping;
@@ -462,8 +346,6 @@ typedef struct page {
     __u32           index;
     __u32           flags;
 } mem_map_t;
-
-#define get_page(p) atomic_inc(&(p)->count)
 
 #define PG_locked		 0	/* Page is locked. Don't touch. */
 #define PG_error		 1
@@ -486,52 +368,6 @@ typedef struct page {
 #define arch_set_page_uptodate(page)
 #endif
 
-/* Make it prettier to test the above... */
-#define UnlockPage(page)        unlock_page(page)
-#define Page_Uptodate(page)     test_bit(PG_uptodate, &(page)->flags)
-#define SetPageUptodate(page) \
-	do {								\
-		arch_set_page_uptodate(page);				\
-		set_bit(PG_uptodate, &(page)->flags);			\
-	} while (0)
-#define ClearPageUptodate(page) clear_bit(PG_uptodate, &(page)->flags)
-#define PageDirty(page)         test_bit(PG_dirty, &(page)->flags)
-#define SetPageDirty(page)      set_bit(PG_dirty, &(page)->flags)
-#define ClearPageDirty(page)    clear_bit(PG_dirty, &(page)->flags)
-#define PageLocked(page)        test_bit(PG_locked, &(page)->flags)
-#define LockPage(page)          set_bit(PG_locked, &(page)->flags)
-#define TryLockPage(page)       test_and_set_bit(PG_locked, &(page)->flags)
-#define PageChecked(page)       test_bit(PG_checked, &(page)->flags)
-#define SetPageChecked(page)    set_bit(PG_checked, &(page)->flags)
-#define ClearPageChecked(page)  clear_bit(PG_checked, &(page)->flags)
-#define PageLaunder(page)       test_bit(PG_launder, &(page)->flags)
-#define SetPageLaunder(page)    set_bit(PG_launder, &(page)->flags)
-#define ClearPageLaunder(page)  clear_bit(PG_launder, &(page)->flags)
-#define ClearPageArch1(page)    clear_bit(PG_arch_1, &(page)->flags)
-
-#define PageError(page)		test_bit(PG_error, &(page)->flags)
-#define SetPageError(page)	set_bit(PG_error, &(page)->flags)
-#define ClearPageError(page)	clear_bit(PG_error, &(page)->flags)
-#define PageReferenced(page)    test_bit(PG_referenced, &(page)->flags)
-#define SetPageReferenced(page) set_bit(PG_referenced, &(page)->flags)
-#define ClearPageReferenced(page)       clear_bit(PG_referenced, &(page)->flags)
-
-#define PageActive(page)        test_bit(PG_active, &(page)->flags)
-#define SetPageActive(page)     set_bit(PG_active, &(page)->flags)
-#define ClearPageActive(page)   clear_bit(PG_active, &(page)->flags)
-
-extern unsigned long __get_free_pages(unsigned int gfp_mask, unsigned int order);
-#define __get_free_page(gfp_mask) \
-		__get_free_pages((gfp_mask),0)
-
-extern void __free_pages(struct page *page, unsigned int order);
-extern void free_pages(unsigned long addr, unsigned int order);
-
-#define __free_page(page) __free_pages((page), 0)
-#define free_page(addr) free_pages((addr),0)
-
-extern void truncate_inode_pages(struct address_space *, loff_t);
-
 #define __GFP_HIGHMEM   0x02
 
 #define __GFP_WAIT	0x10	/* Can wait and reschedule? */
@@ -540,9 +376,6 @@ extern void truncate_inode_pages(struct address_space *, loff_t);
 #define __GFP_HIGHIO	0x80	/* Can start high mem physical IO? */
 #define __GFP_FS	0x100	/* Can call down to low-level FS? */
 
-#define GFP_ATOMIC	(__GFP_HIGH)
-#define GFP_USER	(             __GFP_WAIT | __GFP_IO | __GFP_HIGHIO | __GFP_FS)
-#define GFP_HIGHUSER    (             __GFP_WAIT | __GFP_IO | __GFP_HIGHIO | __GFP_FS | __GFP_HIGHMEM)
 #define GFP_KERNEL	(__GFP_HIGH | __GFP_WAIT | __GFP_IO | __GFP_HIGHIO | __GFP_FS)
 #define GFP_NOFS    0
 #define __GFP_NOFAIL 0
@@ -580,9 +413,7 @@ enum bh_state_bits {
 			                 */
 };
 
-#define PAGE_CACHE_SIZE  (PAGE_SIZE)
 #define PAGE_CACHE_SHIFT (12)
-#define MAX_BUF_PER_PAGE (PAGE_CACHE_SIZE / 512)
 
 typedef void (bh_end_io_t)(struct buffer_head *bh, int uptodate);
 
@@ -682,50 +513,19 @@ BUFFER_FNS(Eopnotsupp, eopnotsupp)
 BUFFER_FNS(Unwritten, unwritten)
 BUFFER_FNS(Virtual, virtual)
 
-#define bh_offset(bh)		((unsigned long)(bh)->b_data & ~PAGE_MASK)
-#define touch_buffer(bh)	mark_page_accessed(bh->b_page)
-
 /* If we *know* page->private refers to buffer_heads */
-
-#define page_buffers(page)					\
-	(                                       \
-		BUG_ON(!PagePrivate(page)),			\
-		((struct buffer_head *)page_private(page))	\
-	)
-#define page_has_buffers(page)	PagePrivate(page)
 
 /*
  * Declarations
  */
 
 void mark_buffer_dirty(struct buffer_head *bh);
-void init_buffer(struct buffer_head *, bh_end_io_t *, void *);
-void set_bh_page(struct buffer_head *bh,
-                 struct page *page, unsigned long offset);
-int try_to_free_buffers(struct page *);
 struct buffer_head *alloc_page_buffers(struct page *page, unsigned long size,
                                                    int retry);
-void create_empty_buffers(struct page *, unsigned long,
-                          unsigned long b_state);
 
-/* Things to do with buffers at mapping->private_list */
-void mark_buffer_dirty_inode(struct buffer_head *bh, struct inode *inode);
-int inode_has_buffers(struct inode *);
-void invalidate_inode_buffers(struct inode *);
-int remove_inode_buffers(struct inode *inode);
-int sync_mapping_buffers(struct address_space *mapping);
-void unmap_underlying_metadata(struct block_device *bdev, sector_t block);
-
-void mark_buffer_async_write(struct buffer_head *bh);
-void invalidate_bdev(struct block_device *);
 int sync_blockdev(struct block_device *bdev);
 void __wait_on_buffer(struct buffer_head *);
-wait_queue_head_t *bh_waitq_head(struct buffer_head *bh);
-int fsync_bdev(struct block_device *);
 struct super_block *freeze_bdev(struct block_device *);
-void thaw_bdev(struct block_device *, struct super_block *);
-int fsync_super(struct super_block *);
-int fsync_no_super(struct block_device *);
 struct buffer_head *get_block_bh(struct block_device *bdev, sector_t block,
                                  unsigned long size, int zero);
 struct buffer_head *__getblk(struct block_device *bdev, sector_t block,
@@ -734,18 +534,13 @@ void __brelse(struct buffer_head *);
 /* a buffer of its own, not a block of the volume (BH_Virtual) */
 struct buffer_head *alloc_virtual_bh(struct block_device *bdev, size_t size);
 void __bforget(struct buffer_head *);
-void __breadahead(struct block_device *, sector_t block, unsigned int size);
 struct buffer_head *__bread(struct block_device *, sector_t block, unsigned size);
-void invalidate_bh_lrus(void);
 struct buffer_head *alloc_buffer_head(gfp_t gfp_flags);
 void free_buffer_head(struct buffer_head * bh);
 void unlock_buffer(struct buffer_head *bh);
 void __lock_buffer(struct buffer_head *bh);
 void ll_rw_block(int, int, struct buffer_head * bh[]);
 int submit_bh(int, struct buffer_head *);
-void write_boundary_block(struct block_device *bdev,
-                          sector_t bblock, unsigned blocksize);
-int bh_uptodate_or_lock(struct buffer_head *bh);
 int bh_submit_read(struct buffer_head *bh);
 /* They are separately managed  */
 struct buffer_head *extents_bread(struct super_block *sb, sector_t block);
@@ -755,19 +550,10 @@ void extents_brelse(struct buffer_head *bh);
 void extents_bforget(struct buffer_head *bh);
 void buffer_head_remove(struct block_device *bdev, struct buffer_head *bh);
 
-extern int buffer_heads_over_limit;
-
 /*
  * Generic address_space_operations implementations for buffer_head-backed
  * address_spaces.
  */
-
-void block_invalidatepage(struct page *page, unsigned long offset);
-void page_zero_new_buffers(struct page *page, unsigned from, unsigned to);
-int  block_commit_write(struct page *page, unsigned from, unsigned to);
-void block_sync_page(struct page *);
-
-void buffer_init(void);
 
 /*
  * inline definitions
@@ -816,28 +602,6 @@ static inline struct buffer_head *
     return get_block_bh(sb->s_bdev, block, sb->s_blocksize, 1);
 }
 
-static inline struct buffer_head *
-            sb_bread(struct super_block *sb, sector_t block)
-{
-    struct buffer_head *bh = __getblk(sb->s_bdev, block, sb->s_blocksize);
-    if (!bh)
-	    return NULL;
-    if (!buffer_uptodate(bh) && (bh_submit_read(bh) < 0)) {
-        brelse(bh);
-	return NULL;
-    }
-    return bh;
-}
-
-static inline void
-map_bh(struct buffer_head *bh, struct super_block *sb, sector_t block)
-{
-    set_buffer_mapped(bh);
-    bh->b_bdev = sb->s_bdev;
-    bh->b_blocknr = block;
-    bh->b_size = sb->s_blocksize;
-}
-
 /*
  * Calling wait_on_buffer() for a zero-ref buffer is illegal, so we call into
  * __wait_on_buffer() just to trip a debug check.  Because debug code in inline
@@ -857,8 +621,6 @@ static inline void lock_buffer(struct buffer_head *bh)
     if (test_set_buffer_locked(bh))
         __lock_buffer(bh);
 }
-
-extern int __set_page_dirty_buffers(struct page *page);
 
 /* unicode character */
 
@@ -885,9 +647,7 @@ extern void unload_nls(struct nls_table *);
 extern struct nls_table *load_nls_default(void);
 
 extern int utf8_mbtowc(wchar_t *, const __u8 *, int);
-extern int utf8_mbstowcs(wchar_t *, const __u8 *, int);
 extern int utf8_wctomb(__u8 *, wchar_t, int);
-extern int utf8_wcstombs(__u8 *, const wchar_t *, int);
 
 /* kernel jiffies */
 
@@ -967,43 +727,8 @@ int   kmem_cache_destroy(kmem_cache_t *kc);
 #define WRITE 1
 #define READA 2         /* read-ahead  - don't block if no resources */
 #define SWRITE 3        /* for ll_rw_block() - wait for buffer lock */
-#define READ_SYNC       (READ | (1 << BIO_RW_SYNC))
-#define READ_META       (READ | (1 << BIO_RW_META))
-#define WRITE_SYNC      (WRITE | (1 << BIO_RW_SYNC))
-#define WRITE_BARRIER   ((1 << BIO_RW) | (1 << BIO_RW_BARRIER))
 
 /* timer routines */
-
-/*
- *      These inlines deal with timer wrapping correctly. You are
- *      strongly encouraged to use them
- *      1. Because people otherwise forget
- *      2. Because if the timer wrap changes in future you won't have to
- *         alter your driver code.
- *
- * time_after(a,b) returns true if the time a is after time b.
- *
- * Do this with "<0" and ">=0" to only test the sign of the result. A
- * good compiler would generate better code (and a really good compiler
- * wouldn't care). Gcc is currently neither.
- */
-#define typecheck(x, y) (TRUE)
-
-#define time_after(a,b)         \
-        (typecheck(unsigned long, a) && \
-         typecheck(unsigned long, b) && \
-         ((long)(b) - (long)(a) < 0))
-#define time_before(a,b)        time_after(b,a)
-
-#define time_after_eq(a,b)      \
-        (typecheck(unsigned long, a) && \
-         typecheck(unsigned long, b) && \
-         ((long)(a) - (long)(b) >= 0))
-#define time_before_eq(a,b)     time_after_eq(b,a)
-
-#define time_in_range(a,b,c) \
-        (time_after_eq(a,b) && \
-         time_before_eq(a,c))
 
 #define smp_rmb()  do {}while(0)
 

@@ -56,13 +56,11 @@
 typedef struct ext3_super_block EXT2_SUPER_BLOCK, *PEXT2_SUPER_BLOCK;
 typedef struct ext3_inode EXT2_INODE, *PEXT2_INODE;
 typedef struct ext4_group_desc EXT2_GROUP_DESC, *PEXT2_GROUP_DESC;
-typedef struct ext3_dir_entry EXT2_DIR_ENTRY, *PEXT2_DIR_ENTRY;
 typedef struct ext3_dir_entry_2 EXT2_DIR_ENTRY2, *PEXT2_DIR_ENTRY2;
 
 /* the label and the UUID are fixed-size arrays in the superblock
    (a label that fills its array has no terminator) */
 #define EXT2_LABEL_BYTES                RTL_FIELD_SIZE(EXT2_SUPER_BLOCK, s_volume_name)
-#define EXT2_UUID_BYTES                 RTL_FIELD_SIZE(EXT2_SUPER_BLOCK, s_uuid)
 
 #define CEILING_ALIGNED(T, A, B) (((A) + (B) - 1) & (~((T)(B) - 1)))
 
@@ -245,7 +243,6 @@ typedef IO_STACK_LOCATION EXTENDED_IO_STACK_LOCATION, *PEXTENDED_IO_STACK_LOCATI
 #define Ext2SetOwnerReadOnly(m) do {(m) &= ~S_IWUSR;} while(0)
 
 #define Ext2IsOwnerWritable(m)  (((m) & S_IWUSR) == S_IWUSR)
-#define Ext2IsOwnerReadable(m)  (((m) & S_IRUSR) == S_IRUSR)
 
 #define Ext2IsGroupWritable(m)  (((m) & S_IWGRP) == S_IWGRP)
 #define Ext2IsGroupReadable(m)  (((m) & S_IRGRP) == S_IRGRP)

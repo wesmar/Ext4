@@ -17,11 +17,6 @@
 #include <linux/bitops.h>
 
 /*
- * deal with unrepresentable constant logarithms
- */
-int ____ilog2_NaN(void);
-
-/*
  * non-constant log of base 2 calculators
  * - the arch may override these in asm/bitops.h if they can be implemented
  *   more efficiently than using fls() and fls64()
@@ -63,15 +58,6 @@ unsigned long __roundup_pow_of_two(unsigned long n)
     return 1UL << fls_long(n - 1);
 }
 
-/*
- * round down to nearest power of two
- */
-static inline __attribute__((const))
-unsigned long __rounddown_pow_of_two(unsigned long n)
-{
-    return 1UL << (fls_long(n) - 1);
-}
-
 /**
  * ilog2 - log of base 2 of 32-bit or a 64-bit unsigned value
  * @n - parameter
@@ -90,39 +76,6 @@ unsigned long __rounddown_pow_of_two(unsigned long n)
  )
 
 /**
- * roundup_pow_of_two - round the given value up to nearest power of two
- * @n - parameter
- *
- * round the given value up to the nearest power of two
- * - the result is undefined when n == 0
- * - this can be used to initialise global variables from constant data
- */
-#define roundup_pow_of_two(n)			\
-(						\
-	__builtin_constant_p(n) ? (		\
-		(n == 1) ? 1 :			\
-		(1UL << (ilog2((n) - 1) + 1))	\
-				   ) :		\
-	__roundup_pow_of_two(n)			\
- )
-
-/**
- * rounddown_pow_of_two - round the given value down to nearest power of two
- * @n - parameter
- *
- * round the given value down to the nearest power of two
- * - the result is undefined when n == 0
- * - this can be used to initialise global variables from constant data
- */
-#define rounddown_pow_of_two(n)			\
-(						\
-	__builtin_constant_p(n) ? (		\
-		(n == 1) ? 0 :			\
-		(1UL << ilog2(n))) :		\
-	__rounddown_pow_of_two(n)		\
- )
-
-/**
  * order_base_2 - calculate the (rounded up) base 2 order of the argument
  * @n: parameter
  *
@@ -135,7 +88,5 @@ unsigned long __rounddown_pow_of_two(unsigned long n)
  *  ob2(5) = 3
  *  ... and so on.
  */
-
-#define order_base_2(n) ilog2(roundup_pow_of_two(n))
 
 #endif /* _LINUX_LOG2_H */

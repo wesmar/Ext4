@@ -49,7 +49,6 @@ typedef struct _EXT2_IDENTIFIER {
     ULONG                    Size;
 } EXT2_IDENTIFIER, *PEXT2_IDENTIFIER;
 
-
 #define NodeType(Ptr) (*((EXT2_IDENTIFIER_TYPE *)(Ptr)))
 
 typedef struct _EXT2_MCB  EXT2_MCB, *PEXT2_MCB;
@@ -80,10 +79,6 @@ typedef struct DECLSPEC_CACHEALIGN _EXT2_GROUP_STRIPE {
    allocated densely, so the low bits spread them evenly (power of two: the
    modulo is a mask). */
 #define EXT2_ICB_BUCKETS    4096
-
-
-typedef PVOID   PBCB;
-
 
 /* EXT2_GLOBAL_DATA
 
@@ -226,7 +221,6 @@ extern PEXT2_GLOBAL Ext2Global;
 
 /* memory allocation statistics */
 
-
 #define INC_MEM_COUNT(_i, _p, _s) do { ASSERT(_p); Ext2TraceMemory(TRUE, (int) (_i), (PVOID)(_p), (LONG)(_s)); } while(0)
 #define DEC_MEM_COUNT(_i, _p, _s) do { ASSERT(_p); Ext2TraceMemory(FALSE, (int) (_i), (PVOID)(_p), (LONG)(_s)); } while(0)
 #define INC_IRP_COUNT(IrpContext) Ext2TraceIrpContext(TRUE, (IrpContext))
@@ -237,7 +231,6 @@ extern PEXT2_GLOBAL Ext2Global;
 #define IsExt2FsDevice(DO) ((DO == Ext2Global->DiskdevObject) || \
                             (DO == Ext2Global->CdromdevObject) )
 
-
 typedef struct _EXT2_FCBVCB {
 
     /* Command header for Vcb and Fcb */
@@ -247,7 +240,6 @@ typedef struct _EXT2_FCBVCB {
 
     /* Ext2Fsd identifier */
     EXT2_IDENTIFIER             Identifier;
-
 
     /* Locking resources */
     ERESOURCE                   MainResource;

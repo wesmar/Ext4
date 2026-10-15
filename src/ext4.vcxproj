@@ -253,7 +253,6 @@
     <ClInclude Include="include\ext4fs_support.h" />
     <ClInclude Include="include\ext4fs_volume.h" />
     <ClInclude Include="include\linux\atomic.h" />
-    <ClInclude Include="include\linux\bit_spinlock.h" />
     <ClInclude Include="include\linux\bitops.h" />
     <ClInclude Include="include\linux\config.h" />
     <ClInclude Include="include\linux\errno.h" />
@@ -262,8 +261,6 @@
     <ClInclude Include="include\linux\ext4_jbd2.h" />
     <ClInclude Include="include\linux\ext4_xattr.h" />
     <ClInclude Include="include\linux\fs.h" />
-    <ClInclude Include="include\linux\group.h" />
-    <ClInclude Include="include\linux\jbd.h" />
     <ClInclude Include="include\linux\jbd2.h" />
     <ClInclude Include="include\linux\journal-head.h" />
     <ClInclude Include="include\linux\list.h" />

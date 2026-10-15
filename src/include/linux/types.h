@@ -16,9 +16,7 @@
 #include <wchar.h>
 
 typedef unsigned __int8     __u8;
-typedef signed   __int8     __s8;
 
-typedef	signed   __int16	__s16;
 typedef	unsigned __int16	__u16;
 
 typedef	signed   __int32	__s32;
@@ -27,11 +25,8 @@ typedef	unsigned __int32	__u32;
 typedef	signed   __int64	__s64;
 typedef	unsigned __int64	__u64;
 
-
 #ifdef _MSC_VER
-typedef __s16       s16;
 typedef __u16       u16;
-typedef __s32       s32;
 typedef __u32       u32;
 typedef __s64       s64;
 typedef __u64       u64;
@@ -46,7 +41,6 @@ typedef __u64       u64;
 /* gcc special keyworks */
 #define __attribute__(x)
 #define __bitwise
-#define __releases(x)
 
 #ifdef _MSC_VER
 #define inline __inline
@@ -92,12 +86,6 @@ typedef unsigned long ulong_ptr_t;
 #endif
 
 /* bit spin lock */
-
-#define __acquire(x)
-#define __release(x)
-
-#define preempt_enable()
-#define preempt_disable()
 
 /* __FUNCTION__ issue */
 

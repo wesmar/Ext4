@@ -396,11 +396,6 @@ Ext2FirstUnusedMcb(
     PLIST_ENTRY Reaped
 );
 
-VOID
-Ext2ReaperThread(
-    PVOID   Context
-);
-
 NTSTATUS
 Ext2StartReaper(PEXT2_REAPER, EXT2_REAPER_RELEASE);
 

@@ -87,7 +87,6 @@ struct ext4_xattr_entry {
 
 #pragma pack(pop)
 
-
 #define EXT4_XATTR_PAD_BITS		2
 #define EXT4_XATTR_PAD		(1<<EXT4_XATTR_PAD_BITS)
 #define EXT4_XATTR_ROUND		(EXT4_XATTR_PAD-1)
@@ -118,9 +117,6 @@ struct ext4_xattr_entry {
 	EXT4_XATTR_ENTRY(EXT4_XATTR_BHDR(block)+1)
 #define EXT4_XATTR_IS_LAST_ENTRY(entry) \
 	(*(__le32 *)(entry) == 0)
-
-#define EXT4_ZERO_XATTR_VALUE ((void *)-1)
-
 
 struct ext4_xattr_item {
 	/* This attribute should be stored in inode body */

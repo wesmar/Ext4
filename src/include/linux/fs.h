@@ -13,25 +13,8 @@
 typedef struct block_device * kdev_t;
 
 #define MINORBITS   8
-#define MINORMASK   ((1U << MINORBITS) - 1)
-
-#define MAJOR(dev)   ((unsigned int)((int)(dev) >> MINORBITS))
-#define MINOR(dev)   ((unsigned int)((int)(dev) & MINORMASK))
-
-static inline unsigned int kdev_t_to_nr(kdev_t dev) {
-    UNREFERENCED_PARAMETER(dev);
-    /*return (unsigned int)(MAJOR(dev)<<8) | MINOR(dev);*/
-    return 0;
-}
 
 #define NODEV		0
-#define MKDEV(ma,mi)	(((ma) << MINORBITS) | (mi))
-
-static inline kdev_t to_kdev_t(int dev)
-{
-    UNREFERENCED_PARAMETER(dev);
-    return 0;
-}
 
 /* file system specific structures */
 
@@ -96,8 +79,6 @@ struct inode {
 #define I_LOCK              8
 #define I_FREEING          16
 #define I_CLEAR            32
-
-#define I_DIRTY (I_DIRTY_SYNC | I_DIRTY_DATASYNC | I_DIRTY_PAGES)
 
 struct dentry {
     atomic_t                d_count;

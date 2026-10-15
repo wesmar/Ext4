@@ -44,23 +44,10 @@ static inline ext3_fsblk_t ext3_blocks_count(struct ext3_super_block *es)
            le32_to_cpu(es->s_blocks_count);
 }
 
-static inline ext3_fsblk_t ext3_r_blocks_count(struct ext3_super_block *es)
-{
-    return ((ext3_fsblk_t)le32_to_cpu(es->s_r_blocks_count_hi) << 32) |
-           le32_to_cpu(es->s_r_blocks_count);
-}
-
 static inline ext3_fsblk_t ext3_free_blocks_count(struct ext3_super_block *es)
 {
     return ((ext3_fsblk_t)le32_to_cpu(es->s_free_blocks_count_hi) << 32) |
            le32_to_cpu(es->s_free_blocks_count);
-}
-
-static inline void ext3_blocks_count_set(struct ext3_super_block *es,
-        ext3_fsblk_t blk)
-{
-    es->s_blocks_count = cpu_to_le32((u32)blk);
-    es->s_blocks_count_hi = cpu_to_le32(blk >> 32);
 }
 
 static inline void ext3_free_blocks_count_set(struct ext3_super_block *es,
@@ -68,13 +55,6 @@ static inline void ext3_free_blocks_count_set(struct ext3_super_block *es,
 {
     es->s_free_blocks_count = cpu_to_le32((u32)blk);
     es->s_free_blocks_count_hi = cpu_to_le32(blk >> 32);
-}
-
-static inline void ext3_r_blocks_count_set(struct ext3_super_block *es,
-        ext3_fsblk_t blk)
-{
-    es->s_r_blocks_count = cpu_to_le32((u32)blk);
-    es->s_r_blocks_count_hi = cpu_to_le32(blk >> 32);
 }
 
 blkcnt_t ext3_inode_blocks(struct ext3_inode *raw_inode,
@@ -503,7 +483,6 @@ Ext2SetParentEntry (
     IN PEXT2_FCB           Dcb,
     IN ULONG               OldParent,
     IN ULONG               NewParent );
-
 
 struct ext3_dir_entry_2 *ext3_next_entry(struct ext3_dir_entry_2 *p);
 

@@ -70,35 +70,6 @@ utf8_mbtowc(wchar_t *p, const __u8 *s, int n)
 }
 
 int
-utf8_mbstowcs(wchar_t *pwcs, const __u8 *s, int n)
-{
-    __u16 *op;
-    const __u8 *ip;
-    int size;
-
-    op = pwcs;
-    ip = s;
-    while (*ip && n > 0) {
-        if (*ip & 0x80) {
-            size = utf8_mbtowc(op, ip, n);
-            if (size == -1) {
-                /* Ignore character and move on */
-                ip++;
-                n--;
-            } else {
-                op++;
-                ip += size;
-                n -= size;
-            }
-        } else {
-            *op++ = *ip++;
-            n--;
-        }
-    }
-    return (int)(op - pwcs);
-}
-
-int
 utf8_wctomb(__u8 *s, wchar_t wc, int maxlen)
 {
     long l;
@@ -124,33 +95,6 @@ utf8_wctomb(__u8 *s, wchar_t wc, int maxlen)
         }
     }
     return -1;
-}
-
-int
-utf8_wcstombs(__u8 *s, const wchar_t *pwcs, int maxlen)
-{
-    const __u16 *ip;
-    __u8 *op;
-    int size;
-
-    op = s;
-    ip = pwcs;
-    while (*ip && maxlen > 0) {
-        if (*ip > 0x7f) {
-            size = utf8_wctomb(op, *ip, maxlen);
-            if (size == -1) {
-                /* Ignore character and move on */
-                maxlen--;
-            } else {
-                op += size;
-                maxlen -= size;
-            }
-        } else {
-            *op++ = (__u8) *ip;
-        }
-        ip++;
-    }
-    return (int)(op - s);
 }
 
 int register_nls(struct nls_table * nls)
@@ -442,16 +386,5 @@ static int char2uni(const unsigned char *rawstring, int boundlen, wchar_t *uni)
         return -EINVAL;
     return 1;
 }
-
-
-EXPORT_SYMBOL(register_nls);
-EXPORT_SYMBOL(unregister_nls);
-EXPORT_SYMBOL(unload_nls);
-EXPORT_SYMBOL(load_nls);
-EXPORT_SYMBOL(load_nls_default);
-EXPORT_SYMBOL(utf8_mbtowc);
-EXPORT_SYMBOL(utf8_mbstowcs);
-EXPORT_SYMBOL(utf8_wctomb);
-EXPORT_SYMBOL(utf8_wcstombs);
 
 MODULE_LICENSE("Dual BSD/GPL");

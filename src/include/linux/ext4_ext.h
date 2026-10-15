@@ -47,7 +47,6 @@ typedef struct ext4_extent_header {
     uint32_t  eh_generation;  /* generation of the tree */
 }__attribute__ ((__packed__)) EXT4_EXTENT_HEADER;
 
-
 #define EXT4_EXT_MAGIC          0xf30a
 #define get_ext4_header(i)      ((struct ext4_extent_header *) (i)->i_block)
 
@@ -102,9 +101,6 @@ struct ext4_ext_path
 #define EXT_INIT_MAX_LEN (1UL << 15)
 #define EXT_UNWRITTEN_MAX_LEN	(EXT_INIT_MAX_LEN - 1)
 
-#define EXT_EXTENT_SIZE sizeof(struct ext4_extent)
-#define EXT_INDEX_SIZE sizeof(struct ext4_extent_idx)
-
 #define EXT_FIRST_EXTENT(__hdr__)                                              \
 	((struct ext4_extent *)(((char *)(__hdr__)) +                          \
 				sizeof(struct ext4_extent_header)))
@@ -135,18 +131,6 @@ static inline struct ext4_extent_header *ext_block_hdr(struct buffer_head *bh)
 static inline unsigned short ext_depth(struct inode *inode)
 {
 	return ext_inode_hdr(inode)->eh_depth;
-}
-
-static inline void ext4_ext_mark_uninitialized(struct ext4_extent *ext)
-{
-	/* We can not have an uninitialized extent of zero length! */
-	ext->ee_len |= EXT_INIT_MAX_LEN;
-}
-
-static inline int ext4_ext_is_uninitialized(struct ext4_extent *ext)
-{
-	/* Extent with ee_len of 0x8000 is treated as an initialized extent */
-	return (ext->ee_len > EXT_INIT_MAX_LEN);
 }
 
 static inline uint16_t ext4_ext_get_actual_len(struct ext4_extent *ext)
@@ -227,27 +211,6 @@ static inline void ext4_idx_store_pblock(struct ext4_extent_idx *ix,
 	__ext4_ext_dirty("", __LINE__, (icb), (handle), (inode), (path))
 
 #define INODE_HAS_EXTENT(i) ((i)->i_flags & EXT2_EXTENTS_FL)
-
-static inline uint64_t ext_to_block(EXT4_EXTENT *extent)
-{
-    uint64_t block;
-
-    block = (uint64_t)extent->ee_start_lo;
-    block |= ((uint64_t) extent->ee_start_hi << 31) << 1;
-
-    return block;
-}
-
-static inline uint64_t idx_to_block(EXT4_EXTENT_IDX *idx)
-{
-    uint64_t block;
-
-    block = (uint64_t)idx->ei_leaf_lo;
-    block |= ((uint64_t) idx->ei_leaf_hi << 31) << 1;
-
-    return block;
-}
-
 
 /* the deepest extent tree Linux builds or accepts */
 #define EXT4_MAX_EXTENT_DEPTH 5

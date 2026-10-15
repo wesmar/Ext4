@@ -110,7 +110,6 @@ struct rb_root
     struct rb_node *rb_node;
 };
 
-
 #define rb_parent(r)   ((struct rb_node *)((r)->rb_parent_color & ~3))
 #define rb_color(r)   ((r)->rb_parent_color & 1)
 #define rb_is_red(r)   (!rb_color(r))
@@ -127,12 +126,7 @@ static inline void rb_set_color(struct rb_node *rb, ULONG_PTR color)
     rb->rb_parent_color = (rb->rb_parent_color & ~1) | color;
 }
 
-#define RB_ROOT	(struct rb_root) { NULL, }
 #define	rb_entry(ptr, type, member) container_of(ptr, type, member)
-
-#define RB_EMPTY_ROOT(root)	((root)->rb_node == NULL)
-#define RB_EMPTY_NODE(node)	(rb_parent(node) != node)
-#define RB_CLEAR_NODE(node)	(rb_set_parent(node, node))
 
 extern void rb_insert_color(struct rb_node *, struct rb_root *);
 extern void rb_erase(struct rb_node *, struct rb_root *);
