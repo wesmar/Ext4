@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-only
+/* Copyright (c) 2026 Marek Wesolowski (WESMAR)
+ * SPDX-License-Identifier: MIT
  * The reference: src/unicode with the Linux trie (taken from git by
  * unicode-model.ps1), names prefixed, plus what Linux checks in strict mode.
  */

@@ -1,327 +1,284 @@
 /**
- * utf8norm.c - UTF-8 normalization (NFD) and case folding over the trie.
+ * utf8norm.c - the NFDICF form of UTF-8 names, byte for byte as Linux makes it.
  *
  * Copyright (c) 2026 Marek Wesolowski (WESMAR)
- * Derived from Linux fs/unicode/utf8-norm.c (Copyright (c) 2014 SGI).
- * SPDX-License-Identifier: GPL-2.0-only
+ * SPDX-License-Identifier: MIT
  *
- * A port of the Linux normalizer, with the ordering logic unchanged: a
- * casefolded ext4 directory hashes and compares names in exactly this
- * form, so any deviation would put entries where Linux does not look.
+ * A casefolded ext4 directory hashes and compares names in the form the
+ * Linux kernel emits for them (fs/unicode, Unicode 12.1): every character
+ * replaced by its case-folded canonical decomposition, combining marks
+ * sorted by class. The emitted bytes, not only the normal form, have to
+ * match, because Linux hashes them whatever they are. This is an
+ * implementation of that behaviour, written from its definition:
  *
- * Linux finds the leaf of a character by walking a trie over the bits of
- * its UTF-8 encoding. That trie accepts exactly strict UTF-8, so here the
- * sequence is decoded and its code point indexes the tables of utf8data.c.
- * A leaf holds the canonical combining class and, if the character folds
- * or decomposes, its form. Linux also tests each leaf's Unicode version
- * against the one asked for; ext4 asks for 12.1, the newest the tables
- * know, so that test never holds and the tables carry no versions.
- * utf8byte() walks a string and emits the folded form one byte at a time,
- * sorting combining marks by class with repeated scans instead of a
- * buffer. Hangul syllables are decomposed algorithmically (Unicode 3.12).
+ * The string is read as tokens. A token is a character of class k (a
+ * character the tables do not expand, or one character of an expansion),
+ * an ignorable (a character that expands to nothing), a stray byte (a
+ * continuation byte where a character should start), invalid input, or
+ * the end (len bytes read, or a NUL).
+ *
+ *   outside a run       a class-0 character is emitted, an ignorable is
+ *                       skipped, a stray byte is emitted, the end ends the
+ *                       string; a character of class k > 0 starts a run
+ *   inside a run        passes go over the run: the first pass emits no
+ *                       character, each later pass the characters of one
+ *                       class, lowest first, in the order they stand;
+ *                       every pass emits each stray byte it crosses
+ *   end of a pass       at a class-0 character, an ignorable or the end;
+ *                       after the last class the stopper is read again
+ *                       outside the run
+ *   invalid input       ends the folding with an error when it is read
+ *
+ * Hangul syllables expand to their jamo by the arithmetic of the Unicode
+ * standard (3.12); the jamo are class 0.
  */
 
 #include "utf8n.h"
 
-/* bytes in the UTF-8 sequence that starts at s (s is valid UTF-8) */
-static __inline int utf8clen(const char *s)
+#define NOCLASS         256             /* above every canonical combining class */
+
+/* Hangul (Unicode 3.12): first syllable, syllable count, jamo bases, counts */
+#define SBASE   0xAC00u
+#define SCOUNT  11172u
+#define LBASE   0x1100u
+#define VBASE   0x1161u
+#define TBASE   0x11A7u
+#define VCOUNT  21u
+#define TCOUNT  28u
+
+enum utf8token {
+    TOKEN_CHAR,
+    TOKEN_IGNORABLE,
+    TOKEN_STRAY,
+    TOKEN_INVALID,
+    TOKEN_END,
+};
+
+/* the scalar value of the strict UTF-8 sequence at u, reading at most left
+   bytes: its length, or 0 when it is not one (overlong, surrogate, past
+   U+10FFFF, cut short, or not a lead byte) */
+static size_t utf8decode(const unsigned char *u, size_t left, unsigned int *cp)
 {
-    unsigned char c = (unsigned char)*s;
+    size_t          n;
+    size_t          i;
+    unsigned int    v;
 
-    return 1 + (c >= 0xC0) + (c >= 0xE0) + (c >= 0xF0);
-}
-
-/* decode a 3-byte UTF-8 sequence */
-static unsigned int utf8decode3(const char *str)
-{
-    unsigned int uc;
-
-    uc = *str++ & 0x0F;
-    uc <<= 6;
-    uc |= *str++ & 0x3F;
-    uc <<= 6;
-    uc |= *str++ & 0x3F;
-
-    return uc;
-}
-
-/* encode a 3-byte UTF-8 sequence */
-static int utf8encode3(char *str, unsigned int val)
-{
-    str[2] = (char)((val & 0x3F) | 0x80);
-    val >>= 6;
-    str[1] = (char)((val & 0x3F) | 0x80);
-    val >>= 6;
-    str[0] = (char)(val | 0xE0);
-
-    return 3;
-}
-
-/*
- * A leaf: [0] the canonical combining class, or DECOMPOSE; then the
- * NUL-terminated decomposition.
- */
-typedef const unsigned char utf8leaf_t;
-
-#define LEAF_CCC(LEAF)  ((LEAF)[0])
-#define LEAF_STR(LEAF)  ((const char *)((LEAF) + 1))
-
-#define MINCCC          (0)
-#define MAXCCC          (254)
-#define STOPPER         (0)
-#define DECOMPOSE       (255)
-
-/* marker of a Hangul syllable decomposition: the first byte of its leaf string */
-#define HANGUL          (0xFF)
-
-/* Hangul (Unicode 3.12): syllable base, leading, vowel and trailing jamo
-   bases and counts */
-#define SB  (0xAC00)
-#define LB  (0x1100)
-#define VB  (0x1161)
-#define TB  (0x11A7)
-#define LC  (19)
-#define VC  (21)
-#define TC  (28)
-#define NC  (VC * TC)
-#define SC  (LC * NC)
-
-/* the leaf of a Hangul syllable, built in the caller's buffer */
-static utf8leaf_t *utf8hangul(const char *str, unsigned char *hangul)
-{
-    unsigned int    si, li, vi, ti;
-    unsigned char  *h;
-
-    si = utf8decode3(str) - SB;
-    li = si / NC;
-    vi = (si % NC) / TC;
-    ti = si % TC;
-
-    h = hangul;
-    LEAF_CCC(h) = DECOMPOSE;
-    h += 1;
-
-    h += utf8encode3((char *)h, li + LB);
-    h += utf8encode3((char *)h, vi + VB);
-    if (ti) {
-        h += utf8encode3((char *)h, ti + TB);
-    }
-    h[0] = '\0';
-
-    return hangul;
-}
-
-/*
- * The leaf of the sequence at s, touching at most len bytes; NULL unless
- * it is strict UTF-8 of a scalar value - the shortest form, no surrogate,
- * nothing past U+10FFFF - which is exactly what the Linux trie accepts.
- */
-static utf8leaf_t *utf8nlookup(unsigned char *hangul, const char *s, size_t len)
-{
-    const unsigned char *u = (const unsigned char *)s;
-    utf8leaf_t          *leaf;
-    unsigned int         cp;
-    size_t               n;
-    size_t               i;
-
-    if (len == 0) {
-        return NULL;
+    if (left == 0) {
+        return 0;
     }
     if (u[0] < 0x80) {
-        n = 1;
-        cp = u[0];
-    } else if (u[0] < 0xC2) {
-        return NULL;                    /* a continuation, or an overlong lead */
-    } else if (u[0] < 0xE0) {
-        n = 2;
-        cp = u[0] & 0x1F;
-    } else if (u[0] < 0xF0) {
-        n = 3;
-        cp = u[0] & 0x0F;
-    } else if (u[0] < 0xF5) {
-        n = 4;
-        cp = u[0] & 0x07;
-    } else {
-        return NULL;
+        *cp = u[0];
+        return 1;
     }
-    if (len < n) {
-        return NULL;
+    if (u[0] < 0xC2 || u[0] > 0xF4) {
+        return 0;
     }
+    n = u[0] < 0xE0 ? 2 : u[0] < 0xF0 ? 3 : 4;
+    if (left < n) {
+        return 0;
+    }
+    v = u[0] & (0x7Fu >> n);
     for (i = 1; i < n; i++) {
         if ((u[i] & 0xC0) != 0x80) {
-            return NULL;
+            return 0;
         }
-        cp = (cp << 6) | (u[i] & 0x3F);
+        v = (v << 6) | (u[i] & 0x3Fu);
     }
-    if ((n == 3 && cp < 0x800) || (n == 4 && (cp < 0x10000 || cp > 0x10FFFF)) ||
-        (cp >= 0xD800 && cp <= 0xDFFF)) {
-        return NULL;
+    if ((n == 3 && v < 0x800) || (n == 4 && (v < 0x10000 || v > 0x10FFFF)) ||
+        (v >= 0xD800 && v <= 0xDFFF)) {
+        return 0;
+    }
+    *cp = v;
+    return n;
+}
+
+static unsigned char *utf8put3(unsigned char *d, unsigned int cp)
+{
+    d[0] = (unsigned char)(0xE0 | (cp >> 12));
+    d[1] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+    d[2] = (unsigned char)(0x80 | (cp & 0x3F));
+    return d + 3;
+}
+
+/* the jamo of Hangul syllable cp, NUL-terminated */
+static void utf8jamo(unsigned int cp, unsigned char *jamo)
+{
+    unsigned int    s = cp - SBASE;
+    unsigned char  *d = jamo;
+
+    d = utf8put3(d, LBASE + s / (VCOUNT * TCOUNT));
+    d = utf8put3(d, VBASE + (s % (VCOUNT * TCOUNT)) / TCOUNT);
+    if (s % TCOUNT) {
+        d = utf8put3(d, TBASE + s % TCOUNT);
+    }
+    *d = 0;
+}
+
+/*
+ * The token at pos, which moves past it. A character's class and bytes
+ * go to *klass, *bytes and *size; a stray byte's to *bytes. An expansion
+ * is entered here and left as soon as its last character is read, so a
+ * saved position never points at the end of one.
+ */
+static enum utf8token utf8token(struct utf8pos *pos, unsigned char *jamo,
+                                int *klass, const unsigned char **bytes, size_t *size)
+{
+    const unsigned char *leaf;
+    unsigned int         cp;
+    size_t               n;
+
+    if (pos->exp) {
+        /* an expansion holds strict UTF-8 of characters that expand no further */
+        n = utf8decode(pos->exp, 4, &cp);
+        *klass = utf8leaf(cp)[0];
+        *bytes = pos->exp;
+        *size = n;
+        pos->exp += n;
+        if (*pos->exp == 0) {
+            pos->exp = NULL;
+        }
+        return TOKEN_CHAR;
+    }
+
+    if (pos->left == 0 || *pos->src == 0) {
+        return TOKEN_END;
+    }
+    if ((*pos->src & 0xC0) == 0x80) {
+        *bytes = pos->src;
+        *size = 1;
+        pos->src++;
+        pos->left--;
+        return TOKEN_STRAY;
+    }
+    n = utf8decode(pos->src, pos->left, &cp);
+    if (n == 0) {
+        return TOKEN_INVALID;
     }
 
     leaf = utf8leaf(cp);
-    if (LEAF_CCC(leaf) == DECOMPOSE && (unsigned char)LEAF_STR(leaf)[0] == HANGUL) {
-        leaf = utf8hangul(s, hangul);
+    if (leaf[0] != UTF8_DECOMPOSE) {
+        *klass = leaf[0];
+        *bytes = pos->src;
+        *size = n;
+        pos->src += n;
+        pos->left -= n;
+        return TOKEN_CHAR;
     }
-    return leaf;
-}
-
-/* the same, for a NUL-terminated decomposition */
-static utf8leaf_t *utf8lookup(unsigned char *hangul, const char *s)
-{
-    return utf8nlookup(hangul, s, (size_t)-1);
-}
-
-int utf8nvalid(const char *s, size_t len)
-{
-    unsigned char hangul[UTF8HANGULLEAF];
-
-    while (len && *s) {
-        if (!utf8nlookup(hangul, s, len)) {
-            return 0;
-        }
-        len -= (size_t)utf8clen(s);
-        s += utf8clen(s);
+    pos->src += n;
+    pos->left -= n;
+    if (leaf[1] == 0) {
+        return TOKEN_IGNORABLE;
     }
-    return 1;
+    if (leaf[1] == UTF8_HANGUL) {
+        utf8jamo(cp, jamo);
+        pos->exp = jamo;
+    } else {
+        pos->exp = leaf + 1;
+    }
+    return utf8token(pos, jamo, klass, bytes, size);
 }
 
 int utf8ncursor(struct utf8cursor *u8c, const char *s, size_t len)
 {
-    if (!s) {
+    /* Linux keeps the length in 32 bits and refuses a string that starts
+       inside a character */
+    if (s == NULL || len > 0xFFFFFFFFu || (len > 0 && (*s & 0xC0) == 0x80)) {
         return -1;
     }
-    u8c->s = s;
-    u8c->p = NULL;
-    u8c->ss = NULL;
-    u8c->sp = NULL;
-    u8c->len = (unsigned int)len;
-    u8c->slen = 0;
-    u8c->ccc = STOPPER;
-    u8c->nccc = STOPPER;
-    /* the length must fit */
-    if (u8c->len != len) {
-        return -1;
-    }
-    /* a string may not start with a continuation byte */
-    if (len > 0 && (*s & 0xC0) == 0x80) {
-        return -1;
-    }
+    RtlZeroMemory(u8c, sizeof(*u8c));
+    u8c->pos.src = (const unsigned char *)s;
+    u8c->pos.left = len;
     return 0;
 }
 
-/*
- * The next byte of the normalized form. u8c->s is the position in the
- * string, or in a decomposition while u8c->p holds the position after the
- * decomposed character (decomposition bytes do not count against len).
- * Characters of the class u8c->ccc are emitted; the first scan past a
- * stopper finds the lowest class, each further scan emits one class and
- * finds the next (u8c->ss / u8c->sp: where the scans restart).
- */
 int utf8byte(struct utf8cursor *u8c)
 {
-    utf8leaf_t *leaf;
-    int         ccc;
-
     for (;;) {
-        /* the end of a decomposition */
-        if (u8c->p && *u8c->s == '\0') {
-            u8c->s = u8c->p;
-            u8c->p = NULL;
+        struct utf8pos          here;
+        const unsigned char    *bytes = NULL;
+        size_t                  size = 0;
+        int                     klass = 0;
+        enum utf8token          token;
+
+        if (u8c->pending) {
+            u8c->pending--;
+            return *u8c->out++;
         }
 
-        /* the end of the string */
-        if (!u8c->p && (u8c->len == 0 || *u8c->s == '\0')) {
-            if (u8c->ccc == STOPPER) {
+        here = u8c->pos;
+        token = utf8token(&u8c->pos, u8c->jamo, &klass, &bytes, &size);
+
+        switch (token) {
+        case TOKEN_INVALID:
+            return -1;
+
+        case TOKEN_STRAY:
+            return *bytes;
+
+        case TOKEN_CHAR:
+            if (!u8c->sorting && klass == 0) {
+                u8c->out = bytes;
+                u8c->pending = size;
+                continue;
+            }
+            if (!u8c->sorting) {
+                /* a run of marks begins: the first pass finds its lowest class */
+                u8c->sorting = TRUE;
+                u8c->emitting = -1;
+                u8c->next = klass;
+                u8c->restart = here;
+                continue;
+            }
+            if (klass > 0) {
+                if (u8c->emitting < klass && klass < u8c->next) {
+                    u8c->next = klass;
+                }
+                if (klass == u8c->emitting) {
+                    u8c->out = bytes;
+                    u8c->pending = size;
+                }
+                continue;
+            }
+            break;                      /* a starter ends the pass */
+
+        case TOKEN_IGNORABLE:
+            if (!u8c->sorting) {
+                continue;
+            }
+            break;                      /* inside a run it ends the pass */
+
+        case TOKEN_END:
+            if (!u8c->sorting) {
                 return 0;
             }
-            /* during a scan it counts as a stopper */
-            ccc = STOPPER;
-            goto ccc_mismatch;
-        } else if ((*u8c->s & 0xC0) == 0x80) {
-            /* a continuation of the current character */
-            if (!u8c->p) {
-                u8c->len--;
-            }
-            return (unsigned char)*u8c->s++;
+            break;
         }
 
-        if (u8c->p) {
-            leaf = utf8lookup(u8c->hangul, u8c->s);
+        /* the end of a pass */
+        if (u8c->next != NOCLASS) {
+            u8c->emitting = u8c->next;
+            u8c->next = NOCLASS;
+            u8c->pos = u8c->restart;
         } else {
-            leaf = utf8nlookup(u8c->hangul, u8c->s, u8c->len);
-        }
-
-        /* not UTF-8: a binary name */
-        if (!leaf) {
-            return -1;
-        }
-
-        ccc = LEAF_CCC(leaf);
-        if (ccc == DECOMPOSE) {
-            u8c->len -= (unsigned int)utf8clen(u8c->s);
-            u8c->p = u8c->s + utf8clen(u8c->s);
-            u8c->s = LEAF_STR(leaf);
-            /* an empty decomposition (an ignorable) has class 0 */
-            if (*u8c->s == '\0') {
-                if (u8c->ccc == STOPPER) {
-                    continue;
-                }
-                ccc = STOPPER;
-                goto ccc_mismatch;
-            }
-
-            leaf = utf8lookup(u8c->hangul, u8c->s);
-            if (!leaf) {
-                return -1;
-            }
-            ccc = LEAF_CCC(leaf);
-        }
-
-        /* a lower class than the next one found so far */
-        if (ccc != STOPPER && u8c->ccc < ccc && ccc < u8c->nccc) {
-            u8c->nccc = (short)ccc;
-        }
-
-        /* the class being emitted */
-        if (ccc == u8c->ccc) {
-            if (!u8c->p) {
-                u8c->len--;
-            }
-            return (unsigned char)*u8c->s++;
-        }
-
-ccc_mismatch:
-        if (u8c->nccc == STOPPER) {
-            /* start a scan for the first class to emit */
-            u8c->ccc = MINCCC - 1;
-            u8c->nccc = (short)ccc;
-            u8c->sp = u8c->p;
-            u8c->ss = u8c->s;
-            u8c->slen = u8c->len;
-            if (!u8c->p) {
-                u8c->len -= (unsigned int)utf8clen(u8c->s);
-            }
-            u8c->s += utf8clen(u8c->s);
-        } else if (ccc != STOPPER) {
-            /* not the class being emitted: skip it */
-            if (!u8c->p) {
-                u8c->len -= (unsigned int)utf8clen(u8c->s);
-            }
-            u8c->s += utf8clen(u8c->s);
-        } else if (u8c->nccc != MAXCCC + 1) {
-            /* at a stopper: rescan for the next class */
-            u8c->ccc = u8c->nccc;
-            u8c->nccc = MAXCCC + 1;
-            u8c->s = u8c->ss;
-            u8c->p = u8c->sp;
-            u8c->len = u8c->slen;
-        } else {
-            /* every class emitted: go on from here */
-            u8c->ccc = STOPPER;
-            u8c->nccc = STOPPER;
-            u8c->sp = NULL;
-            u8c->ss = NULL;
-            u8c->slen = 0;
+            u8c->sorting = FALSE;
+            u8c->pos = here;
         }
     }
+}
+
+BOOLEAN utf8nvalid(const char *s, size_t len)
+{
+    const unsigned char *u = (const unsigned char *)s;
+    unsigned int         cp;
+
+    while (len && *u) {
+        size_t n = utf8decode(u, len, &cp);
+
+        if (n == 0) {
+            return FALSE;
+        }
+        u += n;
+        len -= n;
+    }
+    return TRUE;
 }

@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-only
+/* Copyright (c) 2026 Marek Wesolowski (WESMAR)
+ * SPDX-License-Identifier: MIT
  * The case folding of src/unicode against the Linux trie it replaced.
  *
  *  lookup   every byte string of 1..3 bytes and every 4-byte string (all
@@ -136,6 +137,36 @@ int main(int argc, char **argv)
         for (size_t t = 0; t < sizeof(tail); t++) { s[k] = tail[t]; Name(s, k + 1, 256); }
     }
     printf("scalars, bytes, trailing: %llu names (%llu s)\n", Checks - n, (GetTickCount64() - t0) / 1000);
+    n = Checks;
+
+    /* sequences: every string of up to six tokens over the pieces the
+       sorting passes treat differently - a starter, marks of classes 1,
+       202, 220, 230 and 240, an ignorable, a stray byte, characters whose
+       expansion carries marks, a Hangul syllable, a folding to two letters */
+    static const char *piece[] = {
+        "a", "\xcc\x81" /* 230 */, "\xcc\x96" /* 220 */, "\xcc\xa7" /* 202 */, "\xcc\xb4" /* 1 */,
+        "\xcd\x85" /* 240 */, "\xe2\x80\x8b" /* ignorable */, "\x80" /* stray */,
+        "\xe1\xb8\x88" /* C cedilla acute */, "\xc7\xba" /* A ring acute */, "\xea\xb0\x81" /* Hangul */,
+        "\xc3\x9f" /* sharp s */,
+    };
+    const int pieces = (int)(sizeof(piece) / sizeof(piece[0]));
+    for (int length = 1; length <= 6; length++) {
+        int index[6] = {0};
+        for (;;) {
+            int len = 0;
+            for (int i = 0; i < length; i++) {
+                size_t k = strlen(piece[index[i]]);
+                memcpy(s + len, piece[index[i]], k);
+                len += (int)k;
+            }
+            Name(s, len, 256);
+            Name(s, len, 1 + len % 7);
+            int i = length - 1;
+            while (i >= 0 && ++index[i] == pieces) index[i--] = 0;
+            if (i < 0) break;
+        }
+    }
+    printf("sequences: %llu names (%llu s)\n", Checks - n, (GetTickCount64() - t0) / 1000);
     n = Checks;
 
     /* random */

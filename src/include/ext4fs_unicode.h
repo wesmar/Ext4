@@ -2,7 +2,7 @@
  * ext4fs_unicode.h - casefolded directories: Unicode 12.1 folding of names.
  *
  * Copyright (c) 2026 Marek Wesolowski (WESMAR)
- * SPDX-License-Identifier: GPL-2.0-only
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef _EXT4_EXT4FS_UNICODE_H_

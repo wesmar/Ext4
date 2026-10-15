@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (c) 2026 Marek Wesolowski (WESMAR)
+# SPDX-License-Identifier: MIT
 # Compare the production case folding (src/unicode) with the Linux trie it
 # replaced, taken from git: every code point, every byte string of up to
 # three bytes (four with -Full), random names, Linux's strict-mode check.

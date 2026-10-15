@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-only
+/* Copyright (c) 2026 Marek Wesolowski (WESMAR)
+ * SPDX-License-Identifier: MIT
  * The production src/unicode, names prefixed.
  */
 #define utf8ncursor             after_utf8ncursor
@@ -13,16 +14,25 @@
 #include "utf8data.c"
 #include "casefold.c"
 
-static unsigned char Hangul[UTF8HANGULLEAF];
+static unsigned char Jamo[10];
 
-/* the leaf the tables give for (s, len): its class and string, or -1 */
+/* what the decoder and the tables give for (s, len): the class and the
+   expansion of the character (Hangul as its jamo), or -1 */
 int after_lookup(const char *s, size_t len, const char **str)
 {
-    utf8leaf_t *leaf = utf8nlookup(Hangul, s, len);
+    const unsigned char *leaf;
+    unsigned int         cp;
 
-    if (!leaf) {
+    if (!utf8decode((const unsigned char *)s, len, &cp)) {
         return -1;
     }
-    *str = LEAF_CCC(leaf) == DECOMPOSE ? LEAF_STR(leaf) : "";
-    return LEAF_CCC(leaf);
+    leaf = utf8leaf(cp);
+    *str = "";
+    if (leaf[0] == UTF8_DECOMPOSE && leaf[1] == UTF8_HANGUL) {
+        utf8jamo(cp, Jamo);
+        *str = (const char *)Jamo;
+    } else if (leaf[0] == UTF8_DECOMPOSE) {
+        *str = (const char *)leaf + 1;
+    }
+    return leaf[0];
 }

@@ -4,7 +4,22 @@ A casefolded ext4 directory hashes and compares names in their NFDICF form
 (Unicode 12.1): full case folding, then full canonical decomposition, with
 default-ignorable code points dropped. `make-utf8data.py` builds the tables of
 `src/unicode/utf8data.c` from the Unicode Character Database; the normalizer in
-`src/unicode/utf8norm.c` orders combining marks exactly as Linux does.
+`src/unicode/utf8norm.c` emits the bytes Linux emits, combining marks ordered
+by class. All of it is MIT-licensed, written from the behaviour it must match
+rather than from the Linux code; the tables hold Unicode data.
+
+## The normalizer
+
+Linux hashes whatever its normalizer emits, including for input that is not
+valid UTF-8, so the definition matters byte for byte. The string is read as
+tokens - a character of class k (one the tables leave alone, or one character
+of an expansion), an ignorable (expands to nothing), a stray continuation byte,
+invalid input, the end. Outside a run of combining marks a class-0 character
+is emitted, an ignorable skipped, a stray byte emitted. A mark starts a run;
+passes go over it, the first emitting no character, each later one the marks
+of the next class in their order; every pass emits the stray bytes it crosses.
+A class-0 character, an ignorable or the end closes a pass; after the last
+class it is read again outside the run. `utf8norm.c` states the same rules.
 
 ## Representation
 
@@ -25,7 +40,7 @@ and faster form:
 
 A code point reaches its leaf offset through four lookups: 2048-code-point
 pages, then blocks of 32, 8 and 8 entries, identical blocks stored once. The
-tables take 29 329 bytes instead of 64 256, and a name folds about three times
+tables take 29 329 bytes instead of 64 256, and a name folds about 2.5 times
 faster (`tests/unicode-model.ps1` reports both implementations).
 
 Strict mode follows Linux's `utf8_validate()` (`utf8nlen()`): each character

@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-only
+/* Copyright (c) 2026 Marek Wesolowski (WESMAR)
+ * SPDX-License-Identifier: MIT
  * Host stand-in for the driver's umbrella header: src/unicode needs only
  * the Windows base types.
  */
