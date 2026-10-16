@@ -357,7 +357,7 @@ Ext2InsertName (
 
     /* the caller's reference; into the parent's tree and the reaper's list */
     Ext2ReferMcb(Mcb);
-    Ext2InsertMcb(Vcb, Parent, Mcb);
+    Ext2InsertMcbLocked(Vcb, Parent, Mcb);
     Ext2LinkTailMcb(Vcb, Mcb);
 
     *Result = Mcb;
@@ -456,7 +456,7 @@ Ext2LookupComponent (
 )
 {
     PEXT2_MCB       Mcb;
-    PERESOURCE      Stripe;
+    PEX_PUSH_LOCK   Stripe;
     struct dentry  *de = NULL;
     ULONG           Hash, Ino;
     NTSTATUS        Status;
@@ -477,11 +477,11 @@ Ext2LookupComponent (
     Mcb = Ext2FindMcbLocked(Vcb, Dir, FileName, Hash);
     if (Mcb == NULL) {
         if (!Ext2IsNameValid(FileName)) {
-            Ext2ReleaseNameStripe(Stripe);
+            Ext2ReleaseNameStripe(Stripe, FALSE);
             return STATUS_OBJECT_NAME_INVALID;
         }
         Status = Ext2ScanDir(IrpContext, Vcb, Dir, FileName, &Ino, &de);
-        Ext2ReleaseNameStripe(Stripe);
+        Ext2ReleaseNameStripe(Stripe, FALSE);
         if (!NT_SUCCESS(Status)) {
             return Status;
         }
@@ -496,12 +496,12 @@ Ext2LookupComponent (
                 Status = Ext2InsertName(IrpContext, Vcb, Dir, FileName, Ino, de, FALSE, &Mcb);
             }
         }
-        Ext2ReleaseNameStripe(Stripe);
+        Ext2ReleaseNameStripe(Stripe, TRUE);
         if (Mcb == NULL) {
             return Status;
         }
     } else {
-        Ext2ReleaseNameStripe(Stripe);
+        Ext2ReleaseNameStripe(Stripe, FALSE);
     }
 
     Ext2ResolveLink(IrpContext, Vcb, Mcb, Linkdep, NotFollow);

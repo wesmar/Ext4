@@ -320,7 +320,7 @@ Ext2InitializeNameCache(IN PEXT2_VCB Vcb);
 VOID
 Ext2DestroyNameCache(IN PEXT2_VCB Vcb);
 
-PERESOURCE
+PEX_PUSH_LOCK
 Ext2AcquireNameStripe(
     IN PEXT2_VCB        Vcb,
     IN PEXT2_MCB        Parent,
@@ -329,7 +329,7 @@ Ext2AcquireNameStripe(
 );
 
 VOID
-Ext2ReleaseNameStripe(IN PERESOURCE Stripe);
+Ext2ReleaseNameStripe(IN PEX_PUSH_LOCK Stripe, IN BOOLEAN Exclusive);
 
 PEXT2_MCB
 Ext2FindMcbLocked(
@@ -352,7 +352,7 @@ BOOLEAN
 Ext2IsLinkDangling(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb);
 
 VOID
-Ext2InsertMcb(
+Ext2InsertMcbLocked(
     PEXT2_VCB Vcb,
     PEXT2_MCB Parent,
     PEXT2_MCB Child

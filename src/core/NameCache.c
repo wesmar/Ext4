@@ -262,26 +262,38 @@ Ext2McbChain(IN PEXT2_VCB Vcb, IN PEXT2_MCB Parent, IN ULONG NameHash)
     return (NameHash ^ Spread) & Vcb->McbHashMask;
 }
 
-PERESOURCE
+/*
+ * Stripes are push locks: a lookup's shared acquire and release are an
+ * interlocked operation each, where a resource took a queued spin lock
+ * twice - an eighth of a directory listing's time. A push lock is not
+ * recursive, and no thread takes a stripe twice: a name goes into the tree
+ * under the stripe its caller holds (Ext2InsertMcbLocked), and a rename
+ * whose two places share a stripe takes it once (Ext2MoveMcb).
+ */
+PEX_PUSH_LOCK
 Ext2AcquireNameStripe(IN PEXT2_VCB Vcb, IN PEXT2_MCB Parent, IN ULONG NameHash,
                       IN BOOLEAN Exclusive)
 {
-    PERESOURCE Stripe = &Vcb->McbStripes[Ext2McbChain(Vcb, Parent, NameHash) &
-                                         Vcb->McbStripeMask].Lock;
+    PEX_PUSH_LOCK Stripe = &Vcb->McbStripes[Ext2McbChain(Vcb, Parent, NameHash) &
+                                            Vcb->McbStripeMask].Lock;
 
     KeEnterCriticalRegion();
     if (Exclusive) {
-        ExAcquireResourceExclusiveLite(Stripe, TRUE);
+        ExAcquirePushLockExclusive(Stripe);
     } else {
-        ExAcquireResourceSharedLite(Stripe, TRUE);
+        ExAcquirePushLockShared(Stripe);
     }
     return Stripe;
 }
 
 VOID
-Ext2ReleaseNameStripe(IN PERESOURCE Stripe)
+Ext2ReleaseNameStripe(IN PEX_PUSH_LOCK Stripe, IN BOOLEAN Exclusive)
 {
-    ExReleaseResourceLite(Stripe);
+    if (Exclusive) {
+        ExReleasePushLockExclusive(Stripe);
+    } else {
+        ExReleasePushLockShared(Stripe);
+    }
     KeLeaveCriticalRegion();
 }
 
@@ -324,8 +336,8 @@ Ext2FindMcbLocked(IN PEXT2_VCB Vcb, IN PEXT2_MCB Parent,
 PEXT2_MCB
 Ext2ReferParent(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb)
 {
-    PEXT2_MCB   Parent;
-    PERESOURCE  Stripe;
+    PEXT2_MCB       Parent;
+    PEX_PUSH_LOCK   Stripe;
 
     for (;;) {
         Parent = (PEXT2_MCB)ReadPointerAcquire((PVOID *)&Mcb->Parent);
@@ -335,10 +347,10 @@ Ext2ReferParent(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb)
         Stripe = Ext2AcquireNameStripe(Vcb, Parent, Mcb->NameHash, FALSE);
         if (Mcb->Parent == Parent) {
             Ext2ReferMcb(Parent);
-            Ext2ReleaseNameStripe(Stripe);
+            Ext2ReleaseNameStripe(Stripe, FALSE);
             return Parent;
         }
-        Ext2ReleaseNameStripe(Stripe);
+        Ext2ReleaseNameStripe(Stripe, FALSE);
     }
 }
 
@@ -416,9 +428,9 @@ Ext2SearchMcb(
     PUNICODE_STRING     FileName
 )
 {
-    PEXT2_MCB   Dir, Found;
-    PERESOURCE  Stripe;
-    ULONG       Hash;
+    PEXT2_MCB       Dir, Found;
+    PEX_PUSH_LOCK   Stripe;
+    ULONG           Hash;
 
     if (Ext2IsDot(FileName)) {
         Ext2ReferMcb(Parent);
@@ -439,7 +451,7 @@ Ext2SearchMcb(
     Hash = Ext2HashMcbName(FileName);
     Stripe = Ext2AcquireNameStripe(Vcb, Dir, Hash, FALSE);
     Found = Ext2FindMcbLocked(Vcb, Dir, FileName, Hash);
-    Ext2ReleaseNameStripe(Stripe);
+    Ext2ReleaseNameStripe(Stripe, FALSE);
     Ext2DerefMcb(Dir);
 
     return Found;
@@ -448,31 +460,18 @@ Ext2SearchMcb(
 /* ---------------------------------------------------------------- tree */
 
 /*
- * Child becomes the name Child->ShortName of directory Parent. Takes the
- * name's stripe; a caller holding it already (Ext2InsertName) takes it
- * again, which a resource allows.
+ * Child becomes the name Child->ShortName of directory Parent, which is no
+ * symlink. The caller (Ext2InsertName) holds the name's stripe exclusively.
  */
 VOID
-Ext2InsertMcb (
+Ext2InsertMcbLocked (
     PEXT2_VCB Vcb,
     PEXT2_MCB Parent,
     PEXT2_MCB Child
 )
 {
-    PERESOURCE  Stripe;
-    PEXT2_MCB   Dir = NULL;
-
-    /* a rename into a symlink to a directory lands in the directory */
-    if (IsMcbSymLink(Parent)) {
-        Dir = Ext2ReferDirectory(Vcb, Parent);
-        if (Dir == NULL) {
-            return;
-        }
-        Parent = Dir;
-    }
-
+    ASSERT(!IsMcbSymLink(Parent));
     Child->NameHash = Ext2HashMcbName(&Child->ShortName);
-    Stripe = Ext2AcquireNameStripe(Vcb, Parent, Child->NameHash, TRUE);
 
     if (IsFlagOn(Child->Flags, MCB_ENTRY_TREE)) {
         /* already attached in the tree */
@@ -483,11 +482,6 @@ Ext2InsertMcb (
         Child->Parent = Parent;
         Child->de->d_parent = Parent->de;
         SetLongFlag(Child->Flags, MCB_ENTRY_TREE);
-    }
-
-    Ext2ReleaseNameStripe(Stripe);
-    if (Dir) {
-        Ext2DerefMcb(Dir);
     }
 }
 
@@ -516,8 +510,8 @@ Ext2RemoveMcb (
     PEXT2_MCB Mcb
 )
 {
-    PEXT2_MCB   Parent;
-    PERESOURCE  Stripe;
+    PEXT2_MCB       Parent;
+    PEX_PUSH_LOCK   Stripe;
 
     /* the stripe depends on the parent: read, lock, check (Ext2ReferParent) */
     for (;;) {
@@ -529,7 +523,7 @@ Ext2RemoveMcb (
         if (Mcb->Parent == Parent) {
             break;
         }
-        Ext2ReleaseNameStripe(Stripe);
+        Ext2ReleaseNameStripe(Stripe, TRUE);
     }
 
     /* a path may be built through this name right now (Ext2GetFullName) */
@@ -544,7 +538,7 @@ Ext2RemoveMcb (
     }
     ExReleasePushLockExclusive(&Vcb->NameLock);
     KeLeaveCriticalRegion();
-    Ext2ReleaseNameStripe(Stripe);
+    Ext2ReleaseNameStripe(Stripe, TRUE);
 
     if (Parent) {
         Ext2DerefMcb(Parent);
@@ -565,7 +559,7 @@ VOID
 Ext2MoveMcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN PEXT2_MCB NewParent, IN OUT PUNICODE_STRING NewName)
 {
     PEXT2_MCB       OldParent, Dir = NULL;
-    PERESOURCE      From, To = NULL;
+    PEX_PUSH_LOCK   From, To = NULL;
     ULONG           Hash = Ext2HashMcbName(NewName);
     UNICODE_STRING  Old;
 
@@ -582,11 +576,13 @@ Ext2MoveMcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN PEXT2_MCB NewParent, IN OUT P
             break;
         }
         if (From) {
-            Ext2ReleaseNameStripe(From);
+            Ext2ReleaseNameStripe(From, TRUE);
         }
     }
     if (NewParent) {
-        To = Ext2AcquireNameStripe(Vcb, NewParent, Hash, TRUE);
+        /* both places on one stripe: it is held already */
+        To = &Vcb->McbStripes[Ext2McbChain(Vcb, NewParent, Hash) & Vcb->McbStripeMask].Lock;
+        To = To == From ? NULL : Ext2AcquireNameStripe(Vcb, NewParent, Hash, TRUE);
         Ext2ReferMcb(NewParent);
     }
 
@@ -614,10 +610,10 @@ Ext2MoveMcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN PEXT2_MCB NewParent, IN OUT P
     KeLeaveCriticalRegion();
 
     if (To) {
-        Ext2ReleaseNameStripe(To);
+        Ext2ReleaseNameStripe(To, TRUE);
     }
     if (From) {
-        Ext2ReleaseNameStripe(From);
+        Ext2ReleaseNameStripe(From, TRUE);
     }
     if (OldParent) {
         Ext2DerefMcb(OldParent);
@@ -758,9 +754,9 @@ Ext2MoveMcbToHead(PEXT2_VCB Vcb, PEXT2_MCB Mcb)
 static ULONG
 Ext2ReapUnusedMcbsLocked(PEXT2_VCB Vcb, ULONG Number, PLIST_ENTRY Reaped)
 {
-    PEXT2_MCB   Mcb, Parent;
-    PERESOURCE  Stripe;
-    ULONG       Budget, Count = 0, Hash;
+    PEXT2_MCB       Mcb, Parent;
+    PEX_PUSH_LOCK   Stripe;
+    ULONG           Budget, Count = 0, Hash;
     KIRQL       Irql;
     BOOLEAN     Dead;
 
@@ -811,7 +807,7 @@ Ext2ReapUnusedMcbsLocked(PEXT2_VCB Vcb, ULONG Number, PLIST_ENTRY Reaped)
         KeReleaseSpinLockFromDpcLevel(&Vcb->McbLruLock);
         KeReleaseSpinLock(&Vcb->IcbLock, Irql);
         if (Stripe) {
-            Ext2ReleaseNameStripe(Stripe);
+            Ext2ReleaseNameStripe(Stripe, TRUE);
         }
 
         if (Dead) {

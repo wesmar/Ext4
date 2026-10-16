@@ -440,7 +440,7 @@ Ext2CreateNewName(
            stands. */
         {
             ULONG       Hash = Ext2HashMcbName(RealName);
-            PERESOURCE  Stripe = Ext2AcquireNameStripe(Vcb, Dir, Hash, TRUE);
+            PEX_PUSH_LOCK Stripe = Ext2AcquireNameStripe(Vcb, Dir, Hash, TRUE);
 
             *Mcb = Ext2FindMcbLocked(Vcb, Dir, RealName, Hash);
             if (*Mcb) {
@@ -450,7 +450,7 @@ Ext2CreateNewName(
                 Status = Ext2InsertName(IrpContext, Vcb, Dir, RealName, Ino, Entry, TRUE, Mcb);
                 Entry = NULL;
             }
-            Ext2ReleaseNameStripe(Stripe);
+            Ext2ReleaseNameStripe(Stripe, TRUE);
         }
 
         /* A directory gets "." and ".." before anybody can make a name in

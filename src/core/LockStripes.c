@@ -67,7 +67,7 @@ Ext2AllocateStripes(IN ULONG Count, OUT PVOID *Pool)
     }
     Stripes = (PEXT2_LOCK_STRIPE)ALIGN_UP_POINTER_BY(Block, SYSTEM_CACHE_ALIGNMENT_SIZE);
     for (i = 0; i < Count; i++) {
-        ExInitializeResourceLite(&Stripes[i].Lock);
+        ExInitializePushLock(&Stripes[i].Lock);
     }
     return Stripes;
 }
@@ -75,13 +75,9 @@ Ext2AllocateStripes(IN ULONG Count, OUT PVOID *Pool)
 VOID
 Ext2FreeStripes(IN PEXT2_LOCK_STRIPE Stripes, IN ULONG Count, IN PVOID Pool)
 {
-    ULONG i;
-
+    UNREFERENCED_PARAMETER(Count);   /* push locks need no teardown */
     if (Stripes == NULL) {
         return;
-    }
-    for (i = 0; i < Count; i++) {
-        ExDeleteResourceLite(&Stripes[i].Lock);
     }
     Ext2FreePool(Pool, EXT4_STRIPE_TAG);
 }

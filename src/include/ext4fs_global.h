@@ -56,9 +56,10 @@ typedef struct _EXT2_ICB  EXT2_ICB, *PEXT2_ICB;
 
 /* one lock of a striped set (core\LockStripes.c), alone on its cache lines:
    stripes are taken by different processors at once, and two sharing a
-   line would bounce it between them as one lock does */
+   line would bounce it between them as one lock does. A push lock: a shared
+   acquire is one interlocked operation; no thread takes a stripe twice */
 typedef struct DECLSPEC_CACHEALIGN _EXT2_LOCK_STRIPE {
-    ERESOURCE   Lock;
+    EX_PUSH_LOCK Lock;
 } EXT2_LOCK_STRIPE, *PEXT2_LOCK_STRIPE;
 
 /* the locks of the block groups that fall on one stripe (core\LockStripes.c):
