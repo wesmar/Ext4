@@ -123,5 +123,8 @@ Western digits as ASCII.
 
 The benchmark compares the inherited flat arrays with the generated form:
 a character costs about 1 ns there and 2 ns (single byte) to 4..7 ns (CJK)
-here, the price of 121 KB less resident data. ASCII stays on constant and
-ascending slices.
+here, the price of 121 KB less data. ASCII takes one comparison in a
+single-byte code page - the longest run of codes that read and write as
+themselves - and costs about 1.1 ns again. The tables of every code page
+live in PAGERO, a pageable section: names are converted at PASSIVE_LEVEL
+only.
