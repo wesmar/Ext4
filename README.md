@@ -273,11 +273,11 @@ The design reduces work per I/O and contention between independent files.
 | Bounded cache reaping, deadlines and release notifications | Reclamation follows pressure and actual teardown progress |
 | Directory name sets alongside htree lookup | Avoids a full directory scan for each case-insensitive create |
 | Hardware CRC32C selected by CPUID and a check vector | Accelerates metadata checksums with a table-based fallback |
-| Immutable, compact legacy character mappings | Bounded O(1) lookup with affine defaults and indexed exceptions; byte-indexed page directories; fewer stored values and no writable mapping tables |
+| Code page converters generated as 32-entry slices | Bounded lookup with no search - rank on the Unicode side and select on the code side of the GBK and UHC extensions; 121 KB less resident data than the previous compact form, no writable mapping tables |
 | Case folding by code point tables | A strict UTF-8 decode and four table lookups per character instead of a walk over every bit of its encoding; one pass per combining class only inside runs of marks |
 | Journal-aware flush ordering | Preserves durability while avoiding redundant completed device flushes |
 
-Legacy code-page maps use 32-input slices. CJK reverse mappings return both encoded bytes through one 16-bit lookup. The two directions are preserved independently, including duplicate and one-way mappings. Measurements show a few additional milliseconds for several million non-ASCII CJK conversions in exchange for a smaller driver image. ASCII fast paths remain direct; UTF-8 is unchanged. Mapping data is read-only and resident, with no lazy allocation or paging introduced.
+The code page maps are 32-entry slices - constants, ascending runs, pooled values and six kinds of entries - read by one converter per code page family. CJK encoders return both bytes through one 16-bit lookup. The two directions are preserved independently, including duplicate and one-way mappings. Against the inherited flat arrays, a character costs about 2 ns instead of 1 in a single-byte code page and 4-7 ns in a CJK one (3.3 million conversions per measurement); ASCII stays on constant and ascending slices, and UTF-8 is unchanged. Mapping data is read-only and resident, with no lazy allocation or paging introduced.
 
 Lock stripes use four stripes per logical processor across all processor groups, rounded up to a power of two and capped by the volume's group count. Stripes occupy separate cache lines. Workloads concentrated on one directory or block group remain a separate contention case.
 
