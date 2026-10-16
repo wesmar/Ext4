@@ -12,8 +12,8 @@ usage: lineage.py <src> <Ext3Fsd> <Ext4Fsd> <linux> [--k 12] [--normalize] [--fi
 Every .c and .h file is read as C tokens, comments dropped. A token of <src>
 is inherited when it lies in a run of k consecutive tokens that also occurs
 in an origin - Ext3Fsd first, then Ext4Fsd, then Linux - and new otherwise.
-The generated code page and case folding tables are data and are counted
-apart. --normalize replaces identifiers, numbers and strings by their kind,
+The generated tables - code pages, case folding, NTSTATUS names - are data
+and are counted apart. --normalize replaces identifiers, numbers and strings by their kind,
 so renamed code counts as inherited too (use a longer run, e.g. --k 20).
 """
 import os, re, sys
@@ -22,7 +22,8 @@ from collections import Counter, defaultdict
 TOKEN = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|0[xX][0-9a-fA-F]+[uUlL]*|\d+(?:\.\d+)?[uUlLfF]*'
                    r'|[A-Za-z_]\w*|<<=|>>=|->|\+\+|--|<<|>>|<=|>=|==|!=|&&|\|\||[-+*/%&|^]=|##|\S')
 COMMENT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
-GENERATED = (r'^nls/nls_(cp\d+|iso8859-\d+|ascii|koi8-[ru])\.c$', r'^unicode/utf8data\.c$')
+GENERATED = (r'^nls/nls_(cp\d+|iso8859-\d+|ascii|koi8-[ru])\.c$', r'^nls/EucJpTables\.h$', r'^unicode/utf8data\.c$',
+             r'^support/StatusNames\.c$')
 ORIGINS = ('Ext3Fsd', 'Ext4Fsd', 'Linux')
 
 def option(name, default=None):
