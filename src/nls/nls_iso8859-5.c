@@ -51,7 +51,7 @@ static const NLS_BYTE EncodePages[256] = {
 };
 
 static const NLS_CHARSET Charset = {
-    Words, Entries, DecodeSlices, EncodeSlices, NULL, EncodePages,
+    Words, Entries, DecodeSlices, EncodeSlices, NULL, EncodePages, 1, 127,
 };
 
 static int uni2char(wchar_t uni, unsigned char *out, int boundlen)

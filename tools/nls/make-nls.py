@@ -465,6 +465,18 @@ ADAPTERS = {
 def rows(items, per_line, indent='    '):
     return '\n'.join(indent + ', '.join(items[k:k + per_line]) + ',' for k in range(0, len(items), per_line))
 
+def identity(maps):
+    """The longest run of codes 1..127 that read and write as themselves."""
+    best, start = (0, 0), None
+    for code in range(1, 129):
+        same = code < 128 and maps.decode[0][code] == code and maps.encode.get(0, [0] * 256)[code] == code
+        if same and start is None:
+            start = code
+        if not same and start is not None:
+            best = max(best, (code - start, start))
+            start = None
+    return best[1], best[0]
+
 def emit(name, alias, family, table, maps, packer, decode, encode):
     symbol = name.replace('-', '_')
     source = 'unicode.org MAPPINGS/%s' % table if table else 'the ASCII rule'
@@ -496,8 +508,9 @@ def emit(name, alias, family, table, maps, packer, decode, encode):
     if family != 'single':
         text.append('static const NLS_BYTE DecodePages[256] = {\n%s\n};\n' % rows(['%3d' % p for p in decode[1]], 16))
     text.append('static const NLS_BYTE EncodePages[256] = {\n%s\n};\n' % rows(['%3d' % p for p in encode[1]], 16))
-    text.append('static const NLS_CHARSET Charset = {\n    Words, Entries, DecodeSlices, EncodeSlices, %s, EncodePages,\n};\n'
-                % ('NULL' if family == 'single' else 'DecodePages'))
+    first, count = identity(maps) if family == 'single' else (0, 0)
+    text.append('static const NLS_CHARSET Charset = {\n    Words, Entries, DecodeSlices, EncodeSlices, %s, EncodePages, %d, %d,\n};\n'
+                % ('NULL' if family == 'single' else 'DecodePages', first, count))
     to_code, to_unicode = ADAPTERS[family]
     text.append('static int uni2char(wchar_t uni, unsigned char *out, int boundlen)\n{\n    return %s;\n}\n' % to_code)
     text.append('static int char2uni(const unsigned char *rawstring, int boundlen, wchar_t *uni)\n{\n    return %s;\n}\n' % to_unicode)

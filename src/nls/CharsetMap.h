@@ -45,6 +45,8 @@ typedef struct {
     const NLS_BITS *EncodeSlices;   /* Unicode to code */
     const NLS_BYTE *DecodePages;    /* lead byte -> page + 1; NULL: one page */
     const NLS_BYTE *EncodePages;    /* Unicode high byte -> page + 1 */
+    NLS_BYTE IdentityFirst;         /* single byte: codes IdentityFirst.. map */
+    NLS_BYTE IdentityCount;         /* to themselves both ways (none: 0) */
 } NLS_CHARSET;
 
 /* Set bits of a word: the number of exceptions before a position. */

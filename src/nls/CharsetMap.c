@@ -102,6 +102,10 @@ static int NlsPutPair(const NLS_CHARSET *map, unsigned page, wchar_t uni, unsign
 int NlsSingleToUnicode(const NLS_CHARSET *map, const unsigned char *raw, int bound, wchar_t *uni)
 {
     UNREFERENCED_PARAMETER(bound);
+    if ((unsigned)raw[0] - map->IdentityFirst < map->IdentityCount) {
+        *uni = raw[0];
+        return 1;
+    }
     *uni = (wchar_t)NlsValue(map, map->DecodeSlices, 0, raw[0]);
     return *uni ? 1 : -EINVAL;
 }
@@ -113,6 +117,10 @@ int NlsUnicodeToSingle(const NLS_CHARSET *map, wchar_t uni, unsigned char *out, 
 
     if (bound <= 0)
         return -ENAMETOOLONG;
+    if ((unsigned)uni - map->IdentityFirst < map->IdentityCount) {
+        out[0] = (unsigned char)uni;
+        return 1;
+    }
     if (!page)
         return -EINVAL;
     code = NlsValue(map, map->EncodeSlices, page - 1, uni & 0xff);
