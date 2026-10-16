@@ -60,6 +60,8 @@ Ext2FlushDisk(
    flushes, in order; nothing in a build without EXT4_WRITE_LOG */
 #define EXT4_WLOG_WRITE     1
 #define EXT4_WLOG_FLUSH     2
+#define EXT4_WLOG_FSYNC     3       /* a file's flush returned: inode; size, generation */
+#define EXT4_WLOG_DURABLE   4       /* a write-through write completed: its offset */
 #ifdef EXT4_WRITE_LOG
 VOID Ext4WriteLogInitialize(VOID);
 VOID Ext4WriteLogAttach(IN PEXT2_VCB Vcb);

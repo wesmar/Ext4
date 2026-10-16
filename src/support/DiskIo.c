@@ -594,6 +594,13 @@ Ext2WriteDiskSync(
         Status = STATUS_UNEXPECTED_IO_ERROR;
     }
 
+#ifdef EXT4_WRITE_LOG
+    /* written through: on the media now, before anything sent after this */
+    if (WriteThrough && NT_SUCCESS(Status)) {
+        Ext4WriteLogRecord(Vcb, EXT4_WLOG_DURABLE, Offset, 0, NULL);
+    }
+#endif
+
     return Status;
 }
 

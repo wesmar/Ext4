@@ -9,8 +9,9 @@
 #
 #   $env:CL = '/DEXT4_WRITE_LOG'; .\build.ps1 -Rebuild   (then keep that ext4.sys aside)
 #   pwsh tests\crash-vm.ps1 -Image <new .vhdx> -LogDriver <that ext4.sys> [-Every N] [-Churn N]
+#                           [-Many N] [-Mkfs "-t ext3"]
 param([Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$LogDriver,
-      [int]$Every = 1, [int]$Churn = 0, [string]$Ip = '')
+      [int]$Every = 1, [int]$Churn = 0, [int]$Many = 0, [string]$Mkfs = '', [string]$Ip = '')
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/testenv.ps1"
 if (-not $Ip) { $Ip = Get-TestVmIp }
@@ -26,7 +27,7 @@ if (Get-VMHardDiskDrive -VMName $TestEnv.Vm | Where-Object { $_.ControllerNumber
     throw 'The fixture slot is occupied'
 }
 function Guest([string]$Code) {
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("`$ErrorActionPreference='Stop'; " + $Code))
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; " + $Code))
     $output = @(& ssh @ssh $target "powershell -NoProfile -NonInteractive -EncodedCommand $encoded")
     if ($LASTEXITCODE) { throw "Guest failed: $LASTEXITCODE" }
     $output
@@ -36,7 +37,9 @@ function InWsl([string]$Command) {
     if ($LASTEXITCODE) { throw "WSL failed: $Command" }
 }
 function WslPath([string]$Path) { '/mnt/' + $Path.Substring(0, 1).ToLower() + $Path.Substring(2).Replace('\', '/') }
-$saved = "$bin.crash-saved"
+# the driver the guest runs after the run: bin\ext4.sys as it is now (a
+# build may replace it meanwhile)
+$saved = Join-Path ([IO.Path]::GetDirectoryName($image)) ([IO.Path]::GetFileNameWithoutExtension($image) + '.restore.sys')
 $attached = $false
 $wslMounted = $false
 try {
@@ -44,18 +47,17 @@ try {
     & wsl.exe --mount --vhd $image --bare | Out-Null
     if ($LASTEXITCODE) { throw 'WSL attach failed' }
     $wslMounted = $true
-    InWsl "sed 's/\r`$//' '$(WslPath "$PSScriptRoot\crash-image.sh")' | bash -s -- prepare $work"
+    InWsl "sed 's/\r`$//' '$(WslPath "$PSScriptRoot\crash-image.sh")' | bash -s -- prepare $work $Mkfs"
     & wsl.exe --unmount "\\?\$image" | Out-Null
     $wslMounted = $false
 
     # the recording build, for this run only
     Copy-Item -LiteralPath $bin -Destination $saved -Force
-    Copy-Item -LiteralPath $logDriver -Destination $bin -Force
-    pwsh -NoProfile -File "$PSScriptRoot\deploy-vm.ps1" | Out-Null
+    pwsh -NoProfile -File "$PSScriptRoot\deploy-vm.ps1" -ImagePath $logDriver | Out-Null
     Add-VMHardDiskDrive -VMName $TestEnv.Vm -ControllerType SCSI -ControllerNumber 0 -ControllerLocation $slot -Path $image
     $attached = $true
     & scp -q @ssh "$PSScriptRoot\crash-workload.ps1" "${target}:C:/Windows/Temp/crash-workload.ps1"
-    $out = @(& ssh @ssh $target "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\Windows\Temp\crash-workload.ps1 -Churn $Churn")
+    $out = @(& ssh @ssh $target "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\Windows\Temp\crash-workload.ps1 -Churn $Churn -Many $Many")
     $out
     if ($out -notcontains 'CRASH-WORKLOAD: done') { throw 'The workload did not finish' }
     # the record is written when the driver unloads
@@ -84,7 +86,7 @@ try {
     }
     if ($wslMounted) { & wsl.exe --unmount "\\?\$image" | Out-Null }
     if (Test-Path -LiteralPath $saved) {
-        Move-Item -LiteralPath $saved -Destination $bin -Force
-        pwsh -NoProfile -File "$PSScriptRoot\deploy-vm.ps1" | Out-Null
+        pwsh -NoProfile -File "$PSScriptRoot\deploy-vm.ps1" -ImagePath $saved | Out-Null
+        Remove-Item -LiteralPath $saved
     }
 }

@@ -5,8 +5,10 @@
 # files of many sizes, overwrites, appends, truncation, renames, hard links,
 # deletes - with some files flushed (FlushFileBuffers) along the way. With
 # -Churn, as many small files are then made, flushed, renamed and deleted,
-# one commit each: enough to wrap a small journal many times over.
-param([int]$Files = 120, [int]$Churn = 0)
+# one commit each: enough to wrap a small journal many times over. With
+# -Many, one directory gets that many names, flushed every 50: its index
+# grows and splits.
+param([int]$Files = 120, [int]$Churn = 0, [int]$Many = 0)
 $ErrorActionPreference = 'Stop'
 $volume = $null
 for ($i = 0; $i -lt 100 -and -not $volume; $i++) {
@@ -56,4 +58,9 @@ for ($i = 0; $i -lt $Churn; $i++) {
     if ($i -ge 10) { Remove-Item "$root\churn\g-$($i - 10).bin" }
     if ($i % 50 -eq 0) { [IO.Directory]::CreateDirectory("$root\churn\d-$i") | Out-Null }
 }
+[IO.Directory]::CreateDirectory("$root\many") | Out-Null
+for ($i = 0; $i -lt $Many; $i++) {
+    [CW]::Write("$root\many\a-rather-long-name-to-fill-blocks-$i.txt", $i, $i % 300, ($i % 50 -eq 49))
+}
+for ($i = 0; $i -lt $Many; $i += 3) { Remove-Item "$root\many\a-rather-long-name-to-fill-blocks-$i.txt" }
 'CRASH-WORKLOAD: done'

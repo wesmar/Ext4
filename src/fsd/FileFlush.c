@@ -303,6 +303,13 @@ Ext2Flush (IN PEXT2_IRP_CONTEXT IrpContext)
                 IrpContext->Irp = Irp = NULL;
             }
 
+#ifdef EXT4_WRITE_LOG
+            /* from here on the file's data and metadata must survive a crash */
+            if (Fcb && NT_SUCCESS(Status)) {
+                LONGLONG Mark[2] = { Fcb->Header.FileSize.QuadPart, Fcb->Inode->i_generation };
+                Ext4WriteLogRecord(Vcb, EXT4_WLOG_FSYNC, Fcb->Inode->i_ino, sizeof(Mark), Mark);
+            }
+#endif
             Ext2CompleteIrpContext(IrpContext, Status);
         }
     }

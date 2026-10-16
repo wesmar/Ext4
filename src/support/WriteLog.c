@@ -6,7 +6,11 @@
  * SPDX-License-Identifier: MIT
  *
  * On a volume labelled "crashlog" each write is recorded as it is sent to
- * the disk - offset, length and the bytes - and each flush as a barrier.
+ * the disk - offset, length and the bytes - each flush as a barrier, and
+ * each successful flush of a file as its inode, size and generation (a
+ * promise the replay holds the volume to), and the completion of each
+ * write-through write (the journal's commit block): nothing sent after it
+ * can reach the media without it.
  * Any prefix of the record is a state a power cut could leave the disk in;
  * tests/crash-replay.py replays every one onto the volume as it was before
  * the mount and lets e2fsck judge it. The record stays in memory and goes
@@ -26,7 +30,7 @@
 /* one record, its bytes after it, padded to 8 */
 typedef struct _WLOG_RECORD {
     ULONG       Magic;
-    ULONG       Type;                       /* EXT4_WLOG_WRITE, EXT4_WLOG_FLUSH */
+    ULONG       Type;                       /* EXT4_WLOG_WRITE, _FLUSH, _FSYNC, _DURABLE */
     ULONGLONG   Offset;
     ULONG       Length;
     ULONG       Sequence;
