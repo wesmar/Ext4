@@ -107,7 +107,7 @@ How much of the code is new is measured, not estimated. Of the 268 454 C tokens 
 
 | Source project | Attribution | Retained components and lineage |
 |---|---|---|
-| **Ext2Fsd** | Matt Wu, with KaHo Ng | FCB/MCB model and selected compatibility routines from the original Windows FSD; ext2/ext3 lineage |
+| **Ext2Fsd** | Matt Wu, with KaHo Ng | The FCB/MCB model, fast I/O, the extent and htree routines Matt Wu ported from Linux, and much of the support code; ext2/ext3 lineage |
 | **Ext4Fsd** | Bo Branten | ext4 structures, checksum and jbd2 lineage, Visual Studio project ancestry |
 | **Linux kernel** — `fs/ext4`, `fs/jbd2`, `lib/rbtree.c`, `fs/nls` | Linus Torvalds, Stephen Tweedie, Red Hat, Cluster File Systems and the ext4 / jbd2 developers | Extent-tree, htree, checksum and journal algorithms; the code page registry, UTF-8 and the EUC-JP and KOI8-RU adapters |
 | **lwext4** | Grzegorz Kostka, KaHo Ng | The original extended-attribute implementation; its BSD notice remains in `ext4_xattr.h` |
@@ -121,7 +121,7 @@ What changed on the way to `ext4.sys`, in short:
 - **Stopping and unloading.** `sc stop` drains mounted volumes and outstanding references before releasing the driver.
 - **Physical addressing.** Allocation, block I/O, extent caches and metadata tracking carry wide physical addresses. A driver-owned red-black run map replaces the Windows mapping interface that discarded the upper physical-block bits. Legacy on-disk pointers retain their specified width.
 - **Journal ownership.** The journal engine belongs to the volume control block. Stopping its session and freeing the engine are separate steps, so a late stream close cannot enter a freed journal during teardown.
-- **Character mappings.** The 37 code pages are generated from the published tables, with the differences the driver has always had kept as listed data, and stored as 32-entry slices: a constant, an ascending run, 32 pooled values, or an entry - a mask of exceptions and one of six kinds of member values. Two of them are the two directions of one structure: the GBK and UHC extensions, which fill in Unicode order the code points their base sets leave free, are a population count of members on the Unicode side (rank) and the position of a member in a bitmap on the code side (select), with no search. The CJK tables went from 423 KB to 277 KB to 201 KB; the case maps every code page carried - 18 KB the driver never read - are gone. `ext4.sys` is 598 KB, 987 KB before the compaction began. The rebuilt converters fixed two inherited faults: KOI8-RU read every byte but the two it changes as `Ў` or `ў`, and Shift JIS wrote a Latin-1 character's two bytes past a bound of one. Conversion failure releases a directory entry once and returns no dangling pointer.
+- **Character mappings.** The 37 code pages are generated from the published tables, with the differences the driver has always had kept as listed data, and stored as 32-entry slices: a constant, an ascending run, 32 pooled values, or an entry - a mask of exceptions and one of six kinds of member values. Two of them are the two directions of one structure: the GBK and UHC extensions, which fill in Unicode order the code points their base sets leave free, are a population count of members on the Unicode side (rank) and the position of a member in a bitmap on the code side (select), with no search. The CJK tables went from 423 KB to 277 KB to 201 KB; the case maps every code page carried - 18 KB the driver never read - are gone. The rebuilt converters fixed two inherited faults: KOI8-RU read every byte but the two it changes as `Ў` or `ў`, and Shift JIS wrote a Latin-1 character's two bytes past a bound of one. Conversion failure releases a directory entry once and returns no dangling pointer.
 - **A 39 % smaller image, no feature dropped.** `ext4.sys` went from 987 KB to 598 KB in three steps: the code page maps compacted into 32-entry slices (819 KB), the case folding tables generated from the Unicode data and the code page directories indexed by byte (719 KB), the code page converters generated with rank and select slices and the unused case maps removed (598 KB). Lookups stay bounded and every step is proven equal to the code it replaced.
 - **Case folding.** Linux folds the names of a casefolded directory through a 64 KB trie walked over the bits of each UTF-8 sequence. That trie accepts exactly strict UTF-8, and only the newest Unicode version of it is ever used, so a strict decoder and four table lookups reach the same leaves: 29 KB of tables generated from the Unicode Character Database, every one of the 1 112 064 leaves equal to the kernel's. The normalizer is written anew from what Linux emits - including the byte order it produces for invalid input, which it hashes too - and folds a name about 2.5 times faster.
 - **Only what is used.** Linux compatibility headers kept prototypes of functions the driver never had (mballoc, page cache, sysfs, ioctl) and a whole ext3 journal header; 3 500 such lines went, with the compiled driver unchanged byte for byte apart from one unused 64-byte variable.
@@ -409,7 +409,8 @@ Ext4/
 │   │                  # ext2/ext3 indirect block maps
 │   ├── journal/       # jbd2: commit, checkpoint, log space, per-thread handles, replay
 │   ├── linux/         # Buffer heads over the cache manager, kernel services, rbtree
-│   ├── nls/           # Character set tables (cp437 ... cp1255, ISO-8859-x, KOI8, UTF-8)
+│   ├── nls/           # Code page converters generated from the published tables (DOS, Windows,
+│   │                  # ISO 8859, KOI8, CJK) and their shared lookup; registry, UTF-8
 │   ├── support/       # Disk I/O, pool, name conversion, errno ↔ NTSTATUS, time, debug
 │   ├── include/       # Area headers, checked file bounds, run-map contract; linux/ compatibility
 │   ├── ext4.vcxproj   # WDK kernel-mode driver project
@@ -524,7 +525,7 @@ Configure the disposable guest and test-image paths in `tests/testenv.local.psd1
 |---|---|
 | File operations | Cached, uncached and write-through I/O; append, overwrite, truncation, regrowth, mappings and ENOSPC |
 | Namespace | Long and international names, directory indexes, rename/replace, hard links, symlinks, share modes, locks and delete-pending |
-| Legacy character maps | Exhaustive converter equivalence on x86/x64; 37 live volume code pages with create/read/list/rename/delete and unrepresentable-name rejection on Windows |
+| Code page converters | The generated converters against the inherited ones, every input on x86/x64, KOI8-RU against its definition; 38 live volume code pages with create/read/list/rename/delete and unrepresentable-name rejection on Windows |
 | Case folding | 4.5 billion host checks against the Linux trie implementation; casefolded directories built by Linux, read and written from Windows, their indexes checked by `e2fsck` |
 | Parallel access | Concurrent create/delete churn, write/resize/read-back and opens racing namespace changes |
 | Security | Short and invalid IOCTL buffers, retrieval pointers, restricted-user access and EA namespace preservation |
@@ -687,7 +688,7 @@ The project compiles with `/W4 /WX /std:clatest` in Release and Debug — no war
 
 Builds are reproducible: `/Brepro` for the compiler and the linker, `/PDBALTPATH:%_PDB%` so that no build directory ends up in the binary, and no `__DATE__` or `__TIME__` in the source. The same source built with the same toolset gives the same `ext4.sys` and `ext4ctl.exe` byte for byte, so a binary can be checked against the source it claims to come from by its SHA-256. The driver reports the version from `version.h`, the same one its resources carry, never a build time.
 
-The configurations share the file-system algorithms; Debug adds diagnostic checks and tracing. `DBG`, set by the WDK for Debug only, switches `EXT2_DEBUG`: the Debug build adds assertions, a breakpoint at every internal inconsistency, level-filtered tracing of each IRP with process names and `NTSTATUS` texts, guard bytes and accounting on every pool allocation, and the full object and IRP statistics (`IOCTL_APP_QUERY_PERFSTAT`). The Release build keeps error reporting and functional accounting for allocation, object lifetime and cache reaping; per-operation diagnostic statistics are disabled. The current Release driver is 719 360 bytes (987 648 before the character maps were compacted); the maps of the four CJK code pages are its largest static data, about 245 KB.
+The configurations share the file-system algorithms; Debug adds diagnostic checks and tracing. `DBG`, set by the WDK for Debug only, switches `EXT2_DEBUG`: the Debug build adds assertions, a breakpoint at every internal inconsistency, level-filtered tracing of each IRP with process names and `NTSTATUS` texts, guard bytes and accounting on every pool allocation, and the full object and IRP statistics (`IOCTL_APP_QUERY_PERFSTAT`). The Release build keeps error reporting and functional accounting for allocation, object lifetime and cache reaping; per-operation diagnostic statistics are disabled. The current Release driver is 598 016 bytes (987 648 before the character maps were compacted); the converters of the four CJK code pages are its largest static data, about 201 KB.
 
 | Output | Description |
 |---|---|
@@ -701,14 +702,14 @@ The configurations share the file-system algorithms; Debug adds diagnostic check
 
 | Download | Contents |
 |---|---|
-| [`ext4.7z`](https://github.com/wesmar/Ext4/releases/download/latest/ext4.7z) | Current x64 `ext4.sys` (under 1 MB) and `ext4ctl.exe`; no password |
+| [`ext4.7z`](https://github.com/wesmar/Ext4/releases/download/latest/ext4.7z) | Current x64 `ext4.sys` (598 KB) and `ext4ctl.exe`; no password |
 | [Source tree](https://github.com/wesmar/Ext4) | Driver, control tool, build system, tests and documentation |
 
 The binary archive is the current x64 build:
 
 ```text
 ext4.7z
-├── ext4.sys       under 1 MB
+├── ext4.sys       598 KB
 └── ext4ctl.exe
 ```
 
@@ -718,7 +719,7 @@ The repository excludes binaries, PDB symbols, local utilities, virtual disks an
 
 ## License
 
-GNU General Public License version 2 — see [LICENSE.md](LICENSE.md) and [COPYING](COPYING).
+GNU General Public License version 2 — see [LICENSE.md](LICENSE.md) and [COPYING](COPYING). The case folding, the code page converters and their generators are MIT-licensed new work; LICENSE.md lists their files.
 
 - **Author:** Marek Wesołowski (WESMAR)
 - **Contact:** marek@wesolowski.eu.org
