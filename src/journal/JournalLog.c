@@ -134,6 +134,14 @@ NTSTATUS JnlWriteLogRun(PEXT2_JOURNAL J, unsigned long Log, ULONG Count,
  * Write the journal superblock (from its cached copy) straight to disk
  * and flush. jbd2/journal.c calls this through jbd2_win_write_superblock
  * instead of submitting the buffer through the volume cache.
+ *
+ * A flush comes first: the superblock moves the log's tail - or empties
+ * the log - past transactions whose blocks the checkpoint has just written
+ * home, and those writes must be on the medium before the log stops
+ * covering them (Linux flushes in jbd2_cleanup_journal_tail, and empties
+ * the log with REQ_PREFLUSH). Without it a disk that persists a cache's
+ * writes in its own order could keep the new tail and lose a home block:
+ * found by tests/crash-replay.py --reorder at the unmount of a volume.
  */
 static NTSTATUS JnlWriteJournalSb(PEXT2_VCB Vcb, journal_t *jbd, BOOLEAN Flush)
 {
@@ -152,7 +160,9 @@ static NTSTATUS JnlWriteJournalSb(PEXT2_VCB Vcb, journal_t *jbd, BOOLEAN Flush)
     offset = (ULONGLONG)jbd->j_blk_offset << Ext2Log2(bs);
 
     RtlCopyMemory(buf, jbd->j_sb_buffer->b_data, bs);
-    Status = Ext2WriteDiskSync(Vcb, offset, bs, buf, TRUE);
+    Status = Ext2FlushDisk(Vcb);
+    if (NT_SUCCESS(Status))
+        Status = Ext2WriteDiskSync(Vcb, offset, bs, buf, TRUE);
     Ext2FreePool(buf, JNL_TAG);
 
     if (NT_SUCCESS(Status) && Flush)
