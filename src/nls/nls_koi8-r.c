@@ -12,6 +12,9 @@
 #include <linux/errno.h>
 #include "CharsetMap.h"
 
+/* Names are converted at PASSIVE_LEVEL only: the tables live in PAGERO, pageable and read-only. */
+#pragma const_seg("PAGERO")
+
 static const NLS_WORD Words[165] = {
     0x2320, 0x2219, 0x221a, 0x2248, 0x2264, 0x2265, 0x00a0, 0x2321, 0x00b0, 0x00b2, 0x00b7, 0x00f7,
     0x0200, 0x100c, 0x1814, 0x241c, 0x342c, 0x803c, 0x8884, 0x908c, 0x9291, 0xa093, 0x0451, 0x0401,
@@ -73,6 +76,7 @@ static const NLS_BYTE EncodePages[256] = {
 static const NLS_CHARSET Charset = {
     Words, Entries, DecodeSlices, EncodeSlices, NULL, EncodePages, 1, 127,
 };
+#pragma const_seg()
 
 static int uni2char(wchar_t uni, unsigned char *out, int boundlen)
 {

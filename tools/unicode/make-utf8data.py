@@ -238,12 +238,16 @@ out = ['''/**
 
 #include "utf8n.h"
 
+/* Names are folded at PASSIVE_LEVEL only: the tables live in PAGERO, pageable and read-only. */
+#pragma const_seg("PAGERO")
+
 /* the leaves */
 ''', emit('utf8leaves', list(pool))]
 for k in range(len(bits)):
     what = 'leaf offsets' if k == 0 else f'{names[k - 1]} block numbers'
     out.append(f'\n/* blocks of {1 << bits[k]} {what} */\n' + emit(names[k], stages[k]))
 out.append(f'\n/* the {names[-1]} block of each {1 << sum(bits)} code points */\n' + emit('utf8top', top))
+out.append('#pragma const_seg()\n')
 shift = sum(bits)
 body = [f'    unsigned int b = utf8top[cp >> {shift}];']
 for k in range(len(bits) - 1, 0, -1):

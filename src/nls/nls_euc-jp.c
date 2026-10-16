@@ -21,7 +21,11 @@
 #include <linux/module.h>
 #include <linux/errno.h>
 #include "CharsetMap.h"
+
+/* Names are converted at PASSIVE_LEVEL only: the tables live in PAGERO, pageable and read-only. */
+#pragma const_seg("PAGERO")
 #include "EucJpTables.h"
+#pragma const_seg()
 
 #define EUC_SS2         0x8e            /* single shift: half-width katakana */
 #define EUC_SS3         0x8f            /* single shift: the G3 set */
