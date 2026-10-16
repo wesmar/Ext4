@@ -320,6 +320,10 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
         fc.efc_single = FlagOn(Flags, SL_RETURN_SINGLE_ENTRY) != 0;
         fc.efc_fi = IrpSp->Parameters.QueryDirectory.FileInformationClass;
         fc.efc_status = STATUS_SUCCESS;
+        /* what the pattern is, once per query rather than once per entry */
+        fc.efc_all = Ccb->DirectorySearchPattern.Length == sizeof(WCHAR) &&
+                     Ccb->DirectorySearchPattern.Buffer[0] == L'*';
+        fc.efc_wild = FsRtlDoesNameContainWildCards(&Ccb->DirectorySearchPattern);
 
         Status = STATUS_MORE_PROCESSING_REQUIRED;
         if (FirstQuery && FileName != NULL && !FlagOn(Flags, SL_INDEX_SPECIFIED)) {

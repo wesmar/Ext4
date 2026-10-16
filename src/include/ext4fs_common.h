@@ -93,6 +93,8 @@ typedef struct _EXT2_FILLDIR_CONTEXT {
     FILE_INFORMATION_CLASS  efc_fi;
     BOOLEAN                 efc_single;
     BOOLEAN                 efc_visible;    /* an entry Windows may see was met */
+    BOOLEAN                 efc_all;        /* the pattern is "*": every name matches */
+    BOOLEAN                 efc_wild;       /* the pattern has wildcards */
     UNICODE_STRING          efc_name;       /* the entry's name, one buffer per query */
 } EXT2_FILLDIR_CONTEXT, *PEXT2_FILLDIR_CONTEXT;
 

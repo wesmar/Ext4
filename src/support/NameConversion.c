@@ -14,11 +14,14 @@ Ext2MbsToUnicode(
     IN OUT PUNICODE_STRING Unicode,
     IN     PANSI_STRING    Mbs   )
 {
-    ULONG Length = 0;
-    int i, mbc = 0;
+    ULONG Length = 0, Room = Unicode ? Unicode->MaximumLength : 0;
+    int i, mbc;
     WCHAR  uc;
 
-    /* Count the length of the resulting Unicode. */
+    /* One pass: every character is converted once, stored while the buffer
+       has room for it and counted always. An invalid character fails the
+       whole name and leaves Unicode->Length alone; a converter's 0 ends the
+       name after its first character. */
     for (i = 0; i < Mbs->Length; i += mbc) {
 
         mbc = PageTable->char2uni(
@@ -28,36 +31,23 @@ Ext2MbsToUnicode(
               );
 
         if (mbc <= 0) {
-
-            /* invalid character. */
             if (mbc == 0 && Length > 0) {
                 break;
             }
             return 0;
         }
 
-        Length += 2;
+        if (Length + sizeof(WCHAR) <= Room) {
+            Unicode->Buffer[Length / sizeof(WCHAR)] = uc;
+        }
+        Length += sizeof(WCHAR);
     }
 
     if (Unicode) {
-        if (Unicode->MaximumLength < Length) {
-
+        if (Room < Length) {
             return 0;
         }
-
-        Unicode->Length = 0;
-        mbc = 0;
-
-        for (i = 0; i < Mbs->Length; i += mbc) {
-
-            mbc = PageTable->char2uni(
-                      (PUCHAR)&(Mbs->Buffer[i]),
-                      Mbs->Length - i,
-                      &uc
-                  );
-            Unicode->Buffer[Unicode->Length/2] = uc;
-            Unicode->Length += 2;
-        }
+        Unicode->Length = (USHORT)Length;
     }
 
     return Length;
@@ -69,14 +59,14 @@ Ext2UnicodeToMbs (
     IN OUT PANSI_STRING Mbs,
     IN PUNICODE_STRING  Unicode)
 {
-    ULONG Length = 0;
+    ULONG Length = 0, Room = Mbs ? Mbs->MaximumLength : 0;
     UCHAR mbs[0x10];
     int i, mbc;
 
-    /* Count the length of the resulting mbc-8. */
+    /* One pass, as Ext2MbsToUnicode: converted once, stored while there is
+       room, counted always; an invalid character fails the whole name. */
     for (i = 0; i < (Unicode->Length / 2); i++) {
 
-        RtlZeroMemory(mbs, 0x10);
         mbc = PageTable->uni2char(
                   Unicode->Buffer[i],
                   mbs,
@@ -84,39 +74,20 @@ Ext2UnicodeToMbs (
               );
 
         if (mbc <= 0) {
-
-            /* Invalid character. */
             return 0;
         }
 
+        if (Length + mbc <= Room) {
+            RtlCopyMemory((PUCHAR)&Mbs->Buffer[Length], mbs, mbc);
+        }
         Length += mbc;
     }
 
     if (Mbs) {
-
-        if (Mbs->MaximumLength < Length) {
-
+        if (Room < Length) {
             return 0;
         }
-
-        Mbs->Length = 0;
-
-        for (i = 0; i < (Unicode->Length / 2); i++) {
-
-            mbc = PageTable->uni2char(
-                      Unicode->Buffer[i],
-                      mbs,
-                      0x10
-                  );
-
-            RtlCopyMemory(
-                (PUCHAR)&(Mbs->Buffer[Mbs->Length]),
-                &mbs[0],
-                mbc
-            );
-
-            Mbs->Length += (USHORT)mbc;
-        }
+        Mbs->Length = (USHORT)Length;
     }
 
     return Length;

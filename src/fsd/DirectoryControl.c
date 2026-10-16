@@ -335,28 +335,32 @@ Ext2IsWearingCloak(
     return FALSE;
 }
 
-/* the entry's name in the query's buffer, which grows when a name needs more */
+/*
+ * The entry's name in the query's buffer, converted once. Every byte of a
+ * name makes at most one character, so one buffer holds the longest name
+ * and its terminator; it is allocated with the query's first name.
+ */
 static NTSTATUS
 Ext2FillName(IN PEXT2_VCB Vcb, IN OUT PEXT2_FILLDIR_CONTEXT fc, IN POEM_STRING Oem)
 {
-    ULONG Bytes = Ext2OEMToUnicodeSize(Vcb, Oem) + sizeof(WCHAR);
+    NTSTATUS Status;
 
-    if (Bytes > fc->efc_name.MaximumLength) {
+    if (fc->efc_name.Buffer == NULL) {
+        USHORT Bytes = (EXT2_NAME_LEN + 1) * sizeof(WCHAR);
         PWCHAR Buffer = Ext2AllocatePool(PagedPool, Bytes, EXT2_INAME_MAGIC);
         if (Buffer == NULL) {
             return STATUS_INSUFFICIENT_RESOURCES;
         }
-        if (fc->efc_name.Buffer != NULL) {
-            DEC_MEM_COUNT(PS_INODE_NAME, fc->efc_name.Buffer, fc->efc_name.MaximumLength);
-            Ext2FreePool(fc->efc_name.Buffer, EXT2_INAME_MAGIC);
-        }
         INC_MEM_COUNT(PS_INODE_NAME, Buffer, Bytes);
         fc->efc_name.Buffer = Buffer;
-        fc->efc_name.MaximumLength = (USHORT)Bytes;
+        fc->efc_name.MaximumLength = Bytes;
     }
     fc->efc_name.Length = 0;
-    RtlZeroMemory(fc->efc_name.Buffer, fc->efc_name.MaximumLength);
-    return Ext2OEMToUnicode(Vcb, &fc->efc_name, Oem);
+    Status = Ext2OEMToUnicode(Vcb, &fc->efc_name, Oem);
+    if (NT_SUCCESS(Status)) {
+        fc->efc_name.Buffer[fc->efc_name.Length / sizeof(WCHAR)] = UNICODE_NULL;
+    }
+    return Status;
 }
 
 /* the buffer of names a query used (Ext2FillName) */
@@ -426,9 +430,9 @@ int Ext2FillEntry(void *context, const char *name, int namlen,
         return 1;
     }
 
-    if (FsRtlDoesNameContainWildCards(Pattern) ?
-            !FsRtlIsNameInExpression(Pattern, &fc->efc_name, TRUE, NULL) :
-            RtlCompareUnicodeString(Pattern, &fc->efc_name, TRUE) != 0) {
+    if (!fc->efc_all &&
+        (fc->efc_wild ? !FsRtlIsNameInExpression(Pattern, &fc->efc_name, TRUE, NULL) :
+                        RtlCompareUnicodeString(Pattern, &fc->efc_name, TRUE) != 0)) {
         return 0;
     }
 
