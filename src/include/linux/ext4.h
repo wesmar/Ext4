@@ -1397,6 +1397,7 @@ struct dir_private_info {
 	__u32		curr_hash;
 	__u32		curr_minor_hash;
 	__u32		next_hash;
+	struct fname_chunk *chunks;	/* where the fnames of the tree live (HtreeRead.c) */
 };
 
 /*

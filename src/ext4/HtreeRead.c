@@ -42,49 +42,60 @@ struct fname {
 };
 
 /*
- * This functoin implements a non-recursive way of freeing all of the
- * nodes in the red-black tree.
+ * The fnames of one fill of the tree live in chunks, released together when
+ * the tree is emptied: a directory block's names cost one allocation, not one
+ * each (an allocation and a free per name were a tenth of a listing's time).
+ * The newest chunk stays for the next fill.
  */
-static void free_rb_tree_fname(struct rb_root *root)
-{
-    struct rb_node	*n = root->rb_node;
-    struct rb_node	*parent;
-    struct fname	*fname;
+#define FNAME_CHUNK_BYTES   16384
 
-    while (n) {
-        /* Do the node's children first */
-        if ((n)->rb_left) {
-            n = n->rb_left;
-            continue;
-        }
-        if (n->rb_right) {
-            n = n->rb_right;
-            continue;
-        }
-        /*
-         * The node has no children; free it, and then zero
-         * out parent's link to it.  Finally go to the
-         * beginning of the loop and try to free the parent
-         * node.
-         */
-        parent = rb_parent(n);
-        fname = rb_entry(n, struct fname, rb_hash);
-        while (fname) {
-            struct fname * old = fname;
-            fname = fname->next;
-            kfree (old);
-        }
-        if (!parent)
-            root->rb_node = NULL;
-        else if (parent->rb_left == n)
-            parent->rb_left = NULL;
-        else if (parent->rb_right == n)
-            parent->rb_right = NULL;
-        n = parent;
+struct fname_chunk {
+    struct fname_chunk  *next;
+    ULONG               used;
+    ULONG               size;
+    char                data[];         /* fnames, 8-aligned */
+};
+
+static struct fname *fname_alloc(struct dir_private_info *info, int len)
+{
+    struct fname_chunk *chunk = info->chunks;
+    ULONG need = ((ULONG)len + 7) & ~7u;
+
+    if (chunk == NULL || chunk->size - chunk->used < need) {
+        ULONG size = max(FNAME_CHUNK_BYTES, need + (ULONG)sizeof(struct fname_chunk));
+
+        chunk = kmalloc(size, GFP_KERNEL);
+        if (!chunk)
+            return NULL;
+        chunk->next = info->chunks;
+        chunk->used = 0;
+        chunk->size = size - (ULONG)sizeof(struct fname_chunk);
+        info->chunks = chunk;
     }
-    root->rb_node = NULL;
+    chunk->used += need;
+    return (struct fname *)(chunk->data + chunk->used - need);
 }
 
+/* empty the tree; with Everything, give the chunks back as well */
+static void free_rb_tree_fname(struct dir_private_info *info, int Everything)
+{
+    struct fname_chunk *chunk = info->chunks, *next;
+
+    if (chunk != NULL) {
+        for (next = Everything ? chunk : chunk->next; next != NULL; ) {
+            struct fname_chunk *gone = next;
+            next = next->next;
+            kfree(gone);
+        }
+        if (Everything) {
+            info->chunks = NULL;
+        } else {
+            chunk->next = NULL;
+            chunk->used = 0;
+        }
+    }
+    info->root.rb_node = NULL;
+}
 static struct dir_private_info *create_dir_info(loff_t pos)
 {
     struct dir_private_info *p;
@@ -99,12 +110,13 @@ static struct dir_private_info *create_dir_info(loff_t pos)
     p->curr_hash = (__u32)pos2maj_hash(pos);
     p->curr_minor_hash = (__u32)pos2min_hash(pos);
     p->next_hash = 0;
+    p->chunks = NULL;
     return p;
 }
 
 void ext3_htree_free_dir_info(struct dir_private_info *p)
 {
-    free_rb_tree_fname(&p->root);
+    free_rb_tree_fname(p, TRUE);
     kfree(p);
 }
 
@@ -129,7 +141,7 @@ int ext3_htree_store_dirent(struct file *dir_file, __u32 hash,
         extra_data = ext3_get_dirent_data_len(dirent);
 
     len = sizeof(struct fname) + dirent->name_len + extra_data;
-    new_fn = kmalloc(len, GFP_KERNEL);
+    new_fn = fname_alloc(info, len);
     if (!new_fn)
         return -ENOMEM;
     memset(new_fn, 0, len);
@@ -676,7 +688,7 @@ int ext3_dx_readdir(struct file *filp, filldir_t filldir,
 
     /* Some one has messed with f_pos; reset the world */
     if (info->last_pos != filp->f_pos) {
-        free_rb_tree_fname(&info->root);
+        free_rb_tree_fname(info, FALSE);
         info->curr_node = NULL;
         info->extra_fname = NULL;
         info->curr_hash = (__u32)pos2maj_hash(filp->f_pos);
@@ -704,7 +716,7 @@ int ext3_dx_readdir(struct file *filp, filldir_t filldir,
         if ((!info->curr_node) ||
                 (filp->f_version != inode->i_version)) {
             info->curr_node = NULL;
-            free_rb_tree_fname(&info->root);
+            free_rb_tree_fname(info, FALSE);
             filp->f_version = inode->i_version;
             ret = ext3_htree_fill_tree(fc->efc_irp, filp, info->curr_hash,
                                        info->curr_minor_hash, &info->next_hash);
