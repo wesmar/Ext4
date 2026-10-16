@@ -44,12 +44,13 @@ with the GPL; the driver as a whole remains under GPL-2.0. The tables hold data 
 Character Database, Copyright (c) 1991-2019 Unicode, Inc., distributed under the Unicode terms
 of use (https://www.unicode.org/copyright.html).
 
-The code page converters - `src/nls/CharsetMap.c`, `src/nls/CharsetMap.h` and the 37
+The code page converters - `src/nls/CharsetMap.c`, `src/nls/CharsetMap.h`, EUC-JP (`nls_euc-jp.c`,
+`EucJpTables.h`) and the 37
 `src/nls/nls_<code page>.c` files generated from the published mapping tables, the generator
 `tools/nls/make-nls.py` and its lists in `tools/nls/established` - are new work by Marek
 Wesolowski under the MIT license. They reproduce the mappings of the converters the driver
 inherited from Linux `fs/nls` (commit 4706af9, the test reference); the code page registry,
-UTF-8 and the EUC-JP and KOI8-RU adapters in `src/nls` remain Linux code under GPL-2.0.
+UTF-8 and the KOI8-RU adapter in `src/nls` remain Linux code under GPL-2.0.
 `tools/lineage/lineage.py`, which measures how much of the code is new, is MIT-licensed as well.
 
 The restructuring into its present layout, the rewritten subsystems (service stop and unload,

@@ -73,7 +73,7 @@ https://www.unicode.org/Public/MAPPINGS/, the tables `PAGES` in
 `VENDORS/MICSFT/WINDOWS/CP874.TXT`, `CP932.TXT`, `CP936.TXT`, `CP949.TXT`,
 `CP950.TXT`, `CP1250.TXT`, `CP1251.TXT`, `CP1255.TXT`,
 `ISO8859/8859-{1,2,3,4,5,6,7,9,13,14,15}.TXT` and
-`VENDORS/MISC/KOI8-{R,U}.TXT`.
+`VENDORS/MISC/KOI8-{R,U}.TXT` and, for EUC-JP, `OBSOLETE/EASTASIA/JIS/JIS0212.TXT`.
 
 ```powershell
 python tools\nls\make-nls.py <MAPPINGS>                     # writes src\nls\nls_*.c
@@ -105,7 +105,13 @@ intended: for U+00A0..U+00FF the inherited Shift JIS encoder wrote two bytes
 whatever the bound; the new one refuses a bound of 1 (the driver always
 passes 16). It also checks koi8-ru, which delegates to koi8-u: its inherited
 decoder had the test for the two bytes that differ inverted and read every
-other byte as `Ў` or `ў`. The model further runs the production dentry
+other byte as `Ў` or `ў`. EUC-JP goes through Shift JIS by the OSF/JVC
+conversion specification; `EucJpTables.h` places the IBM extensions, derived
+from CP932 and `OBSOLETE/EASTASIA/JIS/JIS0212.TXT`: a duplicate of a JIS X
+0208 character takes its code, a duplicate of an NEC row 13 character or one
+outside JIS X 0212 the next G3 user code, the others their JIS X 0212 code.
+The model compares it with the converter it replaced on every BMP encode and
+every three-byte decode input, 126 567 306 checks in all. The model further runs the production dentry
 builder with allocation and conversion faults.
 
 `nls-model.exe --export-probes` exports representable filename samples;

@@ -164,18 +164,72 @@ static void ExportProbes(const PROFILE *profile)
     printf("\n");
 }
 
-/* koi8-ru delegates to koi8-u; the model hands it the rebuilt koi8-u. */
+/* koi8-ru delegates to koi8-u and euc-jp to cp932; each side of the model
+ * hands them the table of its own side.
+ */
+const struct nls_table *before_koi8_u(void);
 const struct nls_table *after_koi8_u(void);
+const struct nls_table *before_cp932(void);
+const struct nls_table *after_cp932(void);
 const struct nls_table *after_koi8_ru(void);
+const struct nls_table *before_euc_jp(void);
+const struct nls_table *after_euc_jp(void);
 
-struct nls_table *load_nls(char *charset)
+struct nls_table *load_nls_before(char *charset)
 {
-    return strcmp(charset, "koi8-u") ? NULL : (struct nls_table *)after_koi8_u();
+    return (struct nls_table *)(!strcmp(charset, "koi8-u") ? before_koi8_u() :
+                                !strcmp(charset, "cp932") ? before_cp932() : NULL);
 }
 
-void unload_nls(struct nls_table *table)
+struct nls_table *load_nls_after(char *charset)
+{
+    return (struct nls_table *)(!strcmp(charset, "koi8-u") ? after_koi8_u() :
+                                !strcmp(charset, "cp932") ? after_cp932() : NULL);
+}
+
+void unload_nls_before(struct nls_table *table)
 {
     (void)table;
+}
+
+void unload_nls_after(struct nls_table *table)
+{
+    (void)table;
+}
+
+/* Every BMP encode and every three-byte decode input of euc-jp against the
+ * converter it replaced, each over its own cp932.
+ */
+static void VerifyEucJp(void)
+{
+    const struct nls_table *old = before_euc_jp(), *now = after_euc_jp();
+    static const int bounds[] = {-1, 0, 1, 2, 3, 4};
+    for (unsigned input = 0; input < 65536; input++) {
+        for (unsigned b = 0; b < sizeof(bounds)/sizeof(bounds[0]); b++) {
+            unsigned char before[8], after[8];
+            int a, c;
+            memset(before, 0xa5, sizeof(before));
+            memset(after, 0xa5, sizeof(after));
+            a = old->uni2char((wchar_t)input, before, bounds[b]);
+            c = now->uni2char((wchar_t)input, after, bounds[b]);
+            if (input >= 0xa0 && input <= 0xff && bounds[b] == 1 && a != c) {
+                /* cp932 no longer writes a Latin-1 character past a bound of 1. */
+                Check(c == -ENAMETOOLONG && after[0] == 0xa5 && after[1] == 0xa5, "euc-jp", "encode past the bound", input, 1);
+                continue;
+            }
+            Check(a == c && !memcmp(before, after, sizeof(before)), "euc-jp", "encode", input, bounds[b]);
+        }
+    }
+    for (unsigned input = 0; input < (1u << 24); input++) {
+        unsigned char raw[3] = {(unsigned char)(input >> 16), (unsigned char)(input >> 8), (unsigned char)input};
+        for (unsigned b = 0; b < sizeof(bounds)/sizeof(bounds[0]); b++) {
+            wchar_t x = 0xface, y = 0xface;
+            int a = old->char2uni(raw, bounds[b], &x);
+            int c = now->char2uni(raw, bounds[b], &y);
+            Check(a == c && x == y, "euc-jp", "decode", input, bounds[b]);
+        }
+    }
+    printf("euc-jp: every BMP encode and three-byte decode, bounds -1..4: passed\n");
 }
 
 /* koi8-ru is koi8-u but for bytes AE and BE, U+045E and U+040E. The
@@ -223,6 +277,7 @@ int main(int argc, char **argv)
     }
     VerifyDentry();
     VerifyKoi8Ru();
+    VerifyEucJp();
     uint32_t random = UINT32_C(0x1234fedc);
     for (unsigned i = 0; i < 1000000; i++) {
         unsigned expected = 0;

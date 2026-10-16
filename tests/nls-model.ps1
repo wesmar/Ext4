@@ -47,9 +47,16 @@ try {
         }
         $rows.Add("    { `"$page`", before_$page, after_$page },")
     }
-    # The converters the rebuilt code pages share, and koi8-ru, which delegates to koi8-u.
-    foreach($unit in @(@{Source="$PSScriptRoot/../src/nls/CharsetMap.c"; Name='charset-map'; Defines=@()},
-            @{Source="$PSScriptRoot/../src/nls/nls_koi8-ru.c"; Name='koi8_ru-after'; Defines=@('/DMODEL_GETTER=after_koi8_ru','/DMODEL_EXIT=exit_after_koi8_ru')})) {
+    # The converters the rebuilt code pages share, and the delegating ones: koi8-ru
+    # over koi8-u and euc-jp over cp932, each side over its own side's table.
+    $delegating = foreach($side in 'before','after') {
+        foreach($name in 'koi8-ru','euc-jp') {
+            $page = $name.Replace('-','_')
+            @{Source=$(if($side-eq'before'){Join-Path $Reference "nls_$name.c"}else{"$PSScriptRoot/../src/nls/nls_$name.c"}); Name="$page-$side"
+              Defines=@("/DMODEL_GETTER=$($side)_$page","/DMODEL_EXIT=exit_$($side)_$page","/Dload_nls=load_nls_$side","/Dunload_nls=unload_nls_$side") + @(if($side-eq'before'){'/DMODEL_INHERITED'})}
+        }
+    }
+    foreach($unit in @(@{Source="$PSScriptRoot/../src/nls/CharsetMap.c"; Name='charset-map'; Defines=@()}) + $delegating) {
         $obj=Join-Path $Output "$($unit.Name).obj"
         & $compiler.FullName @options @($unit.Defines) /c $unit.Source "/Fo$obj"
         if($LASTEXITCODE) {throw "Model compilation failed: $($unit.Name)"}
