@@ -56,6 +56,23 @@ NTSTATUS
 Ext2FlushDisk(
     IN PEXT2_VCB       Vcb );
 
+/* crash-state tests (support\WriteLog.c): the test volume's writes and
+   flushes, in order; nothing in a build without EXT4_WRITE_LOG */
+#define EXT4_WLOG_WRITE     1
+#define EXT4_WLOG_FLUSH     2
+#ifdef EXT4_WRITE_LOG
+VOID Ext4WriteLogInitialize(VOID);
+VOID Ext4WriteLogAttach(IN PEXT2_VCB Vcb);
+VOID Ext4WriteLogRecord(IN PEXT2_VCB Vcb, IN ULONG Type, IN ULONGLONG Offset,
+                        IN ULONG Length, IN PVOID Data);
+VOID Ext4WriteLogSave(VOID);
+#else
+#define Ext4WriteLogInitialize()                    ((void)0)
+#define Ext4WriteLogAttach(Vcb)                     ((void)0)
+#define Ext4WriteLogRecord(Vcb, Type, Offset, Length, Data) ((void)0)
+#define Ext4WriteLogSave()                          ((void)0)
+#endif
+
 /* a mark to take once writes have completed ... */
 LONG64
 Ext2FlushMark(

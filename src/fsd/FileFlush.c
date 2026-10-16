@@ -294,6 +294,7 @@ Ext2Flush (IN PEXT2_IRP_CONTEXT IrpContext)
                                         TRUE,
                                         TRUE );
 
+                Ext4WriteLogRecord(Vcb, EXT4_WLOG_FLUSH, 0, 0, NULL);
                 DriverStatus = IoCallDriver(Vcb->TargetDeviceObject, Irp);
 
                 Status = (DriverStatus == STATUS_INVALID_DEVICE_REQUEST) ?

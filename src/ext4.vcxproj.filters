@@ -450,6 +450,9 @@
     <ClCompile Include="support\StatusConversion.c">
       <Filter>support</Filter>
     </ClCompile>
+    <ClCompile Include="support\WriteLog.c">
+      <Filter>support</Filter>
+    </ClCompile>
     <ClCompile Include="support\Utility.c">
       <Filter>support</Filter>
     </ClCompile>

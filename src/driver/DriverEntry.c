@@ -81,6 +81,7 @@ DriverUnload (IN PDRIVER_OBJECT DriverObject)
     /* Prepare-to-unload returned every published VPB before handing off. */
     ASSERT(!Ext2VpbsPending());
 
+    Ext4WriteLogSave();
     Ext2UnloadAllNls();
     Ext2UnloadStep(L"UnloadStep", EXT2_STEP_UNLOADED);
 
@@ -425,6 +426,7 @@ DriverEntry (
     Ext2JournalGlobalInit();
 
     Status = Ext2InitializeGlobal(RegistryPath);
+    Ext4WriteLogInitialize();
     if (!NT_SUCCESS(Status)) {
         goto errorout;
     }

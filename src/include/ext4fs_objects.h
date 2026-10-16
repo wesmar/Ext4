@@ -217,6 +217,9 @@ typedef struct _EXT2_VCB {
        above a mark taken after some writes completed made them durable. */
     volatile LONG64             FlushIssued;
     volatile LONG64             FlushCovered;
+#ifdef EXT4_WRITE_LOG
+    BOOLEAN                     WriteLog;       /* the crash-state test volume */
+#endif
 
     /* Maximum file size in blocks ... */
     ULONG                       max_blocks_per_layer[EXT2_BLOCK_TYPES];

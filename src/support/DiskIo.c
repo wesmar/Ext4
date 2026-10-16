@@ -345,6 +345,18 @@ Ext2ReadWriteBlocks(
             IoMarkIrpPending(pContext->MasterIrp);
         }
 
+#ifdef EXT4_WRITE_LOG
+        if (IsFlagOn(pContext->Flags, EXT2_RW_CONTEXT_WRITE) && Vcb->WriteLog) {
+            PUCHAR System = MmGetSystemAddressForMdlSafe(MasterIrp->MdlAddress,
+                                                         NormalPagePriority | MdlMappingNoExecute);
+            PUCHAR Origin = (PUCHAR)MmGetMdlVirtualAddress(MasterIrp->MdlAddress);
+
+            for (Extent = Chain; System != NULL && Extent != NULL; Extent = Extent->Next) {
+                Ext4WriteLogRecord(Vcb, EXT4_WLOG_WRITE, Extent->Lba, Extent->Length,
+                                   System + ((PUCHAR)MasterIrp->UserBuffer + Extent->Offset - Origin));
+            }
+        }
+#endif
         bBugCheck = TRUE;
 
         for (Extent = Chain; Extent != NULL; Extent = Extent->Next) {
@@ -570,6 +582,7 @@ Ext2WriteDiskSync(
     }
     SetFlag(Irp->Flags, IRP_NOCACHE);
 
+    Ext4WriteLogRecord(Vcb, EXT4_WLOG_WRITE, Offset, Length, Buffer);
     Status = IoCallDriver(Vcb->TargetDeviceObject, Irp);
 
     if (Status == STATUS_PENDING) {
@@ -635,6 +648,8 @@ Ext2FlushDisk(
 
     if (NT_SUCCESS(Status)) {
         LONG64 Covered = Vcb->FlushCovered;
+
+        Ext4WriteLogRecord(Vcb, EXT4_WLOG_FLUSH, 0, 0, NULL);
         while (Covered < Number) {
             LONG64 Seen = InterlockedCompareExchange64(&Vcb->FlushCovered, Number, Covered);
             if (Seen == Covered) {

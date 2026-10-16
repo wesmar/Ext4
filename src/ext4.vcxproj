@@ -208,6 +208,7 @@
     <ClCompile Include="support\StatusNames.c" />
     <ClCompile Include="support\PoolMemory.c" />
     <ClCompile Include="support\StatusConversion.c" />
+    <ClCompile Include="support\WriteLog.c" />
     <ClCompile Include="support\Utility.c" />
     <ClCompile Include="crypto\AesXts.c" />
     <ClCompile Include="volume\LuksVolume.c" />

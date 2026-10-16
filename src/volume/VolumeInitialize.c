@@ -256,6 +256,7 @@ Ext2InitializeVcbObjects(IN PEXT2_VCB Vcb, IN PEXT2_SUPER_BLOCK sb,
     State->NotifySync = TRUE;
 
     Vcb->SuperBlock = sb;
+    Ext4WriteLogAttach(Vcb);
     Vcb->DeviceObject = VolumeDevice;
     Vcb->TargetDeviceObject = TargetDevice;
     Vcb->Vpb = Vpb;
