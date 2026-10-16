@@ -211,6 +211,7 @@ NTSTATUS JnlWriteLogRun(PEXT2_JOURNAL J, unsigned long Log, ULONG Count,
                                PUCHAR Buffer, BOOLEAN WriteThrough);
 
 NTSTATUS JnlPublishTail(PEXT2_JOURNAL J);
+NTSTATUS JnlPublishTailIfNeeded(PEXT2_JOURNAL J, ULONG Needed);
 
 BOOLEAN JnlMarkSuper(PEXT2_JOURNAL J, BOOLEAN Dirty);
 

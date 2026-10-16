@@ -448,7 +448,8 @@ NTSTATUS JnlCommitTransaction(PEXT2_JOURNAL J)
         goto errorout;
     }
 
-    Status = JnlPublishTail(J);
+    /* the tail on disk, if this transaction - at its largest - could reach it */
+    Status = JnlPublishTailIfNeeded(J, JnlLogBlocksNeeded(J, normal + J->MaxTxnBlocks, revokes + 64));
     if (!NT_SUCCESS(Status))
         goto errorout;
 
@@ -511,6 +512,8 @@ NTSTATUS JnlCommitTransaction(PEXT2_JOURNAL J)
        make room while sealed */
     needed = JnlLogBlocksNeeded(J, normal, revokes);
     Status = JnlEnsureLogSpace(J, needed);
+    if (NT_SUCCESS(Status))
+        Status = JnlPublishTailIfNeeded(J, needed);
     if (!NT_SUCCESS(Status))
         goto errorout;
 

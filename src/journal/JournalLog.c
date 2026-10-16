@@ -208,6 +208,41 @@ NTSTATUS JnlPublishTail(PEXT2_JOURNAL J)
     return STATUS_SUCCESS;
 }
 
+/*
+ * Publish the tail only when it has to move, as jbd2's commit does: every
+ * publication is a superblock write between two flushes, and doing it at
+ * every commit tripled the device round trips of an fsync. The tail on disk
+ * may lag behind the one in memory - recovery then replays transactions
+ * already written home, which only writes the same blocks again, revokes
+ * included - as long as the log never overwrites what that older tail still
+ * covers. So it moves when the log on disk is empty (s_start 0: a new
+ * transaction would be invisible to recovery), when fewer than Needed blocks
+ * (plus the slack) remain before the head reaches it, or when a quarter of
+ * the log has been freed behind it (jbd2 waits for max_txn_bufs), which
+ * bounds what recovery replays.
+ */
+NTSTATUS JnlPublishTailIfNeeded(PEXT2_JOURNAL J, ULONG Needed)
+{
+    journal_t    *jbd = J->jbd;
+    KIRQL         irql;
+    unsigned long span, room, behind;
+    BOOLEAN       publish;
+
+    JnlLock(J, irql);
+    span = jbd->j_last - jbd->j_first;
+    if ((jbd->j_flags & JBD2_FLUSHED) || J->DiskTail == 0) {
+        publish = TRUE;
+    } else {
+        room = J->DiskTail == jbd->j_head ? span :
+               (J->DiskTail + span - jbd->j_head) % span;
+        behind = (jbd->j_tail + span - J->DiskTail) % span;
+        publish = room < Needed + JNL_LOG_SLACK || behind >= span / 4;
+    }
+    JnlUnlock(J, irql);
+
+    return publish ? JnlPublishTail(J) : STATUS_SUCCESS;
+}
+
 /* Ext2SaveSuperDirect, under SuperLock */
 static BOOLEAN
 JnlWriteSuper(IN PEXT2_VCB Vcb)
