@@ -442,7 +442,7 @@ The crash-state campaign replays every prefix of a run's writes and, for every e
 
 The driver's own journal replay was then held to **120 of those states** - picked around commit blocks and spread over the runs, on ext3, 1 KiB blocks, the large directory and the churn run; 39 of the churn run's 40 needed a replay of up to 150 transactions. Mounted by the driver and unloaded, every one was clean for `e2fsck -fn` and held exactly the names and bytes `e2fsck`'s own replay of the same state holds.
 
-On 16 October the e2fsprogs corpus (219 images, 196 walked: no crash, hang or harness error), the planted-corruption fixture and the dedicated ext2/ext3 fixture passed again, on that night's builds before the journal tail changes; the full matrix and the crash states cover the final image.
+On 16 October the e2fsprogs corpus (219 images, 196 walked: no crash, hang or harness error), the planted-corruption fixture and the dedicated ext2/ext3 fixture passed again on the final image, as did the full matrix under Driver Verifier.
 
 Earlier campaigns on the previous release covered the fresh 16 TiB boundary fixtures, ENOSPC with and without hole reuse, scaling through **1/2/4/8 threads in one process** and **10 loaded stop/start cycles**.
 
