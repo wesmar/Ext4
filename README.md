@@ -101,9 +101,9 @@ Design rules the code follows:
 
 I developed the current Windows architecture around explicit object lifetimes, per-volume transaction ownership and bounded error handling. The active write, allocation, journal, mount, unload and security paths have been replaced or substantially rewritten, with modules organised by responsibility. I verify their behaviour with production-code models and Windows-to-Linux media checks. Mathematical precision guides this work: explicit invariants, bounded state transitions, clear ownership and measured hot paths.
 
-The table below records retained components and their technical lineage. Attribution and licence notices remain with the source. I am continuing the rewrite toward self-contained, independently authored modules, with MIT licensing as a long-term goal for an independent implementation. Three such modules are MIT-licensed so far. The case folding of casefolded directories, `src/unicode` - tables generated from the Unicode Character Database, the normalizer and their interface - is written from its specification and produces exactly the bytes Linux produces. The code page converters, `src/nls/CharsetMap.c`, the 37 `nls_<code page>.c` files and EUC-JP, are generated from the published Microsoft, ISO 8859, KOI8 and JIS X 0212 mapping tables in a representation of my own; the inherited converters serve only as the reference they are proven equal to. The red-black tree under the buffer heads, the run map and the htree reader, `src/linux/rbtree.c`, is written anew from its rules, each repair once for both mirror images, and checked against a sorted array. The current combined driver remains `GPL-2.0-only`.
+The table below records retained components and their technical lineage. Attribution and licence notices remain with the source. I am continuing the rewrite toward self-contained, independently authored modules, with MIT licensing as a long-term goal for an independent implementation. Five such modules are MIT-licensed so far. The case folding of casefolded directories, `src/unicode` - tables generated from the Unicode Character Database, the normalizer and their interface - is written from its specification and produces exactly the bytes Linux produces. The code page converters, `src/nls/CharsetMap.c`, the 37 `nls_<code page>.c` files and EUC-JP, are generated from the published Microsoft, ISO 8859, KOI8 and JIS X 0212 mapping tables in a representation of my own; the inherited converters serve only as the reference they are proven equal to. The red-black tree under the buffer heads, the run map and the htree reader, `src/linux/rbtree.c`, is written anew from its rules, each repair once for both mirror images, and checked against a sorted array. The journal's recovery side - the log format (`src/journal/JournalFormat.h`), the replay (`JournalReplay.c`) and the loading of a journal at mount (`JournalLoad.c`) - is written from the rules jbd2 follows, not from its code; the engine that writes the log uses the same format definitions. The orphan cleanup at mount, `src/ext4/Orphans.c`, is new. The current combined driver remains `GPL-2.0-only`.
 
-How much of the code is new is measured, not estimated. Of the 257 245 C tokens written by hand - comments and the generated tables (code pages, case folding, NTSTATUS names) left out - **47.1 %** lie in no run of twelve tokens that also occurs in an origin. **46.4 %** still match Ext2Fsd as Matt Wu left it in Ext3Fsd, including the extent and htree routines he ported from Linux; **6.1 %** match Ext4Fsd; **0.4 %** matches Linux v6.6 directly. The newest subsystems are 80-97 % new (name cache, open path, unload, block allocator, case folding, code pages); the retained share sits mostly in the extent tree, htree, jbd2 recovery, fast I/O and the support tables. Exact runs count renamed code as new, so with identifiers ignored the new share is 33.0 %. `tools/lineage/lineage.py` repeats the measurement.
+How much of the code is new is measured, not estimated. Of the 256 923 C tokens written by hand - comments and the generated tables (code pages, case folding, NTSTATUS names) left out - **50.8 %** lie in no run of twelve tokens that also occurs in an origin. **44.9 %** still match Ext2Fsd as Matt Wu left it in Ext3Fsd, including the extent and htree routines he ported from Linux; **3.9 %** match Ext4Fsd; **0.4 %** matches Linux v6.6 directly. The newest subsystems are 80-98 % new (journal, name cache, open path, unload, block allocator, case folding, code pages); the retained share sits mostly in the extent tree, htree, fast I/O and the support tables. Exact runs count renamed code as new, so with identifiers ignored the new share is 35.5 %. `tools/lineage/lineage.py` repeats the measurement.
 
 | Source project | Attribution | Retained components and lineage |
 |---|---|---|
@@ -117,7 +117,8 @@ How much of the code is new is measured, not estimated. Of the 257 245 C tokens 
 What changed on the way to `ext4.sys`, in short:
 
 - **Structure.** The monolithic source tree is divided by responsibility into `driver`, `fsd`, `volume`, `core`, `ext4`, `journal`, `linux`, `nls` and `support`. Each area has its own header; the former umbrella header had 3 400 lines. Before behavior changed, preprocessing proved the split token-identical across 1 615 functions.
-- **Journal commits and recovery.** A Windows-native jbd2 commit engine logs every metadata change and commits it before the home write. Linux `e2fsck` or the driver replays an interrupted transaction at the next mount.
+- **Journal commits and recovery.** A Windows-native jbd2 commit engine logs every metadata change and commits it before the home write. Linux `e2fsck` or the driver replays an interrupted transaction at the next mount; the driver's replay follows jbd2's rules - revokes, the three checksum versions, stale blocks of an earlier round of the log, async commits - and leaves every block as `e2fsck` leaves it (`tests/journal-replay-wsl.sh`). New transaction IDs start past every ID the replay found in the log.
+- **Orphans finished at mount.** A file deleted while it was open, or a truncation under way, sits on an orphan list when the system crashes. A writable mount finishes them as Linux and `e2fsck` do - from the classic list and from the `orphan_file` - cutting a file to its size or releasing an inode with no name left; a bad orphan is recorded as an error, an unsound orphan file keeps the volume read-only.
 - **Stopping and unloading.** `sc stop` drains mounted volumes and outstanding references before releasing the driver.
 - **Physical addressing.** Allocation, block I/O, extent caches and metadata tracking carry wide physical addresses. A driver-owned red-black run map replaces the Windows mapping interface that discarded the upper physical-block bits. Legacy on-disk pointers retain their specified width.
 - **Journal ownership.** The journal engine belongs to the volume control block. Stopping its session and freeing the engine are separate steps, so a late stream close cannot enter a freed journal during teardown.
@@ -224,7 +225,7 @@ Rules the engine keeps, each one learned from a failure it caused:
 1. **One hook for all metadata.** Directory blocks that were marked dirty directly used to bypass the journal; after a crash the inodes came back and the directory entries did not. Every site now goes through `mark_buffer_dirty`.
 2. **A handle joins a transaction only if it still fits the log**, the rule jbd2's `start_this_handle` enforces; otherwise it asks for a commit and waits. Without it a fast writer filled the log and the commit aborted the journal.
 3. **Superseded records retire without I/O.** A block logged again by a newer committed transaction is not written home from the older one, so a hot working set cannot pin the log.
-4. **The journal superblock is written with its checksum**, through `jbd2_write_superblock` — otherwise `e2fsck` calls it corrupt and the next mount refuses it.
+4. **The journal superblock is written with its checksum**, between two device flushes (`JlogSetTail`) — otherwise `e2fsck` calls it corrupt and the next mount refuses it.
 5. **A required journal must be usable.** An external, corrupt or unreplayable journal mounts the volume read-only. Ext2, whose format has no journal, remains writable through its non-journaled path.
 6. **Lifetime follows ownership.** Stream teardown stops the journal session. The VCB retains the engine until stream, inode-map, buffer-head and group-cache teardown is complete; entering an IRP scope touches only thread-owned state.
 
@@ -442,6 +443,10 @@ The crash-state campaign replays every prefix of a run's writes and, for every e
 
 The driver's own journal replay was then held to **120 of those states** - picked around commit blocks and spread over the runs, on ext3, 1 KiB blocks, the large directory and the churn run; 39 of the churn run's 40 needed a replay of up to 150 transactions. Mounted by the driver and unloaded, every one was clean for `e2fsck -fn` and held exactly the names and bytes `e2fsck`'s own replay of the same state holds.
 
+The replay is now new code, written from jbd2's rules (`JournalReplay.c`), and tested on its own first. A model generates logs whose outcome follows from what was written: every feature set (none, 64-bit, checksum v1 with and without async commit, v2, v3), every kind of damage - a torn transaction, a bad or a stale commit, descriptor or revoke block, a data block that fails its tag, an unknown block, a transaction of another journal, a revoke block that claims too much - at every transaction of small logs, starts at the ring's wrap and IDs at the 2^32 wrap, then random logs. Each case checks the error, the end of the log, the failed commit, every home block, every allocation failing in turn and leaks: **70 888 cases, 838 888 checks**, on x64 and on x86. Of 28 faults planted in the code on purpose, 24 fail the model; the four that pass change nothing any log can show. The same logs, written into the journal of real ext4 volumes with 1 KiB and 4 KiB blocks, were replayed by `e2fsck` and by the driver's code: **5 950 cases, no difference** in the home blocks, the checksum errors or the corrupt commits reported. In the driver, the new replay passed the 120 crash states again, and a new 3 384-state churn run recorded by the new engine passed with it.
+
+Orphans finished at mount (`tests/orphan-vm.ps1`): 18 volumes - the kernel's own orphans (files deleted while open) in the orphan file and on the classic list, after a crash with the journal to replay and while frozen, with 1 KiB blocks, on ext3, 60 at once; deletions and truncations under way made with debugfs, one past fallocated blocks; bad orphans and an orphan file that fails its checksum. After the driver's mount `e2fsck` finds no orphan left and every name and byte equals its own processing; a bad orphan is recorded as an error, the unsound orphan file keeps the volume read-only.
+
 On 16 October the e2fsprogs corpus (219 images, 196 walked: no crash, hang or harness error), the planted-corruption fixture and the dedicated ext2/ext3 fixture passed again on the final image, as did the full matrix under Driver Verifier.
 
 Earlier campaigns on the previous release covered the fresh 16 TiB boundary fixtures, ENOSPC with and without hole reuse, scaling through **1/2/4/8 threads in one process** and **10 loaded stop/start cycles**.
@@ -480,6 +485,8 @@ I develop this driver as a solo project. The validation combines several hours o
 - **Tester correctness:** child exit codes and completion summaries are both required. An unhandled exception counts as failure; an empty or interrupted run is rejected.
 - **Character-map equivalence:** every BMP encode, every two-byte decode input, error results and output bytes match the converters the generated ones replaced; KOI8-RU matches its definition. Allocation and conversion failures in the production dentry builder return no freed entry.
 - **Crash states:** every prefix of a run's writes, and every loss of one write between two flushes, is a volume `e2fsck` accepts after replaying its journal; it may set the superblock's free counts and process orphans, nothing else. A file whose flush returned holds, right after it, what it holds at the end; the driver's own replay of a crash state equals `e2fsck`'s.
+- **Journal replay:** for every generated log, the end found, the failed commit, the error and every block sent home are the ones its content implies - and the ones `e2fsck` gives for the same log in a real volume.
+- **Orphans:** after a writable mount no orphan is left for `e2fsck`, and the volume holds what `e2fsck`'s own processing leaves; a bad orphan is recorded, never guessed at.
 - **Case-folding equivalence:** the folded bytes, the result codes into buffers of any size, comparisons and the strict-mode check equal those of the Linux trie implementation, kept in git as the reference, for every code point, every byte string of up to four bytes and random names; strict mode answers as Linux's `utf8nlen()`.
 
 ```mermaid
@@ -506,6 +513,11 @@ pwsh tests\robust.ps1
 pwsh tests\run-map-model.ps1 -Rounds 32
 pwsh tests\rbtree-model.ps1 -Rounds 8
 
+# The journal replay against generated logs with a known outcome (x64, x86),
+# then against e2fsck on real volumes, damaged logs included (WSL)
+pwsh tests\journal-replay-model.ps1
+sed 's/\r$//' tests/journal-replay-wsl.sh | bash -s -- 3000
+
 # Production block search against an independent bit-by-bit oracle
 pwsh tests\block-search-model.ps1
 
@@ -528,6 +540,9 @@ pwsh tests\legacy-vm.ps1 -Image <new .vhdx>
 pwsh tests\crash-vm.ps1 -Image <new .vhdx> -LogDriver <recording ext4.sys> -Churn 300
 # then the driver's own journal replay on 40 of that run's states
 pwsh tests\crash-recover-vm.ps1 -Run <that .vhdx> -Count 40
+
+# Orphans finished at mount: volumes with the kernel's orphans and made ones
+pwsh tests\orphan-vm.ps1 -Generate
 
 # Damage planted on purpose: refused, recorded in the superblock, contained
 pwsh tests\corrupt-vm.ps1 -Image <new .vhdx>
@@ -552,6 +567,8 @@ Configure the disposable guest and test-image paths in `tests/testenv.local.psd1
 | Tree copies | System folders copied by robocopy (`/DCOPY:DAT`), xcopy (`/K`) and .NET - read-only folders among them - compared name by name and byte by byte, then deleted; 2000 subdirectories in one directory |
 | Media integrity | Linux `e2fsck`, no error recorded in the superblock by the driver (`e2fsck -fn` alone passes such a volume), and manifest-based content verification after Windows writes |
 | Crash states | Every state a power cut can leave in a recorded run, writes lost between two flushes included, judged by `e2fsck` after its journal replay; files whose flush returned held to what they hold at the end; the driver's own journal replay compared with `e2fsck`'s, name for name and byte for byte |
+| Journal replay | Generated logs - every feature set, every kind of damage at every transaction, ring and ID wraps - against their known outcome, x86 and x64; the same logs in real volumes against `e2fsck` |
+| Orphans | The kernel's orphans after a crash and while frozen, in the orphan file and on the classic list; debugfs-made deletions and truncations; bad orphans and an unsound orphan file |
 | Wide physical addresses | Sparse GPT volumes crossing 2³² blocks with 1/2/4 KiB blocks; high data, extent-tree and EA blocks; legacy-pointer boundary |
 | Legacy formats | Actual ext2/ext3 media: write, indirect-block growth, shrink/regrow, rename, delete and read-back after reload |
 | Deterministic models | Production run map, red-black tree, bitmap search and VPB reclaimer; independent oracles, tree invariants, pending-free overlays, ownership and forced allocation failures |
@@ -572,7 +589,7 @@ Driver Verifier runs are correctness checks. Throughput measurements use a separ
 | `dir_index` (htree), `filetype`, `dir_nlink`, `extra_isize` | Read / write; directory lookup and insertion honour signed and unsigned hash variants |
 | `large_dir` (three-level htree, directories past 2 GiB) | Read / write: index blocks split at every level and a level is added under the root when all are full, as in Linux; tested with a three-level index the kernel built and one this driver grew from empty (45 000 names), both checked by `e2fsck` and by the kernel looking every name up through the index |
 | `metadata_csum`, `gdt_csum`, `csum_seed` | Read / write; every checksum is verified before use - superblock, group descriptors, block and inode bitmaps, inodes, extent nodes, directory leaves and htree nodes, xattr blocks, MMP and journal - and a block that fails is refused and recorded as a superblock error. A superblock that fails its own checksum, which Linux refuses to mount, is mounted read-only and never written: the files can be copied off, and Windows does not offer to format the partition |
-| `orphan_file` (the `mkfs.ext4` default since e2fsprogs 1.47) | Read / write on clean volumes; `orphan_present` mounts read-only. An inode the driver cannot finish releasing goes on the classic orphan list, which Linux and `e2fsck` empty with or without the orphan file; orphans Linux left behind are not processed by the driver |
+| `orphan_file` (the `mkfs.ext4` default since e2fsprogs 1.47) | Read / write; the orphans in it are finished at mount and `orphan_present` cleared. An inode the driver cannot finish releasing goes on the classic orphan list, which Linux and `e2fsck` empty with or without the orphan file |
 | `casefold` (`mkfs -O casefold`, `chattr +F`; SteamOS formats its microSD cards so) | Read / write. Names in a casefolded directory are folded as Linux folds them (NFD and full case folding, Unicode 12.1, with tables generated from the Unicode Character Database and equal to the kernel's for every code point): the index is hashed on the folded names, `ŁÓDŹ.TXT` finds `Łódź.txt` and `STRASSE.TXT` finds `straße.txt`, a name that folds to an existing one is refused, strict mode refuses names that are not UTF-8, and directories made inside inherit the flag |
 | Unwritten (preallocated) extents | Read / write |
 | Extended attributes | Read / write, exposed as Windows EAs in the `user.` namespace, names matched without regard to case as Windows expects; other namespaces (POSIX ACLs, security labels, `trusted.`) are neither shown nor touched - replacing a file's EA set replaces its `user.` attributes only. A value longer than an EA can carry (65 535 bytes) is kept but not shown |
@@ -581,7 +598,7 @@ Driver Verifier runs are correctness checks. Throughput measurements use a separ
 | Symbolic links, hard links | Read / write; symlinks appear as reparse points |
 | Nanosecond timestamps and the epoch bits past 2038 | Read / write |
 | ext2, ext3 (indirect block maps) | Read / write |
-| `bigalloc`, `quota`, `project`, `verity`, `orphan_present` | Mounted read-only |
+| `bigalloc`, `quota`, `project`, `verity` | Mounted read-only |
 | `mmp` (multi-mount protection) | Read / write, by the Linux protocol: a volume `e2fsck` is checking mounts read-only, one left in use waits out its owner's check interval and is taken over only if the owner stays silent, a volume another node writes to meanwhile turns read-only with nothing more written; while mounted the sequence is updated on the Linux schedule, and an orderly dismount leaves the volume released. The node name `debugfs dump_mmp` shows is the computer name, the device `ext4.sys` |
 | `ea_inode` (xattr values in inodes of their own, up to 64 KiB from Windows) | Read / write, as Linux keeps them: a value too large for the xattr block goes to a value inode (crc32c of the value in its `i_atime`, reference count in `i_ctime` : `i_version`), charged to the owner's `i_blocks`; values two files share (Linux deduplicates them) are counted, and a value inode goes with its last reference - when the attribute is replaced or removed, or the file deleted. Checked by `e2fsck` and by the kernel, which verifies every value against its hash as it reads it |
 | Shared xattr blocks (`h_refcount` > 1) | Copy on write: an inode whose attributes change takes a block of its own and leaves the shared one to the others |
@@ -599,7 +616,7 @@ The old 16 TiB volume ceiling is removed. Disk-format and per-file bounds are de
 3. **POSIX permissions are mapped, not enforced as ACLs.** Ownership can be overridden per volume (`uid`, `gid` in the registry); Windows security descriptors are not stored.
 4. **LUKS and LVM.** Ciphers other than AES-XTS are not supported. Logical volumes inside LUKS open read-only, linear (one stripe) and thin ones; striped, mirrored and RAID volumes, a volume group spanning several containers, and a partition table inside a volume (the root volumes of Qubes OS qubes) are not handled — the private volumes of Qubes OS qubes hold ext4 directly and open.
 5. **x64 only.** Only x64 is built and tested.
-6. **No repair.** Damage found on disk is refused, recorded and contained, never repaired: that remains `e2fsck`'s work. Orphans a Linux crash left behind are not processed at mount; Linux or `e2fsck` processes them. A file whose inode cannot be read is listed by name, as an empty read-only file, and opening it fails.
+6. **No repair.** Damage found on disk is refused, recorded and contained, never repaired: that remains `e2fsck`'s work. Orphans are finished at a writable mount only, as Linux finishes them; a volume switched to writable while orphans wait stays read-only. A file whose inode cannot be read is listed by name, as an empty read-only file, and opening it fails.
 
 ---
 

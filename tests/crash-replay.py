@@ -8,7 +8,7 @@ usage: crash-replay.py <base.img> <writelog.bin> [--final final.img]
                        [--every N] [--reorder] [--keep DIR]
        crash-replay.py <base.img> <writelog.bin> --pick N
        crash-replay.py <base.img> <writelog.bin> --state K --out state.img
-       crash-replay.py --compare <expected.img> <mounted.img>
+       crash-replay.py --compare <expected.img> <mounted.img> [--orphans-done | --lenient]
 
 The log (support/WriteLog.c, a build with EXT4_WRITE_LOG) holds every write
 the driver sent to the volume - offset, length, bytes - and every flush, in
@@ -33,10 +33,12 @@ only the writes sent before its completion are.
 states on both sides of journal commit blocks, spread over the run; --state
 writes prefix K as an image. --compare judges a state the driver mounted -
 its own journal replay - against the same state e2fsck replayed: e2fsck -fy
-may only process orphans (the driver leaves them to Linux) and set the free
-counts, -fn must then find it clean, and every name, file and link must be
-the same (System Volume Information aside: Windows writes there on every
-mount).
+may only process orphans and set the free counts, -fn must then find it
+clean, and every name, file and link must be the same (System Volume
+Information aside: Windows writes there on every mount). With --orphans-done
+e2fsck may not find an orphan either: the driver finishes them at mount
+(tests/orphan-vm.ps1); with --lenient (a volume with a bad orphan) it may
+repair what it repairs on the original too, the journal still excepted.
 """
 import hashlib, os, re, shutil, struct, subprocess, sys
 
@@ -142,14 +144,18 @@ def tree(image, into):
     shutil.rmtree(into)
     return found
 
-def compare(expected, mounted):
+def compare(expected, mounted, orphans_done=False, lenient=False):
     judged = MOUNTED
     shutil.copyfile(mounted, judged)
     repair = run('e2fsck', '-fy', judged)
     check = run('e2fsck', '-fn', judged)
-    # the journal is the driver's to replay: e2fsck must find nothing in it
+    # the journal is the driver's to replay: e2fsck must find nothing in it;
+    # with --orphans-done no orphan either (the driver finishes them); with
+    # --lenient e2fsck may repair anything else (a volume it repairs too)
     odd = [l for l in repair.stdout.splitlines()
-           if not EXPECTED.match(l) or 'recovering journal' in l]
+           if 'recovering journal' in l or
+           (not lenient and not EXPECTED.match(l)) or
+           (orphans_done and ('orphaned inode' in l or 'orphan' in l.lower()))]
     if repair.returncode > 1 or check.returncode != 0 or odd:
         print('the mounted state: e2fsck -fy %d, -fn %d\n  %s' % (
             repair.returncode, check.returncode, '\n  '.join((odd or check.stdout.splitlines())[-12:])))
@@ -169,7 +175,8 @@ def compare(expected, mounted):
 def main():
     if '--compare' in sys.argv:
         at = sys.argv.index('--compare')
-        sys.exit(compare(sys.argv[at + 1], sys.argv[at + 2]))
+        sys.exit(compare(sys.argv[at + 1], sys.argv[at + 2], '--orphans-done' in sys.argv,
+                         '--lenient' in sys.argv))
     base, log = sys.argv[1], sys.argv[2]
     if '--pick' in sys.argv or '--state' in sys.argv:
         data, recs = records(log)

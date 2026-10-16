@@ -132,6 +132,9 @@
     <ClCompile Include="ext4\MetadataMap.c">
       <Filter>ext4</Filter>
     </ClCompile>
+    <ClCompile Include="ext4\Orphans.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
     <ClCompile Include="ext4\HtreeInsert.c">
       <Filter>ext4</Filter>
     </ClCompile>
@@ -255,34 +258,25 @@
     <ClCompile Include="fsd\VolumeWrite.c">
       <Filter>fsd</Filter>
     </ClCompile>
-    <ClCompile Include="journal\jbd2_cache.c">
-      <Filter>journal</Filter>
-    </ClCompile>
-    <ClCompile Include="journal\jbd2_journal.c">
-      <Filter>journal</Filter>
-    </ClCompile>
-    <ClCompile Include="journal\jbd2_recovery.c">
-      <Filter>journal</Filter>
-    </ClCompile>
-    <ClCompile Include="journal\jbd2_revoke.c">
-      <Filter>journal</Filter>
-    </ClCompile>
     <ClCompile Include="journal\JournalCheckpoint.c">
       <Filter>journal</Filter>
     </ClCompile>
     <ClCompile Include="journal\JournalCommit.c">
       <Filter>journal</Filter>
     </ClCompile>
+    <ClCompile Include="journal\JournalLoad.c">
+      <Filter>journal</Filter>
+    </ClCompile>
     <ClCompile Include="journal\JournalLog.c">
+      <Filter>journal</Filter>
+    </ClCompile>
+    <ClCompile Include="journal\JournalReplay.c">
       <Filter>journal</Filter>
     </ClCompile>
     <ClCompile Include="journal\JournalScope.c">
       <Filter>journal</Filter>
     </ClCompile>
     <ClCompile Include="journal\JournalSession.c">
-      <Filter>journal</Filter>
-    </ClCompile>
-    <ClCompile Include="journal\MountRecovery.c">
       <Filter>journal</Filter>
     </ClCompile>
     <ClCompile Include="linux\buffer_head.c">
@@ -620,9 +614,6 @@
     <ClInclude Include="include\linux\jbd2.h">
       <Filter>include\linux</Filter>
     </ClInclude>
-    <ClInclude Include="include\linux\journal-head.h">
-      <Filter>include\linux</Filter>
-    </ClInclude>
     <ClInclude Include="include\linux\list.h">
       <Filter>include\linux</Filter>
     </ClInclude>
@@ -644,10 +635,16 @@
     <ClInclude Include="include\version.h">
       <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="journal\jbd2_internal.h">
+    <ClInclude Include="journal\JournalInternal.h">
       <Filter>journal</Filter>
     </ClInclude>
-    <ClInclude Include="journal\JournalInternal.h">
+    <ClInclude Include="journal\JournalFormat.h">
+      <Filter>journal</Filter>
+    </ClInclude>
+    <ClInclude Include="journal\JournalLoad.h">
+      <Filter>journal</Filter>
+    </ClInclude>
+    <ClInclude Include="journal\JournalReplay.h">
       <Filter>journal</Filter>
     </ClInclude>
     <ClInclude Include="nls\CharsetMap.h">

@@ -47,14 +47,16 @@ Ext2InodeType(PEXT2_MCB Mcb)
  * allocated with all it still holds, on the orphan list: Linux frees it at
  * its next mount, e2fsck when it runs; never a block that two owners would
  * claim. Fails only when the volume stopped writing or the inode bitmap
- * disagrees (corruption).
+ * disagrees (corruption). An orphan being finished (Orphans.c) goes back
+ * on the list only from the classic one: OrphanOnFailure.
  */
-static NTSTATUS
+NTSTATUS
 Ext2ReleaseInode(
     IN PEXT2_IRP_CONTEXT IrpContext,
     IN PEXT2_VCB         Vcb,
     IN PEXT2_FCB         Fcb,
-    IN PEXT2_MCB         Mcb
+    IN PEXT2_MCB         Mcb,
+    IN BOOLEAN           OrphanOnFailure
 )
 {
     struct inode   *Inode = Mcb->Inode;
@@ -132,7 +134,7 @@ Ext2ReleaseInode(
     KeQuerySystemTime(&SysTime);
     Inode->i_nlink = 0;
     Inode->i_dtime = (__u32)Ext2UnixTime(&SysTime);
-    if (!NT_SUCCESS(Kept)) {
+    if (!NT_SUCCESS(Kept) && OrphanOnFailure) {
         (void)Ext2AddOrphan(IrpContext, Vcb, Inode);    /* fails only once the volume stopped writing */
     }
     Status = Ext2SaveInode(IrpContext, Vcb, Inode) ? STATUS_SUCCESS : STATUS_UNEXPECTED_IO_ERROR;
@@ -283,7 +285,7 @@ Ext2DeleteFile(
                 }
             }
 
-            Status = Ext2ReleaseInode(IrpContext, Vcb, Fcb, Mcb);
+            Status = Ext2ReleaseInode(IrpContext, Vcb, Fcb, Mcb, TRUE);
         }
 
     } __finally {

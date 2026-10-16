@@ -673,6 +673,22 @@ Ext2LoadRoot(IN PEXT2_VCB Vcb)
     return STATUS_SUCCESS;
 }
 
+/* ---------------------------------------------------------------- 9. orphans */
+
+/* what a crash left half deleted or half truncated (Orphans.c); an orphan
+   file that is not sound keeps the volume read-only, its journal stopped */
+static VOID
+Ext2FinishOrphans(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb)
+{
+    if (IsVcbReadOnly(Vcb) || !Ext2JournalIsActive(Vcb)) {
+        return;
+    }
+    if (!Ext4CleanupOrphans(IrpContext, Vcb)) {
+        Ext2JournalStop(Vcb, TRUE);
+        SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
+    }
+}
+
 /* ---------------------------------------------------------------- the mount */
 
 /* undo what a failed mount set up, in the reverse order */
@@ -795,6 +811,7 @@ Ext2InitializeVcb( IN PEXT2_IRP_CONTEXT IrpContext,
         if (!NT_SUCCESS(Status)) {
             __leave;
         }
+        Ext2FinishOrphans(IrpContext, Vcb);
 
         /* get anything done, then refer target device */
         ObReferenceObject(Vcb->TargetDeviceObject);

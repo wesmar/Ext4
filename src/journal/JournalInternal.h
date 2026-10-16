@@ -5,11 +5,11 @@
  * Derived from Ext2Fsd (Matt Wu), Ext4Fsd (Bo Branten) and Linux ext4/jbd2.
  * SPDX-License-Identifier: GPL-2.0-only
  *
- * This is a Windows-native replacement for the parts of Linux jbd2 that
- * are tied to the Linux page cache (transaction.c, commit.c and
- * checkpoint.c). It reuses the on-disk format helpers of the jbd2 port
- * (journal.c / recovery.c) so that anything we write can be replayed by
- * Linux and by our own recovery code, and vice versa.
+ * A Windows-native journal engine writing the jbd2 log format
+ * (JournalFormat.h), so that anything it writes can be replayed by Linux,
+ * by e2fsck and by its own recovery (JournalReplay.c), and vice versa. The
+ * log itself - superblock, geometry, the journal file's map - is loaded by
+ * JournalLoad.c.
  *
  * Model
  * -----
@@ -70,6 +70,8 @@
 #ifndef _EXT4_JOURNAL_JNL_INTERNAL_H_
 #define _EXT4_JOURNAL_JNL_INTERNAL_H_
 
+#include "JournalLoad.h"
+
 /* journal flags */
 #define JF_ACTIVE           0x00000001  /* engine accepts buffers */
 #define JF_ABORTED          0x00000002  /* I/O error: fs went read-only */
@@ -120,7 +122,7 @@ struct _EXT2_JTXN {
 
 struct _EXT2_JOURNAL {
     PEXT2_VCB               Vcb;
-    journal_t              *jbd;        /* jbd2 port: sb, bmap, geometry */
+    PEXT2_JLOG              Log;        /* superblock, geometry, the file's map */
     PEXT2_MCB               Jcb;        /* journal inode Mcb */
 
     KSPIN_LOCK              Lock;       /* guards everything below */

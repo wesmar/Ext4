@@ -364,6 +364,16 @@ Ext2SetVolumeProperty1(IN PEXT2_VCB Vcb, IN PEXT2_VOLUME_PROPERTY Property)
                     Ext2RecoverJournal(NULL, Vcb) != 0 ||
                     IsFlagOn(Vcb->Flags, VCB_JOURNAL_RECOVER)) {
                     SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
+                } else if (Ext4OrphansPending(NULL, Vcb)) {
+                    /* orphans are finished by a mount only - Linux refuses
+                       this remount the same way */
+                    DbgPrint("ext4: orphans are waiting: the volume stays read-only "
+                             "until it is mounted again\n");
+                    Ext2JournalStop(Vcb, TRUE);
+                    SetLongFlag(Vcb->Flags, VCB_READ_ONLY);
+                } else {
+                    /* nothing waits: an empty orphan file's flag goes */
+                    (void)Ext4CleanupOrphans(NULL, Vcb);
                 }
                 ClearLongFlag(Vcb->Flags, VCB_WRITE_TRANSITION);
                 TransitionOwned = FALSE;

@@ -7,7 +7,6 @@
  */
 
 #include "ext4fs.h"
-#include <linux/jbd2.h>
 #include "JournalInternal.h"
 
 #define JNL_COMMIT_INTERVAL     EXT2_SECONDS(5)
@@ -99,7 +98,7 @@ NTSTATUS JnlCheckpointOldest(PEXT2_JOURNAL J, BOOLEAN Wait, BOOLEAN AllowCommit)
                 continue;
             }
 
-            if (bh->b_jctid != 0 && tid_gt(bh->b_jctid, t->Tid)) {
+            if (bh->b_jctid != 0 && JfTidAfter(bh->b_jctid, t->Tid)) {
                 /* a newer committed copy is in the log: this record is
                    superseded whatever the block does now (0 = never
                    committed; tids are compared modulo 2^32) */
@@ -111,7 +110,7 @@ NTSTATUS JnlCheckpointOldest(PEXT2_JOURNAL J, BOOLEAN Wait, BOOLEAN AllowCommit)
             if (bh->b_jtid != t->Tid) {
                 /* the only newer owner is an uncommitted transaction */
                 pending++;
-                if (!pendingTid || tid_gt(bh->b_jtid, pendingTid))
+                if (!pendingTid || JfTidAfter(bh->b_jtid, pendingTid))
                     pendingTid = bh->b_jtid;
                 if (J->Running->Tid == bh->b_jtid && J->Running->State != JTXN_RUNNING)
                     pendingLocked = TRUE;
@@ -265,7 +264,7 @@ typedef enum _JNL_PASS {
  */
 static JNL_PASS JnlCheckpointPolicy(PEXT2_JOURNAL J)
 {
-    journal_t *jbd = J->jbd;
+    PEXT2_JLOG L = J->Log;
     KIRQL      irql;
     ULONG      retired;
 
@@ -275,7 +274,7 @@ static JNL_PASS JnlCheckpointPolicy(PEXT2_JOURNAL J)
 
         JnlLock(J, irql);
         empty    = IsListEmpty(&J->Checkpoint);
-        pressure = (jbd->j_free < jbd->j_maxlen / 2) ||
+        pressure = (L->Free < L->MaxLen / 2) ||
                    (J->CheckpointRecords > J->MaxTxnBlocks * 2);
         idle     = (J->Running->NumRecords == 0) &&
                    (now - J->LastCommitTime.QuadPart >= JNL_IDLE_CHECKPOINT);
@@ -332,7 +331,7 @@ VOID JnlThread(PVOID Context)
         JnlLock(J, irql);
         stop = (J->Flags & JF_STOPPING) != 0;
         commit = (J->Running->NumRecords > 0) &&
-                 (tid_geq(J->CommitRequest, J->Running->Tid) ||
+                 (JfTidAtLeast(J->CommitRequest, J->Running->Tid) ||
                   now - J->Running->StartTime.QuadPart >= JNL_COMMIT_INTERVAL);
         if (J->Flags & JF_ABORTED)
             commit = FALSE;

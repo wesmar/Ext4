@@ -7,23 +7,22 @@
  */
 
 #include "ext4fs.h"
-#include <linux/jbd2.h>
 #include "JournalInternal.h"
 
 /*
- * Take the next block of the log (wrapping at j_last). Caller holds
+ * Take the next block of the log (wrapping at Last). Caller holds
  * J->Lock and made sure there is room.
  */
 unsigned long JnlNextLogBlock(PEXT2_JOURNAL J)
 {
-    journal_t    *jbd = J->jbd;
-    unsigned long blk = jbd->j_head;
+    PEXT2_JLOG    L = J->Log;
+    unsigned long blk = L->Head;
 
-    ASSERT(jbd->j_free > 0);
-    jbd->j_head++;
-    jbd->j_free--;
-    if (jbd->j_head == jbd->j_last)
-        jbd->j_head = jbd->j_first;
+    ASSERT(L->Free > 0);
+    L->Head++;
+    L->Free--;
+    if (L->Head == L->Last)
+        L->Head = L->First;
     return blk;
 }
 
@@ -51,7 +50,7 @@ ULONG JnlLogBlocksNeeded(PEXT2_JOURNAL J, ULONG Normal, ULONG Revokes)
  */
 VOID JnlAdvanceTail(PEXT2_JOURNAL J)
 {
-    journal_t    *jbd = J->jbd;
+    PEXT2_JLOG    L = J->Log;
     unsigned long block;
     tid_t         tid;
     unsigned long freed;
@@ -61,23 +60,23 @@ VOID JnlAdvanceTail(PEXT2_JOURNAL J)
         block = t->LogStart;
         tid   = t->Tid;
     } else {
-        block = jbd->j_head;
-        tid   = jbd->j_transaction_sequence;
+        block = L->Head;
+        tid   = L->TransactionSequence;
     }
 
-    if (block == jbd->j_tail && tid == jbd->j_tail_sequence)
+    if (block == L->Tail && tid == L->TailSequence)
         return;
 
-    freed = block - jbd->j_tail;
-    if (block < jbd->j_tail)
-        freed += jbd->j_last - jbd->j_first;
+    freed = block - L->Tail;
+    if (block < L->Tail)
+        freed += L->Last - L->First;
 
     DEBUG(DL_JNL, ("Ext2Jnl: tail %lu/%u -> %lu/%u (freed %lu)\n",
-                   jbd->j_tail, jbd->j_tail_sequence, block, tid, freed));
+                   L->Tail, L->TailSequence, block, tid, freed));
 
-    jbd->j_free += freed;
-    jbd->j_tail = block;
-    jbd->j_tail_sequence = tid;
+    L->Free += freed;
+    L->Tail = block;
+    L->TailSequence = tid;
 
     /* a handle that found the log full may fit now (JnlActivate) */
     KeSetEvent(&J->UnlockedEvent, IO_NO_INCREMENT, FALSE);
@@ -90,30 +89,22 @@ VOID JnlAdvanceTail(PEXT2_JOURNAL J)
 NTSTATUS JnlWriteLogRun(PEXT2_JOURNAL J, unsigned long Log, ULONG Count,
                                PUCHAR Buffer, BOOLEAN WriteThrough)
 {
-    journal_t          *jbd = J->jbd;
+    PEXT2_JLOG          L = J->Log;
     NTSTATUS            Status = STATUS_SUCCESS;
-    unsigned long long  phys, next;
+    ULONGLONG           phys;
     ULONG               run, done = 0;
 
     while (done < Count) {
 
-        if (jbd2_journal_bmap(jbd, Log, &phys) || phys == 0) {
-            return STATUS_DISK_CORRUPT_ERROR;
-        }
-
-        run = 1;
-        Log++;
-        if (Log >= jbd->j_last)
-            Log = jbd->j_first;
-
-        while (done + run < Count) {
-            if (jbd2_journal_bmap(jbd, Log, &next) || next != phys + run)
-                break;
-            run++;
-            Log++;
-            if (Log >= jbd->j_last)
-                Log = jbd->j_first;
-        }
+        /* as far as the journal file is contiguous, and the ring allows */
+        Status = JlogMap(L, Log, &phys, &run);
+        if (!NT_SUCCESS(Status))
+            return Status;
+        run = min(run, Count - done);
+        run = min(run, L->Last - Log);
+        Log += run;
+        if (Log >= L->Last)
+            Log = L->First;
 
         Status = Ext2WriteDiskSync(J->Vcb, phys << J->BlockBits,
                                    run << J->BlockBits,
@@ -131,76 +122,28 @@ NTSTATUS JnlWriteLogRun(PEXT2_JOURNAL J, unsigned long Log, ULONG Count,
 }
 
 /*
- * Write the journal superblock (from its cached copy) straight to disk
- * and flush. jbd2/journal.c calls this through jbd2_win_write_superblock
- * instead of submitting the buffer through the volume cache.
- *
- * A flush comes first: the superblock moves the log's tail - or empties
- * the log - past transactions whose blocks the checkpoint has just written
- * home, and those writes must be on the medium before the log stops
- * covering them (Linux flushes in jbd2_cleanup_journal_tail, and empties
- * the log with REQ_PREFLUSH). Without it a disk that persists a cache's
- * writes in its own order could keep the new tail and lose a home block:
- * found by tests/crash-replay.py --reorder at the unmount of a volume.
- */
-static NTSTATUS JnlWriteJournalSb(PEXT2_VCB Vcb, journal_t *jbd, BOOLEAN Flush)
-{
-    NTSTATUS    Status;
-    PUCHAR      buf;
-    ULONG       bs = jbd->j_blocksize;
-    ULONGLONG   offset;
-
-    if (!jbd->j_sb_buffer || !jbd->j_superblock)
-        return STATUS_INVALID_PARAMETER;
-
-    buf = Ext2AllocatePool(NonPagedPool, bs, JNL_TAG);
-    if (!buf)
-        return STATUS_INSUFFICIENT_RESOURCES;
-
-    offset = (ULONGLONG)jbd->j_blk_offset << Ext2Log2(bs);
-
-    RtlCopyMemory(buf, jbd->j_sb_buffer->b_data, bs);
-    Status = Ext2FlushDisk(Vcb);
-    if (NT_SUCCESS(Status))
-        Status = Ext2WriteDiskSync(Vcb, offset, bs, buf, TRUE);
-    Ext2FreePool(buf, JNL_TAG);
-
-    if (NT_SUCCESS(Status) && Flush)
-        Status = Ext2FlushDisk(Vcb);
-
-    return Status;
-}
-
-int jbd2_win_write_superblock(journal_t *journal)
-{
-    PEXT2_VCB Vcb = (PEXT2_VCB)journal->j_dev->bd_priv;
-    NTSTATUS  Status = JnlWriteJournalSb(Vcb, journal, TRUE);
-    return NT_SUCCESS(Status) ? 0 : -EIO;
-}
-
-/*
  * Publish the in-memory tail to the journal superblock if it differs from
  * what is on disk. Must happen before the log reuses freed space and
  * before the very first transaction is written into an empty journal.
+ * The write flushes first (JlogSetTail): the checkpoint's home writes
+ * reach the medium before the log stops covering them.
  */
 NTSTATUS JnlPublishTail(PEXT2_JOURNAL J)
 {
-    journal_t    *jbd = J->jbd;
+    PEXT2_JLOG    L = J->Log;
     KIRQL         irql;
     unsigned long tail;
     tid_t         seq;
-    int           rc;
 
     JnlLock(J, irql);
-    tail = jbd->j_tail;
-    seq  = jbd->j_tail_sequence;
+    tail = L->Tail;
+    seq  = L->TailSequence;
     JnlUnlock(J, irql);
 
-    if (!(jbd->j_flags & JBD2_FLUSHED) && tail == J->DiskTail && seq == J->DiskTailSeq)
+    if (!(L->Flags & JLOG_FLUSHED) && tail == J->DiskTail && seq == J->DiskTailSeq)
         return STATUS_SUCCESS;
 
-    rc = jbd2_journal_update_sb_log_tail(jbd, seq, tail, 0);
-    if (rc)
+    if (!NT_SUCCESS(JlogSetTail(L, seq, tail)))
         return STATUS_UNEXPECTED_IO_ERROR;
 
     J->DiskTail = tail;
@@ -223,19 +166,19 @@ NTSTATUS JnlPublishTail(PEXT2_JOURNAL J)
  */
 NTSTATUS JnlPublishTailIfNeeded(PEXT2_JOURNAL J, ULONG Needed)
 {
-    journal_t    *jbd = J->jbd;
+    PEXT2_JLOG    L = J->Log;
     KIRQL         irql;
     unsigned long span, room, behind;
     BOOLEAN       publish;
 
     JnlLock(J, irql);
-    span = jbd->j_last - jbd->j_first;
-    if ((jbd->j_flags & JBD2_FLUSHED) || J->DiskTail == 0) {
+    span = L->Last - L->First;
+    if ((L->Flags & JLOG_FLUSHED) || J->DiskTail == 0) {
         publish = TRUE;
     } else {
-        room = J->DiskTail == jbd->j_head ? span :
-               (J->DiskTail + span - jbd->j_head) % span;
-        behind = (jbd->j_tail + span - J->DiskTail) % span;
+        room = J->DiskTail == L->Head ? span :
+               (J->DiskTail + span - L->Head) % span;
+        behind = (L->Tail + span - J->DiskTail) % span;
         publish = room < Needed + JNL_LOG_SLACK || behind >= span / 4;
     }
     JnlUnlock(J, irql);

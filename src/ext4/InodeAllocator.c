@@ -390,6 +390,52 @@ Ext2UpdateGroupDirStat(
     return Status;
 }
 
+/* is Inode allocated in its group's bitmap (an orphan must be: Orphans.c) */
+NTSTATUS
+Ext2InodeAllocated(
+    IN PEXT2_IRP_CONTEXT    IrpContext,
+    IN PEXT2_VCB            Vcb,
+    IN ULONG                Inode,
+    OUT PBOOLEAN            Allocated
+)
+{
+    struct super_block     *sb = &Vcb->sb;
+    struct ext4_group_desc *gd;
+    struct buffer_head     *gb = NULL;
+    struct buffer_head     *bh = NULL;
+    RTL_BITMAP              Bitmap;
+    ULONG                   Group, Index;
+    NTSTATUS                Status = STATUS_SUCCESS;
+    PERESOURCE              Held;
+
+    *Allocated = FALSE;
+    if (Inode == 0 || Inode > INODES_COUNT) {
+        return STATUS_SUCCESS;
+    }
+    Group = (Inode - 1) / INODES_PER_GROUP;
+    Index = (Inode - 1) % INODES_PER_GROUP;
+
+    Held = Ext2LockGroupInodes(Vcb, Group);
+    gd = ext4_get_group_desc(sb, Group, &gb);
+    if (gd == NULL) {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+    } else if (!(gd->bg_flags & cpu_to_le16(EXT4_BG_INODE_UNINIT))) {
+        Status = Ext2LoadInodeBitmap(IrpContext, Vcb, Group, gd, &bh);
+        if (NT_SUCCESS(Status)) {
+            RtlInitializeBitMap(&Bitmap, (PULONG)bh->b_data, Ext2GroupInodes(Vcb, Group));
+            *Allocated = RtlCheckBit(&Bitmap, Index) != 0;
+        }
+    }
+    Ext2UnlockGroup(Held);
+    if (bh != NULL) {
+        fini_bh(&bh);
+    }
+    if (gb != NULL) {
+        fini_bh(&gb);
+    }
+    return Status;
+}
+
 NTSTATUS
 Ext2FreeInode(
     IN PEXT2_IRP_CONTEXT    IrpContext,

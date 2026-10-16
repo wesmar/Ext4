@@ -7,7 +7,6 @@
  */
 
 #include "ext4fs.h"
-#include <linux/jbd2.h>
 #include "JournalInternal.h"
 
 LIST_ENTRY               JnlScopeBuckets[JNL_SCOPE_BUCKETS];
@@ -127,12 +126,12 @@ static PEXT2_JTXN JnlActivate(PEXT2_JOURNAL J)
         full = (t->State == JTXN_RUNNING) &&
                (t->NumRecords >= J->MaxTxnBlocks * 2 ||
                 JnlLogBlocksNeeded(J, t->NumNormal + 1, t->NumRevokes) + JNL_LOG_SLACK
-                    > J->jbd->j_free);
+                    > J->Log->Free);
         if (full) {
             /* the thread commits it, or checkpoints until the log has
                room: told each time, as a pass of its may have stopped
                short of what this handle needs */
-            if (!tid_geq(J->CommitRequest, t->Tid))
+            if (!JfTidAtLeast(J->CommitRequest, t->Tid))
                 J->CommitRequest = t->Tid;
             KeSetEvent(&J->WakeEvent, 0, FALSE);
         }
@@ -355,7 +354,7 @@ Ext2JournalCommitted(IN PEXT2_VCB Vcb, IN ULONG Tid)
         return TRUE;
     }
     JnlLock(J, irql);
-    Done = !(J->Flags & JF_ACTIVE) || tid_geq(J->CommitSequence, (tid_t)Tid);
+    Done = !(J->Flags & JF_ACTIVE) || JfTidAtLeast(J->CommitSequence, (tid_t)Tid);
     JnlUnlock(J, irql);
     return Done;
 }
@@ -443,7 +442,7 @@ Ext2JournalDirtyBuffer(IN PEXT2_VCB Vcb, IN struct buffer_head *bh)
     t->NumNormal++;
 
     if (t->NumRecords >= J->MaxTxnBlocks && t->State == JTXN_RUNNING &&
-        !tid_geq(J->CommitRequest, t->Tid)) {
+        !JfTidAtLeast(J->CommitRequest, t->Tid)) {
         J->CommitRequest = t->Tid;
         wake = TRUE;
     }

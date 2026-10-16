@@ -7,7 +7,6 @@
  */
 
 #include "ext4fs.h"
-#include <linux/jbd2.h>
 #include "JournalInternal.h"
 
 #define JNL_MAX_GROUP_BLOCKS    128     /* data blocks per descriptor group */
@@ -41,49 +40,19 @@ Ext2JournalGlobalExit(VOID)
  */
 static NTSTATUS JnlSetupFeatures(PEXT2_JOURNAL J)
 {
-    journal_t            *jbd = J->jbd;
-    journal_superblock_t *sb = jbd->j_superblock;
-    __u32                 incompat = be32_to_cpu(sb->s_feature_incompat);
-    __u32                 compat = be32_to_cpu(sb->s_feature_compat);
-    __u32                 want_in = incompat, want_co = compat;
+    PEXT2_JLOG  L = J->Log;
+    ULONG       incompat = L->Incompat | JF_INCOMPAT_REVOKE;
+    ULONG       compat = L->Compat & ~JF_COMPAT_CHECKSUM;
 
-    if (jbd->j_format_version < 2)
-        return STATUS_SUCCESS;      /* v1 journals have no feature bits */
-
-    want_in |= JBD2_FEATURE_INCOMPAT_REVOKE;
     if (ext4_has_feature_64bit(&J->Vcb->sb))
-        want_in |= JBD2_FEATURE_INCOMPAT_64BIT;
-
-    want_in &= ~(JBD2_FEATURE_INCOMPAT_CSUM_V2 | JBD2_FEATURE_INCOMPAT_CSUM_V3);
-    want_co &= ~JBD2_FEATURE_COMPAT_CHECKSUM;
+        incompat |= JF_INCOMPAT_64BIT;
+    incompat &= ~(JF_INCOMPAT_CSUM_V2 | JF_INCOMPAT_CSUM_V3);
     if (ext4_has_metadata_csum(&J->Vcb->sb))
-        want_in |= JBD2_FEATURE_INCOMPAT_CSUM_V3;
+        incompat |= JF_INCOMPAT_CSUM_V3;
 
-    if (want_in != incompat || want_co != compat) {
-        sb->s_feature_incompat = cpu_to_be32(want_in);
-        sb->s_feature_compat = cpu_to_be32(want_co);
-        if (want_in & JBD2_FEATURE_INCOMPAT_CSUM_V3)
-            sb->s_checksum_type = JBD2_CRC32C_CHKSUM;
-        else
-            sb->s_checksum_type = 0;
-    }
-
-    /* the csum "driver" is a flag in this port; the sb csum depends on it */
-    if (want_in & (JBD2_FEATURE_INCOMPAT_CSUM_V2 | JBD2_FEATURE_INCOMPAT_CSUM_V3)) {
-        jbd->j_chksum_driver = (struct crypto_shash *)(ULONG_PTR)1;
-        jbd->j_csum_seed = jbd2_chksum(jbd, ~0u, sb->s_uuid, sizeof(sb->s_uuid));
-    } else {
-        jbd->j_chksum_driver = NULL;
-    }
-
-    /* through jbd2_write_superblock: the checksum feature just switched
-       on is only valid together with a freshly computed checksum */
-    if (want_in != incompat || want_co != compat) {
-        if (jbd2_journal_write_superblock(jbd))
-            return STATUS_UNEXPECTED_IO_ERROR;
-    }
-
-    return STATUS_SUCCESS;
+    /* a version 1 superblock keeps its (no) features */
+    return NT_SUCCESS(JlogSetFeatures(L, compat, incompat)) ? STATUS_SUCCESS
+                                                            : STATUS_UNEXPECTED_IO_ERROR;
 }
 
 /*
@@ -114,7 +83,7 @@ static PEXT2_JOURNAL JnlCreate(PEXT2_VCB Vcb)
  * On failure the caller keeps ownership of journal and Jcb.
  */
 NTSTATUS
-Ext2JournalStart(IN PEXT2_VCB Vcb, IN journal_t *journal, IN PEXT2_MCB Jcb)
+Ext2JournalStart(IN PEXT2_VCB Vcb, IN PEXT2_JLOG Log, IN PEXT2_MCB Jcb)
 {
     PEXT2_JOURNAL     J = Vcb->Journal;
     NTSTATUS          Status;
@@ -125,10 +94,8 @@ Ext2JournalStart(IN PEXT2_VCB Vcb, IN journal_t *journal, IN PEXT2_MCB Jcb)
     if (J && (J->Flags & JF_ACTIVE))
         return STATUS_ALREADY_INITIALIZED;
 
-    if (!(journal->j_flags & JBD2_LOADED) || (journal->j_flags & JBD2_ABORT)) {
-        DbgPrint("ext4: journal start: not loaded or aborted (j_flags %lx)\n", journal->j_flags);
+    if (Log->Flags & JLOG_ABORTED)
         return STATUS_INVALID_PARAMETER;
-    }
 
     if (!J) {
         J = JnlCreate(Vcb);
@@ -137,12 +104,12 @@ Ext2JournalStart(IN PEXT2_VCB Vcb, IN journal_t *journal, IN PEXT2_MCB Jcb)
         Vcb->Journal = J;
     }
 
-    ASSERT(J->jbd == NULL && J->Running == NULL && IsListEmpty(&J->Checkpoint));
+    ASSERT(J->Log == NULL && J->Running == NULL && IsListEmpty(&J->Checkpoint));
 
     J->Flags = 0;
-    J->jbd = journal;
+    J->Log = Log;
     J->Jcb = Jcb;
-    J->BlockSize = journal->j_blocksize;
+    J->BlockSize = Log->BlockSize;
     J->BlockBits = Ext2Log2(J->BlockSize);
     J->MountState = Vcb->SuperBlock->s_state;
     J->CheckpointRecords = 0;
@@ -160,10 +127,10 @@ Ext2JournalStart(IN PEXT2_VCB Vcb, IN journal_t *journal, IN PEXT2_MCB Jcb)
 
     /* descriptor capacity (Linux packs tags while there is room for a
        tag plus the 16-byte uuid); we also cap the group for the buffer */
-    tag_bytes = (ULONG)journal_tag_bytes(journal);
-    csum_size = jbd2_journal_has_csum_v2or3(journal) ? sizeof(struct jbd2_journal_block_tail) : 0;
+    tag_bytes = JfTagBytes(Log->Incompat);
+    csum_size = JfHasCsumV2V3(Log->Incompat) ? JF_TAIL_SIZE : 0;
     {
-        LONG space = (LONG)(J->BlockSize - sizeof(journal_header_t));
+        LONG space = (LONG)(J->BlockSize - JF_HEADER_SIZE);
         tags = 0;
         while (space >= (LONG)(tag_bytes + 16 + csum_size) && tags < JNL_MAX_GROUP_BLOCKS) {
             space -= tag_bytes;
@@ -179,8 +146,8 @@ Ext2JournalStart(IN PEXT2_VCB Vcb, IN journal_t *journal, IN PEXT2_MCB Jcb)
         goto errorout;
     }
     J->GroupBlocks = tags;
-    J->RevokesPerBlock = (J->BlockSize - sizeof(jbd2_journal_revoke_header_t) - csum_size) /
-                         (jbd2_has_feature_64bit(journal) ? 8 : 4);
+    J->RevokesPerBlock = (J->BlockSize - JF_REVOKE_HEADER_SIZE - csum_size) /
+                         ((Log->Incompat & JF_INCOMPAT_64BIT) ? 8 : 4);
     J->IoBufferSize = (tags + 1) << J->BlockBits;
     J->IoBuffer = Ext2AllocatePool(NonPagedPool, J->IoBufferSize, JNL_TAG);
     if (!J->IoBuffer) {
@@ -188,24 +155,24 @@ Ext2JournalStart(IN PEXT2_VCB Vcb, IN journal_t *journal, IN PEXT2_MCB Jcb)
         goto errorout;
     }
 
-    J->MaxTxnBlocks = journal->j_maxlen / 8;
+    J->MaxTxnBlocks = Log->MaxLen / 8;
     if (J->MaxTxnBlocks < 64)
         J->MaxTxnBlocks = 64;
-    if (J->MaxTxnBlocks > journal->j_maxlen / 4)
-        J->MaxTxnBlocks = journal->j_maxlen / 4;
+    if (J->MaxTxnBlocks > Log->MaxLen / 4)
+        J->MaxTxnBlocks = Log->MaxLen / 4;
 
     /* what the on-disk superblock says right now */
-    J->DiskTail = be32_to_cpu(journal->j_superblock->s_start);
-    J->DiskTailSeq = be32_to_cpu(journal->j_superblock->s_sequence);
+    J->DiskTail = JfGet32(Log->Super + JF_S_START);
+    J->DiskTailSeq = JfGet32(Log->Super + JF_S_SEQUENCE);
 
-    J->Running = JnlAllocTxn(J, journal->j_transaction_sequence);
+    J->Running = JnlAllocTxn(J, Log->TransactionSequence);
     if (!J->Running) {
         Status = STATUS_INSUFFICIENT_RESOURCES;
         goto errorout;
     }
-    J->CommitSequence = journal->j_transaction_sequence - 1;
+    J->CommitSequence = Log->TransactionSequence - 1;
     J->CommitRequest = J->CommitSequence;
-    journal->j_commit_sequence = J->CommitSequence;
+    Log->CommitSequence = J->CommitSequence;
     KeQuerySystemTime(&J->LastCommitTime);
 
     /* tell the world the fs is in use before anything is logged */
@@ -227,10 +194,9 @@ Ext2JournalStart(IN PEXT2_VCB Vcb, IN journal_t *journal, IN PEXT2_MCB Jcb)
     SetFlag(J->Flags, JF_ACTIVE);
 
     DEBUG(DL_JNL, ("Ext2Jnl: started: blocks %u first %lu last %lu head %lu free %lu tid %u\n",
-                   journal->j_maxlen, journal->j_first, journal->j_last,
-                   journal->j_head, journal->j_free, J->Running->Tid));
+                   Log->MaxLen, Log->First, Log->Last, Log->Head, Log->Free, J->Running->Tid));
     DbgPrint("ext4: journal active on volume %p (%u blocks, next tid %u)\n",
-             Vcb, journal->j_maxlen, J->Running->Tid);
+             Vcb, Log->MaxLen, J->Running->Tid);
 
     return STATUS_SUCCESS;
 
@@ -249,7 +215,7 @@ errorout:
         Ext2FreePool(J->IoBuffer, JNL_TAG);
         J->IoBuffer = NULL;
     }
-    J->jbd = NULL;
+    J->Log = NULL;
     J->Jcb = NULL;
     J->Flags = 0;
     return Status;
@@ -278,7 +244,7 @@ Ext2JournalCommit(IN PEXT2_VCB Vcb, IN BOOLEAN Wait)
         JnlUnlock(J, irql);
         return STATUS_SUCCESS;
     }
-    if (!tid_geq(J->CommitRequest, target))
+    if (!JfTidAtLeast(J->CommitRequest, target))
         J->CommitRequest = target;
     JnlUnlock(J, irql);
 
@@ -395,21 +361,19 @@ Ext2JournalMarkClean(IN PEXT2_VCB Vcb)
     JnlUnlock(J, irql);
 
     if (!busy) {
-        journal_t *jbd = J->jbd;
+        PEXT2_JLOG L = J->Log;
 
-        /* jbd2_mark_journal_empty: s_start = 0, s_sequence = next tid.
-           Through jbd2_journal_update_sb_log_tail, never a raw write: that
-           is the path that sets the superblock checksum (csum v2/v3), and
-           a clean unmount that skipped it left a superblock e2fsck and the
-           next mount both rejected as corrupt. */
+        /* the log empty: s_start 0, s_sequence the next ID. Through
+           JlogSetTail, never a raw write: that is what sets the superblock
+           checksum (v2/v3), and a clean unmount that skipped it once left
+           a superblock e2fsck and the next mount both rejected. */
         JnlLock(J, irql);
         JnlAdvanceTail(J);
         JnlUnlock(J, irql);
 
-        if (jbd2_journal_update_sb_log_tail(jbd, jbd->j_tail_sequence, 0, 0) == 0) {
-            jbd->j_flags |= JBD2_FLUSHED;
+        if (NT_SUCCESS(JlogSetTail(L, L->TailSequence, 0))) {
             J->DiskTail = 0;
-            J->DiskTailSeq = jbd->j_tail_sequence;
+            J->DiskTailSeq = L->TailSequence;
             if (!JnlMarkSuper(J, FALSE))
                 Status = STATUS_UNEXPECTED_IO_ERROR;
         } else {
@@ -553,13 +517,11 @@ Ext2JournalStop(IN PEXT2_VCB Vcb, IN BOOLEAN MarkClean)
         JnlFreeTxn(J, t);
     }
 
-    if (J->jbd) {
-        /* the on-disk journal superblock is already in its final state
-           (empty when clean, tail/errno otherwise): keep destroy from
-           rewriting it */
-        J->jbd->j_flags |= JBD2_ABORT;
-        jbd2_journal_destroy(J->jbd);
-        J->jbd = NULL;
+    if (J->Log) {
+        /* the on-disk journal superblock is in its final state already
+           (empty when clean, tail and errno otherwise) */
+        JlogFree(J->Log);
+        J->Log = NULL;
     }
     if (J->Jcb) {
         Ext2FreeMcb(Vcb, J->Jcb);

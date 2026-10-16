@@ -7,10 +7,8 @@
  */
 
 #include "ext4fs.h"
-#include <linux/jbd2.h>
 #include "JournalInternal.h"
-
-u32 crc32_be(u32 crc, unsigned char const *p, size_t len);
+#include "JournalReplay.h"
 
 #define JTXN_COMMITTING     3           /* log I/O in progress */
 #define JTXN_COMMITTED      4           /* on the checkpoint list */
@@ -95,8 +93,8 @@ Ext2JournalAbortQuiet(IN PEXT2_VCB Vcb)
     JnlLock(J, irql);
     SetFlag(J->Flags, JF_ABORTED);
     JnlUnlock(J, irql);
-    if (J->jbd) {
-        J->jbd->j_flags |= JBD2_ABORT;
+    if (J->Log) {
+        InterlockedOr((volatile LONG *)&J->Log->Flags, JLOG_ABORTED);
     }
     KeSetEvent(&J->UnlockedEvent, 0, FALSE);
 }
@@ -136,14 +134,14 @@ VOID
 Ext2JournalRecordAbort(IN PEXT2_VCB Vcb)
 {
     PEXT2_JOURNAL   J = Vcb->Journal;
-    journal_t      *jbd;
+    PEXT2_JLOG      L;
 
-    if (J == NULL || J->jbd == NULL) {
+    if (J == NULL || J->Log == NULL) {
         return;
     }
-    jbd = J->jbd;
-    if (jbd->j_errno != 0 && jbd->j_superblock->s_errno != cpu_to_be32(jbd->j_errno)) {
-        jbd2_journal_update_sb_errno(jbd);
+    L = J->Log;
+    if (L->Errno != 0 && JfGet32(L->Super + JF_S_ERRNO) != (ULONG)L->Errno) {
+        (void)JlogRecordErrno(L);
     }
 }
 
@@ -165,8 +163,8 @@ VOID JnlAbort(PEXT2_JOURNAL J, NTSTATUS Status)
 
     SetLongFlag(J->Vcb->Flags, VCB_WRITE_STOPPED);
     SetLongFlag(J->Vcb->Flags, VCB_READ_ONLY);
-    J->jbd->j_flags |= JBD2_ABORT;
-    J->jbd->j_errno = -EIO;
+    InterlockedOr((volatile LONG *)&J->Log->Flags, JLOG_ABORTED);
+    J->Log->Errno = -EIO;
 
     /* let e2fsck know: the flag is one bit set, which a concurrent writer
        cannot lose. Both superblocks are written by a worker - this thread
@@ -185,38 +183,35 @@ VOID JnlAbort(PEXT2_JOURNAL J, NTSTATUS Status)
  * Layout and flags follow Linux jbd2_journal_commit_transaction().
  */
 static ULONG JnlFillGroup(PEXT2_JOURNAL J, PEXT2_JTXN t, PLIST_ENTRY *Iter,
-                          PUCHAR Buffer, __u32 *Crc32Sum)
+                          PUCHAR Buffer, ULONG *Crc32Sum)
 {
-    journal_t           *jbd = J->jbd;
-    ULONG                bs = J->BlockSize;
-    ULONG                tag_bytes = (ULONG)journal_tag_bytes(jbd);
-    ULONG                csum_size = jbd2_journal_has_csum_v2or3(jbd) ? sizeof(struct jbd2_journal_block_tail) : 0;
-    journal_header_t    *header = (journal_header_t *)Buffer;
-    PUCHAR               tagp = Buffer + sizeof(journal_header_t);
-    LONG                 space_left = (LONG)(bs - sizeof(journal_header_t));
-    journal_block_tag_t *tag = NULL;
-    ULONG                n = 0;
-    BOOLEAN              first = TRUE;
+    PEXT2_JLOG  L = J->Log;
+    ULONG       bs = J->BlockSize;
+    ULONG       tag_bytes = JfTagBytes(L->Incompat);
+    ULONG       csum_size = JfHasCsumV2V3(L->Incompat) ? JF_TAIL_SIZE : 0;
+    PUCHAR      tagp = Buffer + JF_HEADER_SIZE;
+    LONG        space_left = (LONG)(bs - JF_HEADER_SIZE);
+    PUCHAR      tag = NULL;
+    ULONG       n = 0;
+    BOOLEAN     first = TRUE;
 
     RtlZeroMemory(Buffer, bs);
-    header->h_magic     = cpu_to_be32(JBD2_MAGIC_NUMBER);
-    header->h_blocktype = cpu_to_be32(JBD2_DESCRIPTOR_BLOCK);
-    header->h_sequence  = cpu_to_be32(t->Tid);
+    JfPut32(Buffer + JF_H_MAGIC, JF_MAGIC);
+    JfPut32(Buffer + JF_H_TYPE, JF_DESCRIPTOR);
+    JfPut32(Buffer + JF_H_SEQUENCE, t->Tid);
 
     while (*Iter != &t->Records && n < J->GroupBlocks) {
 
         PEXT2_JREC  r = CONTAINING_RECORD(*Iter, EXT2_JREC, Link);
         PUCHAR      dst, src;
         ULONG       flags = 0;
-        __be32      seq;
-        __u32       csum32;
 
         if (r->Type != JREC_NORMAL) {
             *Iter = (*Iter)->Flink;
             continue;
         }
 
-        if (space_left < (LONG)(tag_bytes + 16 + csum_size))
+        if (space_left < (LONG)(tag_bytes + JF_UUID_SIZE + csum_size))
             break;
 
         *Iter = (*Iter)->Flink;
@@ -225,36 +220,39 @@ static ULONG JnlFillGroup(PEXT2_JOURNAL J, PEXT2_JTXN t, PLIST_ENTRY *Iter,
         dst = Buffer + ((ULONGLONG)(n + 1) << J->BlockBits);
         RtlCopyMemory(dst, src, bs);
 
-        if (*((__be32 *)dst) == cpu_to_be32(JBD2_MAGIC_NUMBER)) {
-            *((__be32 *)dst) = 0;
-            flags |= JBD2_FLAG_ESCAPE;
+        /* a block that would read as a header is logged escaped */
+        if (JfGet32(dst) == JF_MAGIC) {
+            JfPut32(dst, 0);
+            flags |= JF_FLAG_ESCAPE;
         }
         if (!first)
-            flags |= JBD2_FLAG_SAME_UUID;
+            flags |= JF_FLAG_SAME_UUID;
 
-        tag = (journal_block_tag_t *)tagp;
-        tag->t_blocknr = cpu_to_be32((__u32)(r->Block & 0xffffffffULL));
-        if (jbd2_has_feature_64bit(jbd))
-            tag->t_blocknr_high = cpu_to_be32((__u32)((r->Block >> 31) >> 1));
-        tag->t_flags = cpu_to_be16((__u16)flags);
+        tag = tagp;
+        JfPut32(tag + JF_T_BLOCK, (ULONG)r->Block);
+        if (L->Incompat & JF_INCOMPAT_64BIT)
+            JfPut32(tag + JF_T_BLOCK_HIGH, (ULONG)(r->Block >> 32));
+        JfPut16(tag + JF_T_FLAGS, flags);
 
-        if (jbd2_journal_has_csum_v2or3(jbd)) {
-            seq = cpu_to_be32(t->Tid);
-            csum32 = jbd2_chksum(jbd, jbd->j_csum_seed, (__u8 *)&seq, sizeof(seq));
-            csum32 = jbd2_chksum(jbd, csum32, dst, bs);
-            if (jbd2_has_feature_csum3(jbd))
-                ((journal_block_tag3_t *)tag)->t_checksum = cpu_to_be32(csum32);
+        if (csum_size) {
+            UCHAR id[4];
+            ULONG sum;
+
+            JfPut32(id, t->Tid);
+            sum = crc32c(crc32c(L->CsumSeed, id, 4), dst, bs);
+            if (L->Incompat & JF_INCOMPAT_CSUM_V3)
+                JfPut32(tag + JF_T_CHECKSUM32, sum);
             else
-                tag->t_checksum = cpu_to_be16((__u16)csum32);
+                JfPut16(tag + JF_T_CHECKSUM16, sum & 0xFFFF);
         }
 
         tagp += tag_bytes;
         space_left -= tag_bytes;
 
         if (first) {
-            RtlCopyMemory(tagp, jbd->j_superblock->s_uuid, 16);
-            tagp += 16;
-            space_left -= 16;
+            RtlCopyMemory(tagp, L->Super + JF_S_UUID, JF_UUID_SIZE);
+            tagp += JF_UUID_SIZE;
+            space_left -= JF_UUID_SIZE;
             first = FALSE;
         }
         n++;
@@ -263,19 +261,15 @@ static ULONG JnlFillGroup(PEXT2_JOURNAL J, PEXT2_JTXN t, PLIST_ENTRY *Iter,
     if (n == 0)
         return 0;
 
-    tag->t_flags |= cpu_to_be16(JBD2_FLAG_LAST_TAG);
+    JfPut16(tag + JF_T_FLAGS, JfGet16(tag + JF_T_FLAGS) | JF_FLAG_LAST_TAG);
 
-    if (csum_size) {
-        struct jbd2_journal_block_tail *tail =
-            (struct jbd2_journal_block_tail *)(Buffer + bs - csum_size);
-        tail->t_checksum = 0;
-        tail->t_checksum = cpu_to_be32(jbd2_chksum(jbd, jbd->j_csum_seed, Buffer, bs));
-    }
+    if (csum_size)
+        JfPut32(Buffer + bs - JF_TAIL_SIZE, crc32c(L->CsumSeed, Buffer, bs));
 
-    if (jbd2_has_feature_checksum(jbd)) {
+    if (L->Compat & JF_COMPAT_CHECKSUM) {
         ULONG i;
         for (i = 0; i <= n; i++)
-            *Crc32Sum = crc32_be(*Crc32Sum, Buffer + ((ULONGLONG)i << J->BlockBits), bs);
+            *Crc32Sum = JrCrc32Be(*Crc32Sum, Buffer + ((ULONGLONG)i << J->BlockBits), bs);
     }
 
     return n;
@@ -286,18 +280,17 @@ static ULONG JnlFillGroup(PEXT2_JOURNAL J, PEXT2_JTXN t, PLIST_ENTRY *Iter,
  */
 static ULONG JnlFillRevokeBlock(PEXT2_JOURNAL J, PEXT2_JTXN t, PLIST_ENTRY *Iter, PUCHAR Buffer)
 {
-    journal_t                    *jbd = J->jbd;
-    ULONG                         bs = J->BlockSize;
-    ULONG                         csum_size = jbd2_journal_has_csum_v2or3(jbd) ? sizeof(struct jbd2_journal_block_tail) : 0;
-    ULONG                         rec = jbd2_has_feature_64bit(jbd) ? 8 : 4;
-    jbd2_journal_revoke_header_t *header = (jbd2_journal_revoke_header_t *)Buffer;
-    ULONG                         offset = sizeof(jbd2_journal_revoke_header_t);
-    ULONG                         n = 0;
+    PEXT2_JLOG  L = J->Log;
+    ULONG       bs = J->BlockSize;
+    ULONG       csum_size = JfHasCsumV2V3(L->Incompat) ? JF_TAIL_SIZE : 0;
+    ULONG       rec = (L->Incompat & JF_INCOMPAT_64BIT) ? 8 : 4;
+    ULONG       offset = JF_REVOKE_HEADER_SIZE;
+    ULONG       n = 0;
 
     RtlZeroMemory(Buffer, bs);
-    header->r_header.h_magic     = cpu_to_be32(JBD2_MAGIC_NUMBER);
-    header->r_header.h_blocktype = cpu_to_be32(JBD2_REVOKE_BLOCK);
-    header->r_header.h_sequence  = cpu_to_be32(t->Tid);
+    JfPut32(Buffer + JF_H_MAGIC, JF_MAGIC);
+    JfPut32(Buffer + JF_H_TYPE, JF_REVOKE);
+    JfPut32(Buffer + JF_H_SEQUENCE, t->Tid);
 
     while (*Iter != &t->Records) {
 
@@ -312,9 +305,9 @@ static ULONG JnlFillRevokeBlock(PEXT2_JOURNAL J, PEXT2_JTXN t, PLIST_ENTRY *Iter
 
         *Iter = (*Iter)->Flink;
         if (rec == 8)
-            *((__be64 *)(Buffer + offset)) = cpu_to_be64(r->Block);
+            JfPut64(Buffer + offset, r->Block);
         else
-            *((__be32 *)(Buffer + offset)) = cpu_to_be32((__u32)r->Block);
+            JfPut32(Buffer + offset, (ULONG)r->Block);
         offset += rec;
         n++;
     }
@@ -322,45 +315,36 @@ static ULONG JnlFillRevokeBlock(PEXT2_JOURNAL J, PEXT2_JTXN t, PLIST_ENTRY *Iter
     if (n == 0)
         return 0;
 
-    header->r_count = cpu_to_be32(offset);
-
-    if (csum_size) {
-        struct jbd2_journal_block_tail *tail =
-            (struct jbd2_journal_block_tail *)(Buffer + bs - csum_size);
-        tail->t_checksum = 0;
-        tail->t_checksum = cpu_to_be32(jbd2_chksum(jbd, jbd->j_csum_seed, Buffer, bs));
-    }
+    JfPut32(Buffer + JF_R_COUNT, offset);
+    if (csum_size)
+        JfPut32(Buffer + bs - JF_TAIL_SIZE, crc32c(L->CsumSeed, Buffer, bs));
     return n;
 }
 
-static VOID JnlFillCommitBlock(PEXT2_JOURNAL J, PEXT2_JTXN t, PUCHAR Buffer, __u32 Crc32Sum)
+static VOID JnlFillCommitBlock(PEXT2_JOURNAL J, PEXT2_JTXN t, PUCHAR Buffer, ULONG Crc32Sum)
 {
-    journal_t            *jbd = J->jbd;
-    struct commit_header *h = (struct commit_header *)Buffer;
-    LONGLONG              now = JnlNow() - 116444736000000000LL;   /* 100ns since 1970 */
+    PEXT2_JLOG  L = J->Log;
+    LONGLONG    now = JnlNow() - 116444736000000000LL;     /* 100ns since 1970 */
 
     RtlZeroMemory(Buffer, J->BlockSize);
-    h->h_magic     = cpu_to_be32(JBD2_MAGIC_NUMBER);
-    h->h_blocktype = cpu_to_be32(JBD2_COMMIT_BLOCK);
-    h->h_sequence  = cpu_to_be32(t->Tid);
+    JfPut32(Buffer + JF_H_MAGIC, JF_MAGIC);
+    JfPut32(Buffer + JF_H_TYPE, JF_COMMIT);
+    JfPut32(Buffer + JF_H_SEQUENCE, t->Tid);
 
-    if (jbd2_has_feature_checksum(jbd)) {
-        h->h_chksum_type = JBD2_CRC32_CHKSUM;
-        h->h_chksum_size = JBD2_CRC32_CHKSUM_SIZE;
-        h->h_chksum[0]   = cpu_to_be32(Crc32Sum);
+    if (L->Compat & JF_COMPAT_CHECKSUM) {
+        Buffer[JF_C_CHECKSUM_TYPE] = JF_CRC32_CHECKSUM;
+        Buffer[JF_C_CHECKSUM_SIZE] = JF_CRC32_CHECKSUM_SIZE;
+        JfPut32(Buffer + JF_C_CHECKSUM, Crc32Sum);
     }
 
     if (now < 0)
         now = 0;
-    h->h_commit_sec  = cpu_to_be64((__u64)(now / TICKSPERSEC));
-    h->h_commit_nsec = cpu_to_be32((__u32)((now % TICKSPERSEC) * EXT2_NS_PER_TICK));
+    JfPut64(Buffer + JF_C_COMMIT_SEC, (ULONGLONG)(now / TICKSPERSEC));
+    JfPut32(Buffer + JF_C_COMMIT_NSEC, (ULONG)((now % TICKSPERSEC) * EXT2_NS_PER_TICK));
 
-    if (jbd2_journal_has_csum_v2or3(jbd)) {
-        h->h_chksum_type = 0;
-        h->h_chksum_size = 0;
-        h->h_chksum[0]   = 0;
-        h->h_chksum[0]   = cpu_to_be32(jbd2_chksum(jbd, jbd->j_csum_seed, Buffer, J->BlockSize));
-    }
+    /* v2/v3: the block's own crc32c, taken with the checksum word zero */
+    if (JfHasCsumV2V3(L->Incompat))
+        JfPut32(Buffer + JF_C_CHECKSUM, crc32c(L->CsumSeed, Buffer, J->BlockSize));
 }
 
 /*
@@ -378,7 +362,7 @@ static NTSTATUS JnlEnsureLogSpace(PEXT2_JOURNAL J, ULONG Needed)
         NTSTATUS      Status;
 
         JnlLock(J, irql);
-        free_blocks = J->jbd->j_free;
+        free_blocks = J->Log->Free;
         empty = IsListEmpty(&J->Checkpoint);
         JnlUnlock(J, irql);
 
@@ -388,7 +372,7 @@ static NTSTATUS JnlEnsureLogSpace(PEXT2_JOURNAL J, ULONG Needed)
         if (empty || tries++ > 200) {
             DbgPrint("ext4: journal: transaction of %u blocks does not fit "
                      "(free %lu of %lu, checkpoint list %s, %u tries)\n",
-                     Needed, free_blocks, J->jbd->j_maxlen,
+                     Needed, free_blocks, J->Log->MaxLen,
                      empty ? "empty" : "not empty", tries);
             return STATUS_DISK_FULL;
         }
@@ -400,13 +384,13 @@ static NTSTATUS JnlEnsureLogSpace(PEXT2_JOURNAL J, ULONG Needed)
             /* the oldest transaction is pinned by the running one: the
                only remaining space is what is free right now */
             JnlLock(J, irql);
-            free_blocks = J->jbd->j_free;
+            free_blocks = J->Log->Free;
             JnlUnlock(J, irql);
             if (free_blocks >= Needed + JNL_LOG_SLACK)
                 return STATUS_SUCCESS;
             DbgPrint("ext4: journal: transaction of %u blocks does not fit "
                      "(free %lu of %lu, oldest pinned by the running one)\n",
-                     Needed, free_blocks, J->jbd->j_maxlen);
+                     Needed, free_blocks, J->Log->MaxLen);
             return STATUS_DISK_FULL;
         }
     }
@@ -418,14 +402,14 @@ static NTSTATUS JnlEnsureLogSpace(PEXT2_JOURNAL J, ULONG Needed)
  */
 NTSTATUS JnlCommitTransaction(PEXT2_JOURNAL J)
 {
-    journal_t      *jbd = J->jbd;
+    PEXT2_JLOG      L = J->Log;
     PEXT2_JTXN      t, next = NULL;
     KIRQL           irql;
     NTSTATUS        Status = STATUS_SUCCESS;
     PLIST_ENTRY     e;
     PUCHAR          snapshot = NULL;
     ULONG           normal, revokes, needed, n;
-    __u32           crc32_sum = ~0u;
+    ULONG           crc32_sum = ~0u;
     BOOLEAN         unlocked = FALSE;
 
     /* 0. everything that does disk I/O of its own happens before the
@@ -535,8 +519,8 @@ NTSTATUS JnlCommitTransaction(PEXT2_JOURNAL J)
 
     JnlLock(J, irql);
     t->State = JTXN_COMMITTING;
-    t->LogStart = jbd->j_head;
-    jbd->j_transaction_sequence = next->Tid;
+    t->LogStart = L->Head;
+    L->TransactionSequence = next->Tid;
     if (snapshot || normal == 0) {
         J->Running = next;
         next = NULL;
@@ -610,7 +594,7 @@ NTSTATUS JnlCommitTransaction(PEXT2_JOURNAL J)
     InsertTailList(&J->Checkpoint, &t->Link);
     J->CheckpointRecords += t->NumRecords;
     J->CommitSequence = t->Tid;
-    jbd->j_commit_sequence = t->Tid;
+    L->CommitSequence = t->Tid;
     if (!unlocked) {
         J->Running = next;
         next = NULL;
@@ -631,7 +615,7 @@ NTSTATUS JnlCommitTransaction(PEXT2_JOURNAL J)
     KeSetEvent(&J->WakeEvent, 0, FALSE);
 
     DEBUG(DL_JNL, ("Ext2Jnl: committed tid %u (%u blocks, %u revokes) head=%lu free=%lu\n",
-                   t->Tid, t->NumNormal, t->NumRevokes, jbd->j_head, jbd->j_free));
+                   t->Tid, t->NumNormal, t->NumRevokes, L->Head, L->Free));
 
 errorout:
 

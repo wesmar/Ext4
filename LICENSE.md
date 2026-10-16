@@ -31,7 +31,7 @@ source files they apply to.
 |---|---|---|
 | Ext2Fsd — Ext2 File System Driver for Windows | Matt Wu, KaHo Ng | GPL-2.0 |
 | Ext4Fsd — continuation of Ext2Fsd | Bo Branten | GPL-2.0 |
-| Linux kernel: `fs/ext4`, `fs/jbd2`, `lib/rbtree.c`, `fs/nls` | Linus Torvalds, Stephen C. Tweedie, Red Hat, Cluster File Systems and other Linux contributors | GPL-2.0 |
+| Linux kernel: `fs/ext4`, `fs/jbd2`, `fs/nls` | Linus Torvalds, Stephen C. Tweedie, Red Hat, Cluster File Systems and other Linux contributors | GPL-2.0 |
 | lwext4 — extended attribute code | Grzegorz Kostka, KaHo Ng | BSD-3-Clause, notice kept in `src/include/linux/ext4_xattr.h` |
 | Unicode Character Database 12.1.0 — the data in `src/unicode/utf8data.c` | Unicode, Inc. | Unicode Data Files and Software License |
 | unicode.org MAPPINGS (Microsoft code pages, ISO/IEC 8859, KOI8) — the data in `src/nls/nls_*.c` | Microsoft Corporation, Unicode, Inc. | Unicode terms of use |
@@ -53,9 +53,17 @@ inherited from Linux `fs/nls` (commit 4706af9, the test reference); the code pag
 UTF-8 and the KOI8-RU adapter in `src/nls` remain Linux code under GPL-2.0.
 `tools/lineage/lineage.py`, which measures how much of the code is new, is MIT-licensed as well.
 
+The red-black tree (`src/linux/rbtree.c`, model `tests/rbtree-model`); the journal's log format,
+replay and loading (`src/journal/JournalFormat.h`, `JournalReplay.c` and `.h`, `JournalLoad.c`
+and `.h`, what is left of `src/include/linux/jbd2.h`), with their tests
+(`tests/journal-replay-model`, `tests/journal-replay-wsl.sh`); and the orphan cleanup at mount
+(`src/ext4/Orphans.c`, `tests/orphan-image.sh`, `tests/orphan-vm.ps1`) are new work by Marek
+Wesolowski under the MIT license, written from the rules of the on-disk formats - jbd2's log,
+ext4's orphan lists - and tested against e2fsprogs, not derived from Linux code.
+
 The restructuring into its present layout, the rewritten subsystems (service stop and unload,
-drive letters, reapers, registry, journal commit engine, extent conversion) and the test
-suite are the work of Marek Wesolowski.
+drive letters, reapers, registry, journal commit engine and recovery, orphans, extent
+conversion) and the test suite are the work of Marek Wesolowski.
 
 ---
 

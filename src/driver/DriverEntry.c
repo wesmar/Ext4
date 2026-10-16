@@ -16,9 +16,6 @@ DriverEntry(
     IN PDRIVER_OBJECT DriverObject,
     IN PUNICODE_STRING RegistryPath   );
 
-DECLARE_INIT(journal_init);
-DECLARE_EXIT(journal_exit);
-
 static VOID Ext2DeleteLookasides(VOID);
 
 #ifdef ALLOC_PRAGMA
@@ -96,9 +93,8 @@ DriverUnload (IN PDRIVER_OBJECT DriverObject)
     ObDereferenceObject(Ext2Global->DiskdevObject);
     ObDereferenceObject(Ext2Global->CdromdevObject);
 
-    /* cleanup journal engine and journal related caches */
+    /* cleanup the journal engine's handle registry */
     Ext2JournalGlobalExit();
-    UNLOAD_MODULE(journal_exit);
 
     /* cleanup linux lib */
     ext2_destroy_linux();
@@ -393,7 +389,6 @@ DriverEntry (
     UNICODE_STRING  DosDeviceName;
     NTSTATUS        Status;
     ULONG           i;
-    int             rc = 0;
     BOOLEAN         LinuxLib = FALSE;
     BOOLEAN         JournalModule = FALSE;
 
@@ -414,16 +409,9 @@ DriverEntry (
     }
     LinuxLib = TRUE;
 
-    /* initialize journal module structures */
-    LOAD_MODULE(journal_init);
-    if (rc != 0) {
-        Status = STATUS_INSUFFICIENT_RESOURCES;
-        goto errorout;
-    }
-    JournalModule = TRUE;
-
     /* per-thread handle registry of the write-ahead journal engine */
     Ext2JournalGlobalInit();
+    JournalModule = TRUE;
 
     Status = Ext2InitializeGlobal(RegistryPath);
     Ext4WriteLogInitialize();
@@ -499,8 +487,6 @@ errorout:
     }
     if (JournalModule) {
         Ext2JournalGlobalExit();
-        /* cleanup journal related caches */
-        UNLOAD_MODULE(journal_exit);
     }
     if (LinuxLib) {
         /* cleanup linux lib */

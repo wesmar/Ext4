@@ -9,12 +9,8 @@
 #ifndef _EXT4_EXT4FS_JOURNAL_H_
 #define _EXT4_EXT4FS_JOURNAL_H_
 
-PEXT2_MCB
-Ext2LoadInternalJournal(
-    PEXT2_VCB         Vcb,
-    ULONG             jNo
-);
-
+/* replay what a crash left in the journal, then start the engine
+   (journal\JournalLoad.c); nonzero: the volume stays read-only */
 INT
 Ext2RecoverJournal(
     PEXT2_IRP_CONTEXT  IrpContext,
@@ -23,7 +19,7 @@ Ext2RecoverJournal(
 
 struct buffer_head;
 
-struct journal_s;
+struct _EXT2_JLOG;
 
 VOID
 Ext2JournalGlobalInit(VOID);
@@ -33,9 +29,9 @@ Ext2JournalGlobalExit(VOID);
 
 NTSTATUS
 Ext2JournalStart(
-    IN PEXT2_VCB        Vcb,
-    IN struct journal_s *journal,
-    IN PEXT2_MCB        Jcb
+    IN PEXT2_VCB            Vcb,
+    IN struct _EXT2_JLOG   *Log,
+    IN PEXT2_MCB            Jcb
 );
 
 VOID

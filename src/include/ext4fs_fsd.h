@@ -531,6 +531,17 @@ Ext2SetLinkInfo(
 ULONG
 Ext2InodeType(PEXT2_MCB Mcb);
 
+/* the inode behind the last name goes (FileDelete.c); what it cannot give
+   back keeps it, on the orphan list when OrphanOnFailure */
+NTSTATUS
+Ext2ReleaseInode(
+    IN PEXT2_IRP_CONTEXT IrpContext,
+    IN PEXT2_VCB         Vcb,
+    IN PEXT2_FCB         Fcb,
+    IN PEXT2_MCB         Mcb,
+    IN BOOLEAN           OrphanOnFailure
+);
+
 NTSTATUS
 Ext2DeleteFile(
     PEXT2_IRP_CONTEXT IrpContext,

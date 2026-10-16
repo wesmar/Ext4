@@ -219,9 +219,27 @@ VOID
 Ext2DrainSuperWrites(IN PEXT2_VCB Vcb);
 
 /* an unlinked inode that still holds blocks onto the orphan list, for the
-   next Linux mount (or e2fsck) to finish; the caller writes the inode */
+   next mount (or e2fsck) to finish; the caller writes the inode */
 BOOLEAN
 Ext2AddOrphan(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN struct inode *Inode);
+
+/* Orphans.c: what a crash left on the orphan lists, finished by a writable
+   mount (FALSE: the orphan file is not sound, the volume stays read-only);
+   and whether any are waiting (a switch to writable stays read-only) */
+BOOLEAN
+Ext4CleanupOrphans(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb);
+
+BOOLEAN
+Ext4OrphansPending(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb);
+
+/* every orphan file block with its magic and checksum (none: TRUE) */
+BOOLEAN
+Ext4OrphanFileSound(IN PEXT2_VCB Vcb);
+
+/* is the inode allocated in its group's bitmap */
+NTSTATUS
+Ext2InodeAllocated(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb,
+                   IN ULONG Inode, OUT PBOOLEAN Allocated);
 
 /* a group whose block or inode bitmap failed its check is not used again
    this mount (Linux: EXT4_GROUP_INFO_BBITMAP_CORRUPT, _IBITMAP_CORRUPT) */
