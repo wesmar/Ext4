@@ -47,7 +47,7 @@
 
 > **`ext4.sys`** is a native Windows kernel-mode file system driver for ext2, ext3 and ext4 volumes. It registers with the I/O manager, cache manager and mount manager. An ext4 partition receives a drive letter, appears in Explorer and Disk Management, and supports normal Windows file operations: create, write, rename, map and delete. Metadata updates pass through a **jbd2 journal** that Linux can replay. Writes use **unwritten extents** with Linux-compatible on-disk semantics. The validation pipeline checks Windows-written files from Linux using **`e2fsck` and SHA-256**.
 >
-> The codebase retains parts of **Ext2Fsd** by Matt Wu, **Ext4Fsd** by Bo Branten and Linux ext4/jbd2. Their code, algorithms and licensing scope are identified in [Code Lineage and Redesign](#code-lineage-and-redesign). The active Windows paths were then reorganized, rewritten and tested from Windows through to Linux media verification.
+> The codebase retains parts of **Ext2Fsd** by Matt Wu, **Ext4Fsd** by Bo Branten and Linux ext4/jbd2. Their code, algorithms and licensing scope are identified in [Code Lineage and Redesign](#code-lineage-and-redesign), where a map of every file shows the measured result: 74 % of the project's code lines are written or generated in this project. The active Windows paths were then reorganized, rewritten and tested from Windows through to Linux media verification.
 
 ---
 
@@ -99,11 +99,33 @@ Design rules the code follows:
 
 ## Code Lineage and Redesign
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/lineage/summary-dark.svg">
+  <img src="assets/lineage/summary.svg" width="100%" alt="74 % of the project's 74 683 code lines are written or generated in this project: 53.3 % by hand, 20.8 % by its own generators; 23.7 % still match Ext2Fsd, 2.0 % Ext4Fsd and 0.2 % Linux">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/lineage/files-dark.svg">
+  <img src="assets/lineage/files.svg" width="100%" alt="Every code file of the project, sized by its code lines and split by origin">
+</picture>
+
+Every code file of the driver, `ext4ctl.exe`, the tests and the generators, sized by its code lines and coloured by where they come from. Comments and blank lines are left out. `tools/lineage/lineage-svg.py` draws the three pictures from the measurement described below.
+
+<details>
+<summary><b>The driver by subsystem</b></summary>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/lineage/subsystems-dark.svg">
+  <img src="assets/lineage/subsystems.svg" width="100%" alt="The driver by subsystem: code lines and the share written in this project">
+</picture>
+
+</details>
+
 I developed the current Windows architecture around explicit object lifetimes, per-volume transaction ownership and bounded error handling. The active write, allocation, journal, mount, unload and security paths have been replaced or substantially rewritten, with modules organised by responsibility. I verify their behaviour with production-code models and Windows-to-Linux media checks. Mathematical precision guides this work: explicit invariants, bounded state transitions, clear ownership and measured hot paths.
 
 The table below records retained components and their technical lineage. Attribution and licence notices remain with the source. I am continuing the rewrite toward self-contained, independently authored modules, with MIT licensing as a long-term goal for an independent implementation. Seven such modules are MIT-licensed so far. The case folding of casefolded directories, `src/unicode` - tables generated from the Unicode Character Database, the normalizer and their interface - is written from its specification and produces exactly the bytes Linux produces. The code page converters, `src/nls/CharsetMap.c`, the 37 `nls_<code page>.c` files and EUC-JP, are generated from the published Microsoft, ISO 8859, KOI8 and JIS X 0212 mapping tables in a representation of my own; the inherited converters serve only as the reference they are proven equal to. The red-black tree under the buffer heads, the run map and the htree reader, `src/linux/rbtree.c`, is written anew from its rules, each repair once for both mirror images, and checked against a sorted array. The journal's recovery side - the log format (`src/journal/JournalFormat.h`), the replay (`JournalReplay.c`) and the loading of a journal at mount (`JournalLoad.c`) - is written from the rules jbd2 follows, not from its code; the engine that writes the log uses the same format definitions. The orphan cleanup at mount, `src/ext4/Orphans.c`, is new. So are the directories - the name hashes, a directory's blocks and their hash index, the multiset of its caseless names (`NameHash.c`, `DirBlock.c`, `DirIndex.c`, `NameSet.c`) and their use in the driver - and the extent tree (`ExtentCore.c`, `ExtentFile.c`): each written from the rules of the format and proven against a model before the driver used it (see Testing). The current combined driver remains `GPL-2.0-only`.
 
-How much of the code is new is measured, not estimated. Of the 257 668 C tokens written by hand - comments and the generated tables (code pages, case folding, NTSTATUS names) left out - **58.8 %** lie in no run of twelve tokens that also occurs in an origin. **37.3 %** still match Ext2Fsd as Matt Wu left it in Ext3Fsd; **3.7 %** match Ext4Fsd; **0.2 %** matches Linux v6.6 directly. The newest subsystems are 85-100 % new (journal, directory index, extent tree, name cache, open path, unload, block allocator, case folding, code pages); the retained share sits mostly in the request dispatch, fast I/O, the headers and the support tables. Exact runs count renamed code as new, so with identifiers ignored, in runs of twenty, the new share is 41.7 %. `tools/lineage/lineage.py` repeats the measurement.
+How much of the code is new is measured, not estimated. Of the 258 366 C tokens written by hand - comments and the generated tables (code pages, case folding, NTSTATUS names) left out - **58.8 %** lie in no run of twelve tokens that also occurs in an origin. **37.2 %** still match Ext2Fsd as Matt Wu left it in Ext3Fsd; **3.7 %** match Ext4Fsd; **0.2 %** matches Linux v6.6 directly. Counted by code line, a line going to the origin of most of its tokens, the driver's hand-written code is 54.1 % new; with `ext4ctl.exe`, the tests and the generators, the project's 74 683 code lines are 53.3 % written by hand and 20.8 % generated by its own tools (the pictures above). The newest subsystems are 85-100 % new (journal, directory index, extent tree, name cache, open path, unload, block allocator, case folding, code pages); the retained share sits mostly in the request dispatch, fast I/O, the headers and the support tables. Exact runs count renamed code as new, so with identifiers ignored, in runs of twenty, the new share is 41.6 %. `tools/lineage/lineage.py` repeats the measurement.
 
 | Source project | Attribution | Retained components and lineage |
 |---|---|---|

@@ -51,7 +51,8 @@ The code page converters - `src/nls/CharsetMap.c`, `src/nls/CharsetMap.h`, EUC-J
 Wesolowski under the MIT license. They reproduce the mappings of the converters the driver
 inherited from Linux `fs/nls` (commit 4706af9, the test reference); the code page registry,
 UTF-8 and the KOI8-RU adapter in `src/nls` remain Linux code under GPL-2.0.
-`tools/lineage/lineage.py`, which measures how much of the code is new, is MIT-licensed as well.
+`tools/lineage/lineage.py`, which measures how much of the code is new, and `tools/lineage/lineage-svg.py`,
+which draws the result (`assets/lineage`), are MIT-licensed as well.
 
 The red-black tree (`src/linux/rbtree.c`, model `tests/rbtree-model`); the journal's log format,
 replay and loading (`src/journal/JournalFormat.h`, `JournalReplay.c` and `.h`, `JournalLoad.c`

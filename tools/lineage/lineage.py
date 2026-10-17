@@ -87,4 +87,5 @@ def main():
         for relative, n, count in sorted(files, key=lambda f: f[2]['new'] - f[1]):
             print('  %-42s %6d  ' % (relative, n) + '  '.join('%s %5.1f %%' % (o, 100.0 * count[o] / n) for o in ('new',) + ORIGINS))
 
-main()
+if __name__ == '__main__':
+    main()
