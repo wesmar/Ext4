@@ -207,9 +207,6 @@ static inline void ext4_idx_store_pblock(struct ext4_extent_idx *ix,
 	ix->ei_leaf_hi = (uint16_t)((pb >> 31) >> 1) & 0xffff;
 }
 
-#define ext4_ext_dirty(icb, handle, inode, path)                                           \
-	__ext4_ext_dirty("", __LINE__, (icb), (handle), (inode), (path))
-
 #define INODE_HAS_EXTENT(i) ((i)->i_flags & EXT2_EXTENTS_FL)
 
 /* the deepest extent tree Linux builds or accepts */

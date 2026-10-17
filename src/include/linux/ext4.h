@@ -39,7 +39,6 @@ struct path;
 /* physical block number of the file system, logical block number in a file */
 typedef unsigned long long ext4_fsblk_t;
 typedef __u32 ext4_lblk_t;
-#include <linux/ext4_jbd2.h>
 typedef unsigned __int16 uint16_t;
 typedef unsigned __int32 uint32_t;
 typedef unsigned __int64 uint64_t;
@@ -1681,18 +1680,6 @@ struct ext4_extent;
 
 extern int ext4_map_blocks(handle_t *handle, struct inode *inode,
 			   struct ext4_map_blocks *map, int flags);
-extern int ext4_can_extents_be_merged(struct inode *inode,
-				      struct ext4_extent *ex1,
-				      struct ext4_extent *ex2);
-/*extern int ext4_ext_insert_extent(handle_t *, struct inode *,
-				  struct ext4_ext_path **,
-				  struct ext4_extent *, int);*/
-extern struct ext4_ext_path *ext4_find_extent(struct inode *, ext4_lblk_t,
-					      struct ext4_ext_path **,
-					      int flags);
-extern void ext4_ext_drop_refs(struct ext4_ext_path *);
-extern int ext4_ext_check_inode(struct inode *inode);
-extern ext4_lblk_t ext4_ext_next_allocated_block(struct ext4_ext_path *path);
 
 /* page-io.c */
 extern void ext4_io_submit(struct ext4_io_submit *io);

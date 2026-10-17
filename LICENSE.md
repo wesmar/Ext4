@@ -61,18 +61,19 @@ and `.h`, what is left of `src/include/linux/jbd2.h`), with their tests
 Wesolowski under the MIT license, written from the rules of the on-disk formats - jbd2's log,
 ext4's orphan lists - and tested against e2fsprogs, not derived from Linux code.
 
-The directories are new work by Marek Wesolowski under the MIT license as well, written from
-the rules of the on-disk format and checked against Linux and e2fsprogs: the name hashes
-(`src/ext4/NameHash.c` and `.h`), the directory blocks and their hash index (`DirBlock.c`,
-`DirIndex.c` and their headers), the indexed directories in the driver (`HtreeDirectory.c`,
-`DirectoryEntries.c`, `DirectoryInternal.h`) and the multiset of a directory's caseless names
-(`NameSet.c` and `.h`), with their tests (`tests/htree-model`, `tests/name-hash-model`,
-`tests/name-hash-wsl.sh`, `tests/name-set-model`, `tests/htree-vm` and the runners of each).
+The directories and the extent tree are new work by Marek Wesolowski under the MIT license as
+well, written from the rules of the on-disk formats and checked against Linux and e2fsprogs:
+the name hashes (`src/ext4/NameHash.c` and `.h`), the directory blocks and their hash index
+(`DirBlock.c`, `DirIndex.c` and their headers), the indexed directories in the driver
+(`HtreeDirectory.c`, `DirectoryEntries.c`, `DirectoryInternal.h`), the multiset of a directory's
+caseless names (`NameSet.c` and `.h`), the extent tree (`ExtentCore.c` and `.h`) and the driver's
+use of it (`ExtentFile.c`), with their tests (`tests/htree-model`, `tests/name-hash-model`,
+`tests/name-hash-wsl.sh`, `tests/name-set-model`, `tests/htree-vm`, `tests/extent-model`,
+`tests/extent-vm` and the runners of each).
 
 The restructuring into its present layout, the rewritten subsystems (service stop and unload,
-drive letters, reapers, registry, journal commit engine and recovery, orphans, extent
-conversion, directory indexes, name conversion) and the test suite are the work of Marek
-Wesolowski.
+drive letters, reapers, registry, journal commit engine and recovery, orphans, directory
+indexes, the extent tree, name conversion) and the test suite are the work of Marek Wesolowski.
 
 ---
 

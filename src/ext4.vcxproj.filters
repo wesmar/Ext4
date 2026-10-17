@@ -108,19 +108,10 @@
     <ClCompile Include="ext4\DirectoryOperations.c">
       <Filter>ext4</Filter>
     </ClCompile>
-    <ClCompile Include="ext4\ExtentMap.c">
+    <ClCompile Include="ext4\ExtentCore.c">
       <Filter>ext4</Filter>
     </ClCompile>
-    <ClCompile Include="ext4\ExtentInsert.c">
-      <Filter>ext4</Filter>
-    </ClCompile>
-    <ClCompile Include="ext4\ExtentRemove.c">
-      <Filter>ext4</Filter>
-    </ClCompile>
-    <ClCompile Include="ext4\ExtentSplit.c">
-      <Filter>ext4</Filter>
-    </ClCompile>
-    <ClCompile Include="ext4\ExtentTree.c">
+    <ClCompile Include="ext4\ExtentFile.c">
       <Filter>ext4</Filter>
     </ClCompile>
     <ClCompile Include="ext4\GroupCache.c">
@@ -289,9 +280,6 @@
       <Filter>linux</Filter>
     </ClCompile>
     <ClCompile Include="linux\ext4_bh.c">
-      <Filter>linux</Filter>
-    </ClCompile>
-    <ClCompile Include="linux\ext4_jbd2.c">
       <Filter>linux</Filter>
     </ClCompile>
     <ClCompile Include="linux\kernel.c">
@@ -518,7 +506,7 @@
     <ClInclude Include="ext4\BlockSearch.h">
       <Filter>ext4</Filter>
     </ClInclude>
-    <ClInclude Include="ext4\extents_internal.h">
+    <ClInclude Include="ext4\ExtentCore.h">
       <Filter>ext4</Filter>
     </ClInclude>
     <ClInclude Include="ext4\DirBlock.h">
@@ -618,9 +606,6 @@
       <Filter>include\linux</Filter>
     </ClInclude>
     <ClInclude Include="include\linux\ext4_ext.h">
-      <Filter>include\linux</Filter>
-    </ClInclude>
-    <ClInclude Include="include\linux\ext4_jbd2.h">
       <Filter>include\linux</Filter>
     </ClInclude>
     <ClInclude Include="include\linux\ext4_xattr.h">

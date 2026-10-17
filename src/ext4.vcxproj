@@ -94,11 +94,8 @@
     <ClCompile Include="ext4\DirIndex.c" />
     <ClCompile Include="ext4\DirectoryNameCache.c" />
     <ClCompile Include="ext4\DirectoryOperations.c" />
-    <ClCompile Include="ext4\ExtentMap.c" />
-    <ClCompile Include="ext4\ExtentInsert.c" />
-    <ClCompile Include="ext4\ExtentRemove.c" />
-    <ClCompile Include="ext4\ExtentSplit.c" />
-    <ClCompile Include="ext4\ExtentTree.c" />
+    <ClCompile Include="ext4\ExtentCore.c" />
+    <ClCompile Include="ext4\ExtentFile.c" />
     <ClCompile Include="ext4\GroupCache.c" />
     <ClCompile Include="ext4\GroupDescriptors.c" />
     <ClCompile Include="ext4\FreedBlocks.c" />
@@ -155,7 +152,6 @@
     <ClCompile Include="journal\JournalSession.c" />
     <ClCompile Include="linux\buffer_head.c" />
     <ClCompile Include="linux\ext4_bh.c" />
-    <ClCompile Include="linux\ext4_jbd2.c" />
     <ClCompile Include="linux\kernel.c" />
     <ClCompile Include="linux\rbtree.c" />
     <ClCompile Include="nls\CharsetMap.c" />
@@ -230,7 +226,7 @@
     <ClInclude Include="volume\crypt_internal.h" />
     <ClInclude Include="volume\vcb_internal.h" />
     <ClInclude Include="ext4\BlockSearch.h" />
-    <ClInclude Include="ext4\extents_internal.h" />
+    <ClInclude Include="ext4\ExtentCore.h" />
     <ClInclude Include="ext4\DirBlock.h" />
     <ClInclude Include="ext4\DirIndex.h" />
     <ClInclude Include="ext4\DirectoryInternal.h" />
@@ -264,7 +260,6 @@
     <ClInclude Include="include\linux\errno.h" />
     <ClInclude Include="include\linux\ext4.h" />
     <ClInclude Include="include\linux\ext4_ext.h" />
-    <ClInclude Include="include\linux\ext4_jbd2.h" />
     <ClInclude Include="include\linux\ext4_xattr.h" />
     <ClInclude Include="include\linux\fs.h" />
     <ClInclude Include="include\linux\jbd2.h" />
