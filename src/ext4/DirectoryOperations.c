@@ -114,6 +114,29 @@ struct dentry *Ext2BuildEntry(PEXT2_VCB Vcb, PEXT2_MCB Dcb, PUNICODE_STRING File
     return de;
 }
 
+/* the entry's name in the form older versions wrote for a character beyond
+   the BMP (Ext2UnicodeToOldUtf8); FALSE: there is no such other form */
+BOOLEAN Ext2EntryOldForm(PEXT2_VCB Vcb, struct dentry *de, PUNICODE_STRING FileName)
+{
+    OEM_STRING Oem;
+
+    Oem.Length = 0;
+    Oem.MaximumLength = (USHORT)(FileName->Length / sizeof(WCHAR) * 3 + 1);
+    Oem.Buffer = Ext2AllocatePool(PagedPool, Oem.MaximumLength, 'EB2E');
+    if (!Oem.Buffer) {
+        return FALSE;
+    }
+    RtlZeroMemory(Oem.Buffer, Oem.MaximumLength);
+    if (!Ext2UnicodeToOldUtf8(Vcb, &Oem, FileName)) {
+        Ext2FreePool(Oem.Buffer, 'EB2E');
+        return FALSE;
+    }
+    Ext2FreePool(de->d_name.name, 'EB2E');
+    de->d_name.name = Oem.Buffer;
+    de->d_name.len = Oem.Length;
+    return TRUE;
+}
+
 NTSTATUS
 Ext2AddEntry (
     IN PEXT2_IRP_CONTEXT   IrpContext,
@@ -353,7 +376,7 @@ Ext2RemoveEntry (
             Status = Ext2WinntError(rc);
             __leave;
         }
-        Ext4DirNameRemoved(dir);
+        Ext4DirNameRemoved(dir, Mcb->de->d_name.name, Mcb->de->d_name.len);
         /*
         	    if (!inode->i_nlink)
         		    ext3_orphan_add(handle, inode);

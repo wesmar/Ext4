@@ -85,8 +85,8 @@ Ext2NewNameTarget(IN PEXT2_VCB Vcb, IN PFILE_OBJECT TargetObject,
         N->FileName = TargetObject->FileName;
     }
 
-    if (N->FileName.Length == 0 || N->FileName.Length >= EXT2_NAME_LEN * sizeof(WCHAR) ||
-        FsRtlDoesNameContainWildCards(&N->FileName)) {
+    if (N->FileName.Length == 0 || N->FileName.Length > EXT2_NAME_LEN * sizeof(WCHAR) ||
+        !Ext2NameFits(Vcb, &N->FileName) || FsRtlDoesNameContainWildCards(&N->FileName)) {
         return STATUS_OBJECT_NAME_INVALID;
     }
     return STATUS_SUCCESS;

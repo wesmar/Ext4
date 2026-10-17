@@ -90,7 +90,8 @@
     <ClCompile Include="ext4\MetadataChecksums.c" />
     <ClCompile Include="ext4\DirectoryBlocks.c" />
     <ClCompile Include="ext4\DirectoryEntries.c" />
-    <ClCompile Include="ext4\DirectoryHash.c" />
+    <ClCompile Include="ext4\DirBlock.c" />
+    <ClCompile Include="ext4\DirIndex.c" />
     <ClCompile Include="ext4\DirectoryNameCache.c" />
     <ClCompile Include="ext4\DirectoryOperations.c" />
     <ClCompile Include="ext4\ExtentMap.c" />
@@ -103,8 +104,9 @@
     <ClCompile Include="ext4\FreedBlocks.c" />
     <ClCompile Include="ext4\MetadataMap.c" />
     <ClCompile Include="ext4\Orphans.c" />
-    <ClCompile Include="ext4\HtreeInsert.c" />
-    <ClCompile Include="ext4\HtreeRead.c" />
+    <ClCompile Include="ext4\HtreeDirectory.c" />
+    <ClCompile Include="ext4\NameHash.c" />
+    <ClCompile Include="ext4\NameSet.c" />
     <ClCompile Include="ext4\InodeAllocator.c" />
     <ClCompile Include="ext4\IndirectMap.c" />
     <ClCompile Include="ext4\IndirectTruncate.c" />
@@ -229,7 +231,11 @@
     <ClInclude Include="volume\vcb_internal.h" />
     <ClInclude Include="ext4\BlockSearch.h" />
     <ClInclude Include="ext4\extents_internal.h" />
-    <ClInclude Include="ext4\htree_internal.h" />
+    <ClInclude Include="ext4\DirBlock.h" />
+    <ClInclude Include="ext4\DirIndex.h" />
+    <ClInclude Include="ext4\DirectoryInternal.h" />
+    <ClInclude Include="ext4\NameHash.h" />
+    <ClInclude Include="ext4\NameSet.h" />
     <ClInclude Include="ext4\xattr_internal.h" />
     <ClInclude Include="fsd\create_internal.h" />
     <ClInclude Include="fsd\dirctl_internal.h" />

@@ -569,15 +569,6 @@ void ext4_mmp_csum_set(struct super_block *sb, struct mmp_struct *mmp);
 struct buffer_head *ext3_bread_index(struct ext2_icb *icb, struct inode *inode,
                                      unsigned long block, int *err);
 
-int add_dirent_to_buf(struct ext2_icb *icb, struct dentry *dentry,
-                      struct inode *inode, struct ext3_dir_entry_2 *de,
-                      struct buffer_head *bh);
-
-struct ext3_dir_entry_2 *
-            do_split(struct ext2_icb *icb, struct inode *dir,
-                     struct buffer_head **bh,struct dx_frame *frame,
-                     struct dx_hash_info *hinfo, int *error);
-
 int ext3_add_entry(struct ext2_icb *icb, struct dentry *dentry, struct inode *inode);
 
 int ext3_delete_entry(struct ext2_icb *icb, struct inode *dir,
@@ -626,6 +617,10 @@ VOID Ext2FreeEntry (IN struct dentry *de);
 
 struct dentry *Ext2BuildEntry(PEXT2_VCB Vcb, PEXT2_MCB Dcb, PUNICODE_STRING FileName);
 
+/* the entry's name as older versions wrote a character beyond the BMP
+   (CESU-8), for a lookup that missed; FALSE: no other form */
+BOOLEAN Ext2EntryOldForm(PEXT2_VCB Vcb, struct dentry *de, PUNICODE_STRING FileName);
+
 /* Where the data of an inode should go first: the first block of the
    inode's own group, as ext4_inode_to_goal_block does in Linux. Keeping
    data next to its inode keeps files contiguous and spreads the
@@ -641,6 +636,6 @@ static __inline ext4_fsblk_t ext4_inode_to_goal_block(struct inode *inode)
 /* the caseless names of a large directory (DirectoryNameCache.c) */
 BOOLEAN Ext4DirNameMayExist(struct ext2_icb *icb, struct inode *dir, const char *name, int len);
 VOID    Ext4DirNameAdded(struct inode *dir, const char *name, int len);
-VOID    Ext4DirNameRemoved(struct inode *dir);
+VOID    Ext4DirNameRemoved(struct inode *dir, const char *name, int len);
 VOID    Ext4DirNamesFree(PEXT2_ICB Icb);
 #endif /* _EXT4_EXT4FS_EXT4_H_ */

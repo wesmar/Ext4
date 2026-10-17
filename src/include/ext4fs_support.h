@@ -268,6 +268,23 @@ Ext2UnicodeToOEM (
     IN PUNICODE_STRING  Unicode
 );
 
+/* a name whose form on disk has 1 to 255 bytes (ext4's limit is in bytes:
+   255 UTF-16 characters may need three times as many) */
+BOOLEAN
+Ext2NameFits(
+    IN PEXT2_VCB        Vcb,
+    IN PUNICODE_STRING  Unicode
+);
+
+/* the name in UTF-8 with each half of a surrogate pair in three bytes of its
+   own (CESU-8), as names were written before; FALSE: no such other form */
+BOOLEAN
+Ext2UnicodeToOldUtf8(
+    IN PEXT2_VCB        Vcb,
+    IN OUT POEM_STRING  Oem,
+    IN PUNICODE_STRING  Unicode
+);
+
 int Ext2LinuxError (NTSTATUS Status);
 
 NTSTATUS Ext2WinntError(int rc);

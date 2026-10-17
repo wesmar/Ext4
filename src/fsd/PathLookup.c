@@ -666,6 +666,21 @@ Ext2ScanDir (
         ExAcquireResourceSharedLite(&Parent->Icb->EntryResource, TRUE);
         __try {
             bh = ext3_find_entry(IrpContext, de, &dir_entry);
+            if (!dir_entry && Ext2EntryOldForm(Vcb, de, FileName)) {
+                /* a character beyond the BMP, written in the old form. That
+                   form is no UTF-8: a casefolded directory's index holds it
+                   under the hash of its bytes, so the index alone answers -
+                   the full scan a miss of such a name gets otherwise read
+                   the whole directory at each lookup of a new emoji name */
+                struct inode *dir = de->d_parent->d_inode;
+
+                if (ext4_casefolded(dir) && is_dx(dir)) {
+                    int err = 0;
+                    bh = ext3_dx_find_entry(IrpContext, de, &dir_entry, &err);
+                } else {
+                    bh = ext3_find_entry(IrpContext, de, &dir_entry);
+                }
+            }
             if (dir_entry) {
                 Status = STATUS_SUCCESS;
                 *Inode = dir_entry->inode;

@@ -89,6 +89,12 @@ foreach ($d in $DriveList) {
     Check 'nanosecond mtime (100 ns)'      $mt.Ticks         (Try { [IO.File]::GetLastWriteTimeUtc("$L\timed.txt").Ticks })
     Check 'Linux user xattr as EA'         "blue"            (Try { [IO2]::GetEa("$L\xattr.txt", 'color') })
     Check 'size of a Linux file'           $expect['size_target'][0] (Try { (Get-Item -LiteralPath "$L\target.txt").Length })
+    # beyond the BMP: four bytes of UTF-8 are a surrogate pair; the CESU-8
+    # form earlier drivers wrote is the same name, still found
+    $grin = [char]::ConvertFromUtf32(0x1F600)
+    Check 'Linux name beyond the BMP opens' "emoji"          (Try { [IO.File]::ReadAllText("$L\emoji-$grin.txt").Trim() })
+    Check 'Linux name beyond the BMP lists' $true            (Try { ([IO.Directory]::GetFileSystemEntries($L) | ForEach-Object { Split-Path $_ -Leaf }) -ccontains "emoji-$grin.txt" })
+    Check 'old-form name opens'            "old form"        (Try { [IO.File]::ReadAllText("$L\cesu-$grin.txt").Trim() })
 
     "== $d`: making \interop-win and changing Linux objects"
     if ([IO.Directory]::Exists($W)) { cmd /c "rd /s /q $W" }
@@ -126,6 +132,15 @@ foreach ($d in $DriveList) {
     [IO.File]::AppendAllText("$L\m4755", "appended`n")
     Check 'EA next to a Linux xattr'       0                 ([IO2]::SetEa("$L\xattr.txt", 'WINEA', 'x'))
     [IO.File]::Move("$L\target.txt", "$L\renamed.txt")
+    Check 'old-form name renamed'          $true             (Try { [IO.File]::Move("$L\cesu-$grin.txt", "$L\cesu-renamed.txt"); $true })
+    # names: one beyond the BMP; 85 CJK characters, 255 bytes on disk; 86 of
+    # them, 258 bytes, refused (ext4 counts a name in bytes)
+    [IO.File]::WriteAllText("$W\emoji-$([char]::ConvertFromUtf32(0x1F642)).txt", 'smile')
+    $cjk = [string][char]0x4E2D
+    Check '255-byte name made'             $true             (Try { [IO.File]::WriteAllText("$W\$($cjk * 85)", '255'); $true })
+    $long = (Try { [IO.File]::WriteAllText("$W\$($cjk * 86)", '258'); 'made' })
+    Check '258-byte name refused'          $true             ($long -like 'ERR:*')
+    if ($long -like 'ERR:*') { [IO.File]::WriteAllText("$W\toolong.txt", 'refused') }
     [IO.File]::Delete("$L\sub\hard3")
 }
 "INTEROP-WIN: $fail failed"

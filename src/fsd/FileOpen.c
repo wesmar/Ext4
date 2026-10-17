@@ -355,8 +355,9 @@ Ext2CreateMissingName(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb,
         PEXT2_MCB Next = NULL;
 
         FsRtlDissectName(PathName, &RealName, &RemainName);
+        /* a name's limit is 255 bytes on disk: 255 characters may need more */
         if ((RemainName.Length != 0 && RemainName.Buffer[0] == L'\\') ||
-            RealName.Length > EXT2_NAME_LEN * sizeof(WCHAR)) {
+            RealName.Length > EXT2_NAME_LEN * sizeof(WCHAR) || !Ext2NameFits(Vcb, &RealName)) {
             return STATUS_OBJECT_NAME_INVALID;
         }
         if (RemainName.Length == 0) {

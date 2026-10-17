@@ -1,5 +1,5 @@
 /**
- * DirectoryBlocks.c - directory block helpers: read/append blocks, link counts, entry insertion.
+ * DirectoryBlocks.c - directory block helpers: read/append blocks, link counts, entry types.
  *
  * Copyright (c) 2026 Marek Wesolowski (WESMAR)
  * Derived from Ext2Fsd (Matt Wu), Ext4Fsd (Bo Branten) and Linux ext4/jbd2.
@@ -7,7 +7,7 @@
  */
 
 #include "ext4fs.h"
-#include "htree_internal.h"
+#include "DirectoryInternal.h"
 
 __u32 ext3_current_time(struct inode *in)
 {
@@ -284,98 +284,3 @@ void ext3_update_dx_flag(struct inode *inode)
                                  EXT3_FEATURE_COMPAT_DIR_INDEX))
         EXT3_I(inode)->i_flags &= ~EXT3_INDEX_FL;
 }
-
-/*
- * Add a new entry into a directory (leaf) block.  If de is non-NULL,
- * it points to a directory entry which is guaranteed to be large
- * enough for new directory entry.  If de is NULL, then
- * add_dirent_to_buf will attempt search the directory block for
- * space.  It will return -ENOSPC if no space is available, and -EIO
- * and -EEXIST if directory entry already exists.
- *
- * NOTE!  bh is NOT released in the case where ENOSPC is returned.  In
- * all other cases bh is released.
- */
-int add_dirent_to_buf(struct ext2_icb *icb, struct dentry *dentry,
-                      struct inode *inode, struct ext3_dir_entry_2 *de,
-                      struct buffer_head *bh)
-{
-    struct inode *dir = dentry->d_parent->d_inode;
-    const char	*name = dentry->d_name.name;
-    int		namelen = dentry->d_name.len;
-    unsigned int	offset = 0;
-    unsigned short	reclen;
-    int nlen, rlen;
-    char		*top;
-    int		csum_size = 0;
-
-    if (ext4_has_metadata_csum(inode->i_sb))
-        csum_size = sizeof(struct ext4_dir_entry_tail);
-
-    reclen = EXT3_DIR_REC_LEN(namelen);
-    if (!de) {
-        de = (struct ext3_dir_entry_2 *)bh->b_data;
-        top = bh->b_data + dir->i_sb->s_blocksize - reclen - csum_size;
-        while ((char *) de <= top) {
-            if (!ext3_check_dir_entry("ext3_add_entry", dir, de,
-                                      bh, offset)) {
-                __brelse(bh);
-                return -EIO;
-            }
-            if (ext4_match(dir, namelen, name, de)) {
-                __brelse(bh);
-                return -EEXIST;
-            }
-            nlen = EXT3_DIR_REC_LEN(de->name_len);
-            rlen = ext3_rec_len_from_disk(de->rec_len);
-            if ((de->inode? rlen - nlen: rlen) >= reclen)
-                break;
-            de = (struct ext3_dir_entry_2 *)((char *)de + rlen);
-            offset += rlen;
-        }
-        if ((char *) de > top)
-            return -ENOSPC;
-    }
-
-    /* By now the buffer is marked for journaling */
-    nlen = EXT3_DIR_REC_LEN(de->name_len);
-    rlen = ext3_rec_len_from_disk(de->rec_len);
-    if (de->inode) {
-        struct ext3_dir_entry_2 *de1 = (struct ext3_dir_entry_2 *)((char *)de + nlen);
-        de1->rec_len = ext3_rec_len_to_disk(rlen - nlen);
-        de->rec_len = ext3_rec_len_to_disk(nlen);
-        de = de1;
-    }
-    de->file_type = EXT3_FT_UNKNOWN;
-    if (inode) {
-        de->inode = cpu_to_le32(inode->i_ino);
-        ext3_set_de_type(dir->i_sb, de, inode->i_mode);
-    } else
-        de->inode = 0;
-    de->name_len = (__u8)namelen;
-    memcpy(de->name, name, namelen);
-
-    /*
-     * XXX shouldn't update any times until successful
-     * completion of syscall, but too many callers depend
-     * on this.
-     *
-     * XXX similarly, too many callers depend on
-     * ext4_new_inode() setting the times, but error
-     * recovery deletes the inode, so the worst that can
-     * happen is that the times are slightly out of date
-     * and/or different from the directory change time.
-     */
-    dir->i_mtime = dir->i_ctime = ext3_current_time(dir);
-    ext3_update_dx_flag(dir);
-    dir->i_version++;
-    ext4_dirent_csum_set(dir, (struct ext4_dir_entry *)bh->b_data);
-    mark_buffer_dirty(bh);
-    __brelse(bh);
-    return ext3_mark_inode_dirty(icb, dir);
-}
-
-/*
- * Debug
- */
-

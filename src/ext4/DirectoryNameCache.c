@@ -12,119 +12,72 @@
  * creating n files in one directory cost O(n^2) - 45 000 files with long
  * names took seven minutes.
  *
- * A large directory now keeps a set of the 32-bit hashes of its names
- * folded to upper case. A folded hash that is not in the set proves no
- * spelling of the name exists, and the scan is skipped; one that is in it
- * (a real case variant, or a collision) still scans. The set is built by
- * one pass on the first miss that needs it, takes the names added later,
- * and keeps those removed (a false "maybe" costs only the scan) until they
- * are half of it, when it is dropped and built again on demand.
+ * A large directory keeps the 32-bit hashes of its names folded to upper
+ * case, each with the number of its names: a multiset. A folded hash it does
+ * not hold proves no spelling of the name exists, and the scan is skipped;
+ * one it holds (a real case variant, or a collision) still scans. The set is
+ * built by one pass on the first miss that needs it, then counts the names
+ * added and removed - a name made again after its removal, or moved back,
+ * skips the scan too (a set that only grew sent each of those through the
+ * whole directory: 50 ms a rename in one of 2 000 blocks).
+ *
+ * The table is NameSet.c: open addressing with linear probing, a hash whose
+ * count drops to 0 leaving by backward shift (no tombstones).
  *
  * A build runs without the lock: a name added meanwhile moves Generation,
- * and a set that may have missed it is not published.
+ * and a set that may have missed it is not published. A name removed
+ * meanwhile may stay counted - a false "maybe", which costs only a scan. A
+ * removal of a hash the set does not hold means the set is wrong: it goes,
+ * and is built again on demand.
  */
 
 #include "ext4fs.h"
-#include "htree_internal.h"
+#include "NameSet.h"
 
 #define EXT4_NAMES_TAG          'NC4E'
 #define EXT4_NAMES_MIN_BLOCKS   8           /* smaller directories just scan */
-#define EXT4_NAMES_MAX_SLOTS    (1u << 24)  /* 64 MiB: beyond it, scan */
+#define EXT4_NAMES_MAX_SLOTS    (1u << 23)  /* 64 MiB: beyond it, scan */
 #define EXT4_NAMES_FIRST_SLOTS  1024
-#define FNV_OFFSET              2166136261u
-#define FNV_PRIME               16777619u
 
+/* (NS_SET is the EXT4_DIR_NAMES the Icb holds) */
 struct _EXT4_DIR_NAMES {
-    ULONG   Mask;           /* slots - 1, a power of two minus one */
-    ULONG   Used;           /* hashes held */
-    ULONG   Stale;          /* of them, names removed since */
-    ULONG   Slot[1];        /* 0: empty; a hash is stored with its low bit set */
+    NS_SET  Set;
 };
-
-/* FNV-1a of the name with a-z folded to A-Z, as _strnicmp compares */
-static ULONG Ext4NameHash(const char *Name, int Length)
-{
-    ULONG h = FNV_OFFSET;
-    int   i;
-
-    for (i = 0; i < Length; i++) {
-        UCHAR c = (UCHAR)Name[i];
-        if (c >= 'a' && c <= 'z') {
-            c = (UCHAR)(c - 'a' + 'A');
-        }
-        h = (h ^ c) * FNV_PRIME;
-    }
-    return h | 1;
-}
 
 static PEXT4_DIR_NAMES Ext4NamesAlloc(ULONG Slots)
 {
-    PEXT4_DIR_NAMES Set;
-    SIZE_T          Bytes = FIELD_OFFSET(EXT4_DIR_NAMES, Slot) + (SIZE_T)Slots * sizeof(ULONG);
+    PEXT4_DIR_NAMES Names;
+    SIZE_T          Bytes = (SIZE_T)NsBytes(Slots);
 
-    Set = Ext2AllocatePool(PagedPool, Bytes, EXT4_NAMES_TAG);
-    if (Set) {
-        RtlZeroMemory(Set, Bytes);
-        Set->Mask = Slots - 1;
+    Names = Ext2AllocatePool(PagedPool, Bytes, EXT4_NAMES_TAG);
+    if (Names) {
+        RtlZeroMemory(Names, Bytes);
+        NsInit(&Names->Set, Slots);
     }
-    return Set;
+    return Names;
 }
 
-static VOID Ext4NamesFree(PEXT4_DIR_NAMES Set)
+static VOID Ext4NamesFree(PEXT4_DIR_NAMES Names)
 {
-    if (Set) {
-        Ext2FreePool(Set, EXT4_NAMES_TAG);
+    if (Names) {
+        Ext2FreePool(Names, EXT4_NAMES_TAG);
     }
 }
 
-static BOOLEAN Ext4NamesHas(PEXT4_DIR_NAMES Set, ULONG Hash)
-{
-    ULONG i = Hash & Set->Mask;
-
-    while (Set->Slot[i]) {
-        if (Set->Slot[i] == Hash) {
-            return TRUE;
-        }
-        i = (i + 1) & Set->Mask;
-    }
-    return FALSE;
-}
-
-static VOID Ext4NamesPut(PEXT4_DIR_NAMES Set, ULONG Hash)
-{
-    ULONG i = Hash & Set->Mask;
-
-    while (Set->Slot[i]) {
-        if (Set->Slot[i] == Hash) {
-            return;
-        }
-        i = (i + 1) & Set->Mask;
-    }
-    Set->Slot[i] = Hash;
-    Set->Used++;
-}
-
-/* the same hashes in a table twice the size; NULL when out of memory */
-static PEXT4_DIR_NAMES Ext4NamesGrow(PEXT4_DIR_NAMES Set)
+/* the same counts in a table twice the size; NULL when out of memory */
+static PEXT4_DIR_NAMES Ext4NamesGrow(PEXT4_DIR_NAMES Names)
 {
     PEXT4_DIR_NAMES Bigger;
-    ULONG           i;
 
-    if (Set->Mask + 1 >= EXT4_NAMES_MAX_SLOTS) {
+    if (Names->Set.Mask + 1 >= EXT4_NAMES_MAX_SLOTS) {
         return NULL;
     }
-    Bigger = Ext4NamesAlloc((Set->Mask + 1) * 2);
+    Bigger = Ext4NamesAlloc((Names->Set.Mask + 1) * 2);
     if (Bigger) {
-        for (i = 0; i <= Set->Mask; i++) {
-            if (Set->Slot[i]) {
-                Ext4NamesPut(Bigger, Set->Slot[i]);
-            }
-        }
-        Bigger->Stale = Set->Stale;
+        NsCopy(&Bigger->Set, &Names->Set);
     }
     return Bigger;
 }
-
 /* the Icb a directory inode is embedded in, or NULL */
 static PEXT2_ICB Ext4DirIcb(struct inode *dir)
 {
@@ -174,7 +127,7 @@ static PEXT4_DIR_NAMES Ext4NamesBuild(struct ext2_icb *icb, struct inode *dir)
                 break;          /* damaged: what was read is still right */
             }
             if (de->inode && de->name_len) {
-                if (Set->Used * 2 >= Set->Mask + 1) {
+                if (Set->Set.Used * 2 >= Set->Set.Mask + 1) {
                     PEXT4_DIR_NAMES Bigger = Ext4NamesGrow(Set);
                     Ext4NamesFree(Set);
                     if (Bigger == NULL) {
@@ -183,7 +136,7 @@ static PEXT4_DIR_NAMES Ext4NamesBuild(struct ext2_icb *icb, struct inode *dir)
                     }
                     Set = Bigger;
                 }
-                Ext4NamesPut(Set, Ext4NameHash(de->name, de->name_len));
+                NsPut(&Set->Set, NsHash(de->name, de->name_len), 1);
             }
             de = (struct ext3_dir_entry_2 *)((char *)de + rec);
         }
@@ -197,7 +150,7 @@ Ext4DirNameMayExist(struct ext2_icb *icb, struct inode *dir, const char *name, i
 {
     PEXT2_ICB       Icb = Ext4DirIcb(dir);
     PEXT4_DIR_NAMES Set, Built;
-    ULONG           Hash = Ext4NameHash(name, len);
+    ULONG           Hash = NsHash(name, len);
     LONG            Generation;
     BOOLEAN         Maybe = TRUE;
 
@@ -209,7 +162,7 @@ Ext4DirNameMayExist(struct ext2_icb *icb, struct inode *dir, const char *name, i
     ExAcquirePushLockShared(&Icb->CaselessLock);
     Set = Icb->Caseless;
     if (Set) {
-        Maybe = Ext4NamesHas(Set, Hash);
+        Maybe = NsCount(&Set->Set, Hash) != 0;
     }
     ExReleasePushLockShared(&Icb->CaselessLock);
     KeLeaveCriticalRegion();
@@ -222,7 +175,7 @@ Ext4DirNameMayExist(struct ext2_icb *icb, struct inode *dir, const char *name, i
     if (Built == NULL) {
         return TRUE;
     }
-    Maybe = Ext4NamesHas(Built, Hash);
+    Maybe = NsCount(&Built->Set, Hash) != 0;
 
     KeEnterCriticalRegion();
     ExAcquirePushLockExclusive(&Icb->CaselessLock);
@@ -251,13 +204,13 @@ Ext4DirNameAdded(struct inode *dir, const char *name, int len)
     InterlockedIncrement(&Icb->CaselessGeneration);
     Set = Icb->Caseless;
     if (Set) {
-        if (Set->Used * 2 >= Set->Mask + 1) {
+        if (Set->Set.Used * 2 >= Set->Set.Mask + 1) {
             /* full enough: twice the size, or no set at all */
             Old = Set;
             Set = Icb->Caseless = Ext4NamesGrow(Old);
         }
         if (Set) {
-            Ext4NamesPut(Set, Ext4NameHash(name, len));
+            NsPut(&Set->Set, NsHash(name, len), 1);
         }
     }
     ExReleasePushLockExclusive(&Icb->CaselessLock);
@@ -266,7 +219,7 @@ Ext4DirNameAdded(struct inode *dir, const char *name, int len)
 }
 
 VOID
-Ext4DirNameRemoved(struct inode *dir)
+Ext4DirNameRemoved(struct inode *dir, const char *name, int len)
 {
     PEXT2_ICB       Icb = Ext4DirIcb(dir);
     PEXT4_DIR_NAMES Old = NULL;
@@ -276,12 +229,9 @@ Ext4DirNameRemoved(struct inode *dir)
     }
     KeEnterCriticalRegion();
     ExAcquirePushLockExclusive(&Icb->CaselessLock);
-    if (Icb->Caseless) {
-        Icb->Caseless->Stale++;
-        if (Icb->Caseless->Stale * 2 > Icb->Caseless->Used) {
-            Old = Icb->Caseless;
-            Icb->Caseless = NULL;
-        }
+    if (Icb->Caseless && !NsTake(&Icb->Caseless->Set, NsHash(name, len))) {
+        Old = Icb->Caseless;
+        Icb->Caseless = NULL;
     }
     ExReleasePushLockExclusive(&Icb->CaselessLock);
     KeLeaveCriticalRegion();
