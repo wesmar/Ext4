@@ -47,6 +47,7 @@ try {
         InWsl "sed 's/\r`$//' '$(WslPath "$PSScriptRoot\orphan-image.sh")' | bash -s -- $Images" | Select-Object -Last 1
     }
     pwsh -NoProfile -File "$PSScriptRoot\deploy-vm.ps1" | Out-Null
+    if ($LASTEXITCODE) { throw 'deploy-vm.ps1 failed' }
     $names = @((InWsl "ls $Images/*.img | xargs -n1 basename | sed 's/\.img`$//'") -split "`n" | Where-Object { $_ })
     "$($names.Count) orphan volumes"
     New-VHD -Path $disk -SizeBytes 134217728 -Dynamic | Out-Null

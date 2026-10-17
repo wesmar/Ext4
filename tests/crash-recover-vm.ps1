@@ -47,6 +47,7 @@ $wslMounted = $false
 $failed = @()
 try {
     pwsh -NoProfile -File "$PSScriptRoot\deploy-vm.ps1" | Out-Null
+    if ($LASTEXITCODE) { throw 'deploy-vm.ps1 failed' }
     $picked = @((InWsl "python3 '$replay' '$work/base.img' '$(WslPath $log)' --pick $Count") -split ' ' | ForEach-Object { [int]$_ })
     "$($picked.Count) states of $name"
     New-VHD -Path $disk -SizeBytes 134217728 -Dynamic | Out-Null

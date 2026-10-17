@@ -54,6 +54,7 @@ try {
     # the recording build, for this run only
     Copy-Item -LiteralPath $bin -Destination $saved -Force
     pwsh -NoProfile -File "$PSScriptRoot\deploy-vm.ps1" -ImagePath $logDriver | Out-Null
+    if ($LASTEXITCODE) { throw 'deploy-vm.ps1 failed' }
     Add-VMHardDiskDrive -VMName $TestEnv.Vm -ControllerType SCSI -ControllerNumber 0 -ControllerLocation $slot -Path $image
     $attached = $true
     & scp -q @ssh "$PSScriptRoot\crash-workload.ps1" "${target}:C:/Windows/Temp/crash-workload.ps1"
@@ -87,6 +88,7 @@ try {
     if ($wslMounted) { & wsl.exe --unmount "\\?\$image" | Out-Null }
     if (Test-Path -LiteralPath $saved) {
         pwsh -NoProfile -File "$PSScriptRoot\deploy-vm.ps1" -ImagePath $saved | Out-Null
+        if ($LASTEXITCODE) { Write-Warning 'deploy-vm.ps1 failed: the guest may run another driver' }
         Remove-Item -LiteralPath $saved
     }
 }

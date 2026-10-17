@@ -24,7 +24,11 @@ if (-not (Test-Path $bin)) { throw "$bin not found - run build.ps1 first" }
 $imageId = (Get-FileHash -LiteralPath $bin -Algorithm SHA256).Hash.ToLowerInvariant()
 $evidence = Join-Path $PSScriptRoot "logs/builds/$imageId"
 New-Item -ItemType Directory -Path $evidence -Force | Out-Null
-Copy-Item -LiteralPath $bin -Destination (Join-Path $evidence $TestEnv.Driver) -Force
+# (an image deployed again from its own evidence copy stays where it is)
+$kept = [IO.Path]::GetFullPath((Join-Path $evidence $TestEnv.Driver))
+if ($kept -ne $bin) {
+    Copy-Item -LiteralPath $bin -Destination $kept -Force
+}
 $pdb = if ($SymbolsPath) { [IO.Path]::GetFullPath($SymbolsPath) }
        elseif (-not $ImagePath) { Join-Path (Split-Path $PSScriptRoot) 'symbols/ext4.pdb' }
        else { '' }

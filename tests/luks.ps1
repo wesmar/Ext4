@@ -34,6 +34,14 @@ $nodigest = @($list | Select-String 'label nodigest' | ForEach-Object { UuidOf $
 $luks1 = @($list | Select-String 'LUKS1' | ForEach-Object { $_.Line -replace '.*UUID ([0-9a-f-]+).*', '$1' })
 if ($luks2.Count -lt 2 -or $luks1.Count -lt 1) { "  FAIL test disk not found (LUKS2: $($luks2.Count), LUKS1: $($luks1.Count))"; "LUKS-WIN: 1 failed"; exit 1 }
 
+# letters of their own: the test disk's volumes get whatever the mount manager
+# hands out (H: one day), and ext4ctl puts a volume whose letter is taken on
+# the next free one
+$used = @([IO.DriveInfo]::GetDrives() | ForEach-Object { $_.Name.Substring(0, 1).ToUpper() })
+$free = @('GHKLMNOPQRTUVWXY'.ToCharArray() | ForEach-Object { "$_" } | Where-Object { $used -notcontains $_ })
+if ($free.Count -lt 4) { "  FAIL four free drive letters (have $($used -join ' '))"; "LUKS-WIN: 1 failed"; exit 1 }
+$L2, $L1, $Llin, $Lthin = $free[0..3]
+
 "-- headers ext4ctl must not open"
 Check 'a cipher the driver lacks is listed as such' ([bool]($list -match 'cannot be opened here: cipher serpent-xts-plain64'))
 $r = $Pass | & $ctl unlock "UUID=$($serpent[0])" --passphrase-stdin 2>&1
@@ -44,16 +52,16 @@ Check 'an empty digest does not let a wrong passphrase in' ($nodigest.Count -eq 
 "-- unlock"
 $r = $Pass.ToUpper() | & $ctl unlock "UUID=$($luks1[0])" --passphrase-stdin 2>&1
 Check 'wrong passphrase refused' ($LASTEXITCODE -ne 0) "($r)"
-$r = $Pass | & $ctl unlock "UUID=$($luks2[0])" --letter G --passphrase-stdin 2>&1
-Check 'LUKS2 (Argon2id, 4 KiB sectors) mounted as G:' ($LASTEXITCODE -eq 0 -and (Test-Path 'G:\')) "($($r -join ' '))"
-$r = $Pass | & $ctl unlock "UUID=$($luks1[0])" --letter H --passphrase-stdin 2>&1
-Check 'LUKS1 (PBKDF2) mounted as H:' ($LASTEXITCODE -eq 0 -and (Test-Path 'H:\')) "($($r -join ' '))"
+$r = $Pass | & $ctl unlock "UUID=$($luks2[0])" --letter $L2 --passphrase-stdin 2>&1
+Check "LUKS2 (Argon2id, 4 KiB sectors) mounted as $($L2):" ($LASTEXITCODE -eq 0 -and "$r" -match "as $($L2): " -and (Test-Path "$($L2):\")) "($($r -join ' '))"
+$r = $Pass | & $ctl unlock "UUID=$($luks1[0])" --letter $L1 --passphrase-stdin 2>&1
+Check "LUKS1 (PBKDF2) mounted as $($L1):" ($LASTEXITCODE -eq 0 -and "$r" -match "as $($L1): " -and (Test-Path "$($L1):\")) "($($r -join ' '))"
 if ($fail) { "LUKS-WIN: $fail failed"; exit 1 }
 
 $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
 function Rand([int]$n) { $b = New-Object byte[] $n; $rng.GetBytes($b); $b }
 
-foreach ($d in 'G', 'H') {
+foreach ($d in $L2, $L1) {
     $root = "$($d):\"
     "-- $root read what Linux wrote"
     $bad = 0; $n = 0
@@ -86,23 +94,23 @@ foreach ($d in 'G', 'H') {
     Check "$($lines.Count) files written" ($lines.Count -eq 11)
 }
 
-"-- functional suite on G: (LUKS2)"
-$r = & powershell -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -File "$t\ext4test.ps1" -Root 'G:\ext4test' 2>&1
+"-- functional suite on $($L2): (LUKS2)"
+$r = & powershell -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -File "$t\ext4test.ps1" -Root "$($L2):\ext4test" 2>&1
 $functionalRc = $LASTEXITCODE
 $res = ($r | Select-String 'RESULT').Line
 $r | Where-Object { $_ -match 'FAIL|unexpected error|Exception' } | ForEach-Object { "  functional detail: $_" }
 Check 'functional suite' ($functionalRc -eq 0 -and $res -match ', 0 failed') "(exit $functionalRc; $res)"
-if (Test-Path 'G:\ext4test') { [IO.Directory]::Delete('G:\ext4test', $true) }
+if (Test-Path "$($L2):\ext4test") { [IO.Directory]::Delete("$($L2):\ext4test", $true) }
 
-"-- resize regression on G: (LUKS2)"
-$r = & powershell -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -File "$t\resize.ps1" -Root G:\ -Repeat 2 2>&1
+"-- resize regression on $($L2): (LUKS2)"
+$r = & powershell -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -File "$t\resize.ps1" -Root "$($L2):\" -Repeat 2 2>&1
 $resizeRc = $LASTEXITCODE
 $r | ForEach-Object { "  $_" }
 Check 'cached/uncached shrink and regrow' ($resizeRc -eq 0 -and ($r -match '^RESIZE: \d+ cases, 0 failed$')) "(exit $resizeRc)"
 
 "-- lock"
-$r = & $ctl lock G: 2>&1; Check 'G: locked' ($LASTEXITCODE -eq 0) "($r)"
-$r = & $ctl lock H: 2>&1; Check 'H: locked' ($LASTEXITCODE -eq 0) "($r)"
+$r = & $ctl lock "$($L2):" 2>&1; Check "$($L2): locked" ($LASTEXITCODE -eq 0) "($r)"
+$r = & $ctl lock "$($L1):" 2>&1; Check "$($L1): locked" ($LASTEXITCODE -eq 0) "($r)"
 
 "-- LUKS2 with LVM inside: linear and thin volumes, read-only"
 $r = $Pass | & $ctl unlock "UUID=$($luks2[1])" --read-only --passphrase-stdin 2>&1
@@ -112,11 +120,11 @@ $idx = (($st | Select-String $luks2[1]).Line -split '\s+')[0]
 $lvs = & $ctl lv list $idx 2>&1
 Check 'VG qtest found' ($LASTEXITCODE -eq 0 -and ($lvs -match '^VG qtest')) "($($lvs[0]))"
 Check 'thin volume mapped' ([bool]($lvs -match '^qtest/root\s+thin .* ext2/3/4')) "($(($lvs -match 'qtest/root') -join ''))"
-$r = & $ctl lv open $idx qtest/lin --letter L 2>&1
-Check 'linear qtest/lin mounted as L:' ($LASTEXITCODE -eq 0 -and (Test-Path 'L:\')) "($($r -join ' '))"
-$r = & $ctl lv open $idx root --letter R 2>&1
-Check 'thin qtest/root mounted as R:' ($LASTEXITCODE -eq 0 -and (Test-Path 'R:\')) "($($r -join ' '))"
-foreach ($d in 'L', 'R') {
+$r = & $ctl lv open $idx qtest/lin --letter $Llin 2>&1
+Check "linear qtest/lin mounted as $($Llin):" ($LASTEXITCODE -eq 0 -and "$r" -match "as $($Llin): " -and (Test-Path "$($Llin):\")) "($($r -join ' '))"
+$r = & $ctl lv open $idx root --letter $Lthin 2>&1
+Check "thin qtest/root mounted as $($Lthin):" ($LASTEXITCODE -eq 0 -and "$r" -match "as $($Lthin): " -and (Test-Path "$($Lthin):\")) "($($r -join ' '))"
+foreach ($d in $Llin, $Lthin) {
     $root = "$($d):\"
     $bad = 0; $n = 0
     foreach ($line in Get-Content "$root\manifest.sha256") {
@@ -131,9 +139,9 @@ foreach ($d in 'L', 'R') {
 }
 $r = & $ctl lock $idx 2>&1
 Check 'lock refused while volumes are open' ($LASTEXITCODE -ne 0) "($r)"
-$r = & $ctl lv close L: 2>&1; Check 'L: closed' ($LASTEXITCODE -eq 0) "($r)"
-$r = & $ctl lock $idx --force 2>&1; Check 'locked with R: still open (--force)' ($LASTEXITCODE -eq 0) "($r)"
-Check 'R: gone' (-not (Test-Path 'R:\'))
+$r = & $ctl lv close "$($Llin):" 2>&1; Check "$($Llin): closed" ($LASTEXITCODE -eq 0) "($r)"
+$r = & $ctl lock $idx --force 2>&1; Check "locked with $($Lthin): still open (--force)" ($LASTEXITCODE -eq 0) "($r)"
+Check "$($Lthin): gone" (-not (Test-Path "$($Lthin):\"))
 Check 'nothing left unlocked' ((& $ctl status) -match 'no unlocked')
 
 "LUKS-WIN: $fail failed"
