@@ -53,6 +53,16 @@ Ext2MbsToUnicode(
        name after its first character. */
     for (i = 0; i < Mbs->Length; i += mbc) {
 
+        if (utf8 && (UCHAR)Mbs->Buffer[i] < 0x80) {
+            /* ASCII is itself in UTF-8 (the converter gives the same) */
+            if (Length + sizeof(WCHAR) <= Room) {
+                Unicode->Buffer[Length / sizeof(WCHAR)] = (WCHAR)(UCHAR)Mbs->Buffer[i];
+            }
+            Length += sizeof(WCHAR);
+            mbc = 1;
+            continue;
+        }
+
         if (utf8 && ((UCHAR)Mbs->Buffer[i] & 0xF8) == 0xF0) {
             /* beyond the BMP: a surrogate pair */
             ULONG c = Ext2Utf8Four((PUCHAR)&Mbs->Buffer[i], Mbs->Length - i);
@@ -114,6 +124,15 @@ Ext2UnicodeToMbs (
        room, counted always; an invalid character fails the whole name. */
     for (i = 0; i < n; i++) {
         WCHAR c = Unicode->Buffer[i];
+
+        if (utf8 && c < 0x80) {
+            /* ASCII is itself in UTF-8 (the converter gives the same) */
+            if (Length + 1 <= Room) {
+                Mbs->Buffer[Length] = (CHAR)c;
+            }
+            Length += 1;
+            continue;
+        }
 
         if (utf8 && c >= 0xD800 && c <= 0xDBFF && i + 1 < n &&
             Unicode->Buffer[i + 1] >= 0xDC00 && Unicode->Buffer[i + 1] <= 0xDFFF) {

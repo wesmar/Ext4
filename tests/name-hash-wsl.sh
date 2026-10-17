@@ -9,6 +9,8 @@
 set -euo pipefail
 export LC_ALL=C     # names are bytes, not text
 here=${NH_TESTS:-$(cd "$(dirname "$0")" && pwd)}
+# a script read from stdin has no directory of its own: tests/ of the current one
+[[ -f $here/name-hash-model/wsl.c ]] || here=$PWD/tests
 count=${1:-200000}
 seed=${2:-1}
 work=/dev/shm/nh-work

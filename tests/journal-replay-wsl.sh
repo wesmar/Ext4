@@ -10,6 +10,8 @@
 #   sed 's/\r$//' tests/journal-replay-wsl.sh | bash -s -- [cases per block size] [seed]
 set -euo pipefail
 here=${JR_TESTS:-$(cd "$(dirname "$0")" && pwd)}
+# a script read from stdin has no directory of its own: tests/ of the current one
+[[ -f $here/journal-replay-model/wsl.c ]] || here=$PWD/tests
 cases=${1:-500}
 seed=${2:-1}
 work=/dev/shm/jr-work

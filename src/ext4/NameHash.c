@@ -27,7 +27,12 @@
  * bit is cleared, and NH_END, which the index reserves, becomes the even
  * value below it.
  *
- * Tested by tests/name-hash-model.ps1 against e2fsprogs (debugfs dx_hash).
+ * Tested by tests/name-hash-wsl.sh against e2fsprogs (debugfs dx_hash).
+ *
+ * Every name of a directory listing is hashed once, so the hashes are
+ * written for speed as well: the words are built a whole word at a time and
+ * MD4's steps are written out, as RFC 1320 gives them, which keeps the state
+ * in registers.
  */
 
 #include "NameHash.h"
@@ -42,58 +47,81 @@ static unsigned int ByteAt(const unsigned char *Name, unsigned int i, int Unsign
     return Unsigned ? (unsigned int)Name[i] : (unsigned int)(int)(signed char)Name[i];
 }
 
+/*
+ * One word of four bytes, each shifted in at the bottom. A signed byte below
+ * zero borrows from the bytes before it; what it borrows from the start
+ * value is shifted out by the end, so a whole word needs none.
+ */
+static unsigned int Word(const unsigned char *Bytes, unsigned int Count, unsigned int Start, int Unsigned)
+{
+    unsigned int word = Start, i;
+
+    for (i = 0; i < Count; i++)
+        word = (word << 8) + ByteAt(Bytes, i, Unsigned);
+    return word;
+}
+
 /* Count words from a piece; Left is the length of the name from it on */
 static void Words(const unsigned char *Piece, unsigned int Left, int Unsigned,
                   unsigned int *Out, unsigned int Count)
 {
-    unsigned int pad = Left | (Left << 8), take, i, w = 0, word;
+    unsigned int pad = Left | (Left << 8), take, w;
 
     pad |= pad << 16;
     take = Left < Count * 4 ? Left : Count * 4;
-    word = pad;
-    for (i = 0; i < take; i++) {
-        if ((i & 3) == 0)
-            word = pad;
-        word = (word << 8) + ByteAt(Piece, i, Unsigned);
-        if ((i & 3) == 3)
-            Out[w++] = word;
+    for (w = 0; w < take / 4; w++)
+        Out[w] = Word(Piece + w * 4, 4, 0, Unsigned);
+    if (take & 3) {
+        Out[w] = Word(Piece + w * 4, take & 3, pad, Unsigned);     /* its top bytes are pad */
+        w++;
     }
-    if (take & 3)
-        Out[w++] = word;        /* a word begun: its top bytes are pad */
     while (w < Count)
         Out[w++] = pad;
 }
 
-/* MD4's rounds, cut to eight steps: which word each step takes, its shift */
-static const unsigned char Md4Word[3][8] = {
-    { 0, 1, 2, 3, 4, 5, 6, 7 }, { 1, 3, 5, 7, 0, 2, 4, 6 }, { 3, 7, 2, 6, 1, 5, 0, 4 },
-};
-static const unsigned char Md4Shift[3][4] = { { 3, 7, 11, 19 }, { 3, 5, 9, 13 }, { 3, 9, 11, 15 } };
-static const unsigned int Md4Add[3] = { 0, 0x5A827999u, 0x6ED9EBA1u };
+/* MD4's three rounds, eight steps each: x selects y or z, majority, parity */
+#define MD4_F(x, y, z)  ((z) ^ ((x) & ((y) ^ (z))))
+#define MD4_G(x, y, z)  (((x) & (y)) | ((x) & (z)) | ((y) & (z)))
+#define MD4_H(x, y, z)  ((x) ^ (y) ^ (z))
+#define MD4_STEP(f, a, b, c, d, word, shift) ((a) = Rol((a) + f((b), (c), (d)) + (word), (shift)))
+#define MD4_K2          0x5A827999u
+#define MD4_K3          0x6ED9EBA1u
 
 static void HalfMd4(unsigned int State[4], const unsigned int In[8])
 {
-    unsigned int s[4], r, j;
+    unsigned int a = State[0], b = State[1], c = State[2], d = State[3];
 
-    for (j = 0; j < 4; j++)
-        s[j] = State[j];
-    for (r = 0; r < 3; r++) {
-        for (j = 0; j < 8; j++) {
-            /* the word changed goes a, d, c, b, ...; the others follow it */
-            unsigned int t = (4 - j) & 3;
-            unsigned int x = s[(t + 1) & 3], y = s[(t + 2) & 3], z = s[(t + 3) & 3], f;
+    MD4_STEP(MD4_F, a, b, c, d, In[0], 3);
+    MD4_STEP(MD4_F, d, a, b, c, In[1], 7);
+    MD4_STEP(MD4_F, c, d, a, b, In[2], 11);
+    MD4_STEP(MD4_F, b, c, d, a, In[3], 19);
+    MD4_STEP(MD4_F, a, b, c, d, In[4], 3);
+    MD4_STEP(MD4_F, d, a, b, c, In[5], 7);
+    MD4_STEP(MD4_F, c, d, a, b, In[6], 11);
+    MD4_STEP(MD4_F, b, c, d, a, In[7], 19);
 
-            if (r == 0)
-                f = z ^ (x & (y ^ z));                  /* x selects y or z */
-            else if (r == 1)
-                f = (x & y) | (x & z) | (y & z);        /* majority */
-            else
-                f = x ^ y ^ z;                          /* parity */
-            s[t] = Rol(s[t] + f + In[Md4Word[r][j]] + Md4Add[r], Md4Shift[r][j & 3]);
-        }
-    }
-    for (j = 0; j < 4; j++)
-        State[j] += s[j];
+    MD4_STEP(MD4_G, a, b, c, d, In[1] + MD4_K2, 3);
+    MD4_STEP(MD4_G, d, a, b, c, In[3] + MD4_K2, 5);
+    MD4_STEP(MD4_G, c, d, a, b, In[5] + MD4_K2, 9);
+    MD4_STEP(MD4_G, b, c, d, a, In[7] + MD4_K2, 13);
+    MD4_STEP(MD4_G, a, b, c, d, In[0] + MD4_K2, 3);
+    MD4_STEP(MD4_G, d, a, b, c, In[2] + MD4_K2, 5);
+    MD4_STEP(MD4_G, c, d, a, b, In[4] + MD4_K2, 9);
+    MD4_STEP(MD4_G, b, c, d, a, In[6] + MD4_K2, 13);
+
+    MD4_STEP(MD4_H, a, b, c, d, In[3] + MD4_K3, 3);
+    MD4_STEP(MD4_H, d, a, b, c, In[7] + MD4_K3, 9);
+    MD4_STEP(MD4_H, c, d, a, b, In[2] + MD4_K3, 11);
+    MD4_STEP(MD4_H, b, c, d, a, In[6] + MD4_K3, 15);
+    MD4_STEP(MD4_H, a, b, c, d, In[1] + MD4_K3, 3);
+    MD4_STEP(MD4_H, d, a, b, c, In[5] + MD4_K3, 9);
+    MD4_STEP(MD4_H, c, d, a, b, In[0] + MD4_K3, 11);
+    MD4_STEP(MD4_H, b, c, d, a, In[4] + MD4_K3, 15);
+
+    State[0] += a;
+    State[1] += b;
+    State[2] += c;
+    State[3] += d;
 }
 
 static void Tea(unsigned int State[4], const unsigned int In[4])
