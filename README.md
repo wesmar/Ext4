@@ -762,14 +762,14 @@ The configurations share the file-system algorithms; Debug adds diagnostic check
 
 | Download | Contents |
 |---|---|
-| [`ext4.7z`](https://github.com/wesmar/Ext4/releases/download/latest/ext4.7z) | Current x64 `ext4.sys` (600 KB) and `ext4ctl.exe`; no password |
+| [`ext4.7z`](https://github.com/wesmar/Ext4/releases/download/latest/ext4.7z) | Current x64 `ext4.sys` (605 KB) and `ext4ctl.exe`; no password |
 | [Source tree](https://github.com/wesmar/Ext4) | Driver, control tool, build system, tests and documentation |
 
 The binary archive is the current x64 build:
 
 ```text
 ext4.7z
-├── ext4.sys       600 KB
+├── ext4.sys       605 KB
 └── ext4ctl.exe
 ```
 
