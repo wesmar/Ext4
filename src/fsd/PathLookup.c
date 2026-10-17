@@ -310,9 +310,9 @@ Ext2InsertName (
     /* a directory has one name: a second one (an entry naming its own
        directory, the root, an ancestor - a corrupt file system) would make
        the name tree a loop that never ends nor frees. Linux refuses the
-       alias the same way (EIO, "found a directory alias") */
-    if (S_ISDIR(Mcb->Inode->i_mode) &&
-        Icb->Names.Flink != Icb->Names.Blink) {
+       alias the same way (EIO, "found a directory alias"). Only names in
+       the tree count: one the reaper is freeing is on its way out */
+    if (S_ISDIR(Mcb->Inode->i_mode) && Ext2IcbHasOtherName(Vcb, Icb, Mcb)) {
         DbgPrint("ext4: directory inode %u has a second name, refused\n",
                  Mcb->Inode->i_ino);
         Ext2FreeMcb(Vcb, Mcb);

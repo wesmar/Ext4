@@ -168,6 +168,35 @@ Ext2LookupMcbByInode(IN PEXT2_VCB Vcb, IN ULONG Ino)
     return Found;
 }
 
+/*
+ * Another name of Icb in the tree, not deleted: a directory with one would be
+ * an alias (PathLookup.c refuses it). A name the reaper has taken out of the
+ * tree is none - it is freed a moment later, and a lookup in between used to
+ * count it and refuse a sound directory (ERROR_FILE_CORRUPT, now and then,
+ * under the reaper's work).
+ */
+BOOLEAN
+Ext2IcbHasOtherName(IN PEXT2_VCB Vcb, IN PEXT2_ICB Icb, IN PEXT2_MCB Except)
+{
+    PLIST_ENTRY List;
+    BOOLEAN     Found = FALSE;
+    KIRQL       Irql;
+
+    KeAcquireSpinLock(&Vcb->IcbLock, &Irql);
+    for (List = Icb->Names.Flink; List != &Icb->Names; List = List->Flink) {
+        PEXT2_MCB Name = CONTAINING_RECORD(List, EXT2_MCB, IcbLink);
+        /* (the root's name is never in the tree: an entry naming the root
+           is an alias all the same) */
+        if (Name != Except && !IsFileDeleted(Name) &&
+            (IsFlagOn(Name->Flags, MCB_ENTRY_TREE) || Icb->Inode.i_ino == EXT2_ROOT_INO)) {
+            Found = TRUE;
+            break;
+        }
+    }
+    KeReleaseSpinLock(&Vcb->IcbLock, Irql);
+    return Found;
+}
+
 /* ---------------------------------------------------------------- sizing */
 
 /*

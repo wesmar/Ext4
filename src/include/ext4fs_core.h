@@ -114,6 +114,14 @@ Ext2NextPendingName (
     IN PEXT2_ICB        Icb
 );
 
+/* another name of Icb in the tree, not deleted (a directory's alias) */
+BOOLEAN
+Ext2IcbHasOtherName (
+    IN PEXT2_VCB        Vcb,
+    IN PEXT2_ICB        Icb,
+    IN PEXT2_MCB        Except
+);
+
 PEXT2_MCB
 Ext2LookupMcbByInode (
     IN PEXT2_VCB        Vcb,
