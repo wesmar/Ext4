@@ -891,7 +891,9 @@ Ext2Read (IN PEXT2_IRP_CONTEXT IrpContext)
         }
 
     } __finally {
-        if (bCompleteRequest) {
+        /* an exception's request is the exception handler's to complete,
+           with the exception's status (Ext2ExceptionFilter marks it) */
+        if (bCompleteRequest && !IrpContext->ExceptionInProgress) {
             Ext2CompleteIrpContext(IrpContext, Status);
         }
     }

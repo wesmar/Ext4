@@ -127,12 +127,19 @@ Ext2ExceptionHandler (IN PEXT2_IRP_CONTEXT IrpContext)
                 }
             } else {
 
-                /* queue it again if our request is at top level */
+                /* queue it again if our request is at top level. It runs
+                   from the start: no exception is in progress for it any
+                   more. Left marked, its dispatcher took the completion for
+                   the handler's, and the request ran to the end and was
+                   never completed - its caller waited for ever (a write-
+                   through write whose flush could not wait, tests/fsx-vm.ps1) */
                 if (IrpContext->IsTopLevel &&
                         ((Status == STATUS_CANT_WAIT) ||
                          ((Status == STATUS_VERIFY_REQUIRED) &&
                           (KeGetCurrentIrql() >= APC_LEVEL)))) {
 
+                    IrpContext->ExceptionInProgress = FALSE;
+                    IrpContext->ExceptionCode = STATUS_SUCCESS;
                     Status = Ext2QueueRequest(IrpContext);
                 }
             }
