@@ -429,15 +429,8 @@ Ext2WritePagingRange(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT P
 static NTSTATUS
 Ext2WriteFlushCached(IN PEXT2_VCB Vcb, IN PEXT2_WRITE W)
 {
-    PEXT2_FCB   Fcb = W->Fcb;
-    NTSTATUS    Status;
-
-    Status = Ext2FlushPurgeRange(&Fcb->SectionObject, &Fcb->PagingIoResource, &W->ByteOffset,
-                                 CEILING_ALIGNED(ULONG, W->Length, BLOCK_SIZE), &W->Irp->IoStatus);
-    if (NT_SUCCESS(Status)) {
-        ClearLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
-    }
-    return Status;
+    return Ext2FlushPurgeRange(&W->Fcb->SectionObject, &W->Fcb->PagingIoResource, &W->ByteOffset,
+                               CEILING_ALIGNED(ULONG, W->Length, BLOCK_SIZE), &W->Irp->IoStatus);
 }
 
 /* A write past the end of file: the blocks first, then the new size,
@@ -663,6 +656,13 @@ Ext2WriteNoncached(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEX
 
     if (!W->PagingIo && Outer &&
         W->ByteOffset.QuadPart > Fcb->Header.ValidDataLength.QuadPart) {
+        /* let this irp wait, since it has to be synchronous */
+        SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
+        Status = Ext2ZeroData(IrpContext, W->FileObject,
+                              &Fcb->Header.ValidDataLength, &W->ByteOffset);
+        if (Status != STATUS_SUCCESS) {
+            return Status;
+        }
         /* Zeroing the page the gap starts in reads that page, and Mm reads
            the pages after it with it: past the valid data length, so as
            zeros, and into the range this write is about to fill on disk.
@@ -675,13 +675,6 @@ Ext2WriteNoncached(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEX
             if (!NT_SUCCESS(Status)) {
                 return Status;
             }
-        }
-        /* let this irp wait, since it has to be synchronous */
-        SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
-        Status = Ext2ZeroData(IrpContext, W->FileObject,
-                              &Fcb->Header.ValidDataLength, &W->ByteOffset);
-        if (Status != STATUS_SUCCESS) {
-            return Status;
         }
     }
 
@@ -757,7 +750,6 @@ Ext2WriteFinish(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_WRITE W, IN NTSTATUS S
                 W->ByteOffset.QuadPart + W->Irp->IoStatus.Information;
         }
         SetFlag(W->FileObject->Flags, FO_FILE_MODIFIED);
-        SetLongFlag(W->Fcb->Flags, FCB_FILE_MODIFIED);
     }
 
     Ext2CompleteIrpContext(IrpContext, Status);

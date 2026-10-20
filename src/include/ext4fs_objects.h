@@ -323,7 +323,6 @@ typedef struct _EXT2_FCB {
 /* Flags for EXT2_FCB */
 
 #define FCB_PAGE_FILE               0x00000002
-#define FCB_FILE_MODIFIED           0x00000020
 
 #define FCB_ALLOC_IN_CREATE         0x00000080
 #define FCB_ALLOC_IN_WRITE          0x00000100

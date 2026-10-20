@@ -90,8 +90,6 @@ Ext2FlushFile (
                         Fcb->Inode->i_ino, Fcb->Mcb->ShortName.Buffer));
 
         CcFlushCache(&(Fcb->SectionObject), NULL, 0, &IoStatus);
-        if (NT_SUCCESS(IoStatus.Status))
-            ClearLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
 
     } __finally {
 

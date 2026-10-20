@@ -247,7 +247,6 @@ Ext2CleanupCache(IN PEXT2_VCB Vcb, IN PFILE_OBJECT FileObject, IN PEXT2_FCB Fcb)
 
         if (Fcb->NonCachedOpenCount > 0 && !IsVcbReadOnly(Vcb)) {
             CcFlushCache(&Fcb->SectionObject, NULL, 0, NULL);
-            ClearLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
         }
 
         if (Fcb->NonCachedOpenCount > 0 || IsFlagOn(Fcb->Flags, FCB_DELETE_PENDING)) {

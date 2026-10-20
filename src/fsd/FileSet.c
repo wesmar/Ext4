@@ -227,7 +227,6 @@ Ext2SetAllocationInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFIL
 
     if (*NotifyFilter) {
         SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
-        SetLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
         Ext2SaveInodeStatus(IrpContext, Vcb, Mcb->Inode, &Status);
         Ext2SetCacheSizes(FileObject, Fcb);
     }
@@ -330,7 +329,6 @@ Ext2SetEndOfFileInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE
         }
 
         SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
-        SetLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
         *NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
     }
     /* the same size: nothing to allocate or free */
@@ -375,7 +373,6 @@ Ext2SetEndOfFileInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE
         Ext2NoteFileSize(IrpContext, Vcb, Fcb->Header.FileSize.QuadPart);
 
         SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
-        SetLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
         *NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
     }
 

@@ -413,7 +413,6 @@ Ext2PurgeFile ( IN PEXT2_FCB Fcb,
         ExAcquireSharedStarveExclusive(&Fcb->PagingIoResource, TRUE);
         ExReleaseResourceLite(&Fcb->PagingIoResource);
         CcFlushCache(&Fcb->SectionObject, NULL, 0, &IoStatus);
-        ClearLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
     }
 
     if (Fcb->SectionObject.ImageSectionObject) {

@@ -685,7 +685,6 @@ Ext2CreateCheckFcb(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb,
             Fcb->NonCachedOpenCount == Fcb->OpenHandleCount) {
             if (!IsVcbReadOnly(Vcb)) {
                 CcFlushCache(&Fcb->SectionObject, NULL, 0, NULL);
-                ClearLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
             }
             CcPurgeCacheSection(&Fcb->SectionObject, NULL, 0, FALSE);
         }
