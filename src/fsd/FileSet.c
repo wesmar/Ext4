@@ -229,9 +229,7 @@ Ext2SetAllocationInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFIL
         SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
         SetLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
         Ext2SaveInodeStatus(IrpContext, Vcb, Mcb->Inode, &Status);
-        if (CcIsFileCached(FileObject)) {
-            CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
-        }
+        Ext2SetCacheSizes(FileObject, Fcb);
     }
 
     DEBUG(DL_IO, ("Ext2SetInformation: %wZ NewSize=%I64xh AllocationSize=%I64xh "
@@ -340,9 +338,7 @@ Ext2SetEndOfFileInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE
     if (NT_SUCCESS(Status)) {
 
         Fcb->Header.FileSize.QuadPart = Mcb->Inode->i_size = EndOfFile.QuadPart;
-        if (CcIsFileCached(FileObject)) {
-            CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
-        }
+        Ext2SetCacheSizes(FileObject, Fcb);
 
         /* ext4 keeps no valid data length on disk, so everything up
            to the new end must read as zeros from now on. Blocks past
@@ -374,9 +370,7 @@ Ext2SetEndOfFileInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE
             }
         }
         Fcb->Header.ValidDataLength = EndOfFile;
-        if (CcIsFileCached(FileObject)) {
-            CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
-        }
+        Ext2SetCacheSizes(FileObject, Fcb);
 
         Ext2NoteFileSize(IrpContext, Vcb, Fcb->Header.FileSize.QuadPart);
 
@@ -419,9 +413,7 @@ Ext2SetValidDataLengthInfo(IN PFILE_OBJECT FileObject, IN PEXT2_FCB Fcb, IN PEXT
 
     Fcb->Header.ValidDataLength = NewVDL;
     FileObject->Flags |= FO_FILE_MODIFIED;
-    if (CcIsFileCached(FileObject)) {
-        CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
-    }
+    Ext2SetCacheSizes(FileObject, Fcb);
     return STATUS_SUCCESS;
 }
 

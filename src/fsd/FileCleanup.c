@@ -199,9 +199,7 @@ Ext2CleanupAllocation(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb,
             if (Fcb->Header.ValidDataLength.QuadPart > Fcb->Header.FileSize.QuadPart) {
                 Fcb->Header.ValidDataLength.QuadPart = Fcb->Header.FileSize.QuadPart;
             }
-            if (CcIsFileCached(FileObject)) {
-                CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
-            }
+            Ext2SetCacheSizes(FileObject, Fcb);
         }
         ClearLongFlag(Fcb->Flags, FCB_ALLOC_IN_CREATE | FCB_ALLOC_IN_WRITE | FCB_ALLOC_IN_SETINFO);
     } __finally {
@@ -432,9 +430,7 @@ Ext2Cleanup (IN PEXT2_IRP_CONTEXT IrpContext)
 
             if (FileDelete) {
                 SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
-                if (CcIsFileCached(FileObject)) {
-                    CcSetFileSizes(FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
-                }
+                Ext2SetCacheSizes(FileObject, Fcb);
             }
         }
 

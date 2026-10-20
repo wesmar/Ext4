@@ -732,6 +732,21 @@ NTSTATUS
 Ext2FlushPurgeRange(IN PSECTION_OBJECT_POINTERS Section, IN PERESOURCE PagingIoResource,
                     IN PLARGE_INTEGER Offset, IN ULONG Range, OUT PIO_STATUS_BLOCK IoStatus);
 
+/*
+ * The sizes of the Fcb's header to the cache manager, whichever file object
+ * keeps the file cached: CcSetFileSizes finds the shared cache map through
+ * the section, and for a file no one caches only drops what a truncation
+ * cut off. Asking CcIsFileCached first asked about this file object alone:
+ * a size changed through a non-cached handle went unseen by the cache that
+ * another handle (or the size change's own anchor) kept, and that cache read
+ * zeros past the end it knew (tests/fsx-vm.ps1).
+ */
+static __inline VOID
+Ext2SetCacheSizes(IN PFILE_OBJECT FileObject, IN PEXT2_FCB Fcb)
+{
+    CcSetFileSizes(FileObject, (PCC_FILE_SIZES)&Fcb->Header.AllocationSize);
+}
+
 NTSTATUS
 Ext2Write (IN PEXT2_IRP_CONTEXT IrpContext);
 

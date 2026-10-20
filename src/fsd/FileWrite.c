@@ -494,9 +494,7 @@ Ext2WriteExtend(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEXT2_
         return STATUS_UNEXPECTED_IO_ERROR;
     }
 
-    if (CcIsFileCached(W->FileObject)) {
-        CcSetFileSizes(W->FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
-    }
+    Ext2SetCacheSizes(W->FileObject, Fcb);
 
     W->FileObject->Flags |= FO_FILE_SIZE_CHANGED | FO_FILE_MODIFIED;
     W->FileSizesChanged = TRUE;
@@ -665,6 +663,19 @@ Ext2WriteNoncached(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEX
 
     if (!W->PagingIo && Outer &&
         W->ByteOffset.QuadPart > Fcb->Header.ValidDataLength.QuadPart) {
+        /* Zeroing the page the gap starts in reads that page, and Mm reads
+           the pages after it with it: past the valid data length, so as
+           zeros, and into the range this write is about to fill on disk.
+           The purge before the zeroing (Ext2WriteUserRange) cannot have
+           caught them; left, they hid the write from every cached read
+           (tests/fsx-vm.ps1: an end of file inside a page, then a write
+           past it through a non-cached handle). */
+        if (W->Ccb != NULL && Fcb->SectionObject.DataSectionObject != NULL) {
+            Status = Ext2WriteFlushCached(Vcb, W);
+            if (!NT_SUCCESS(Status)) {
+                return Status;
+            }
+        }
         /* let this irp wait, since it has to be synchronous */
         SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
         Status = Ext2ZeroData(IrpContext, W->FileObject,
@@ -694,8 +705,8 @@ Ext2WriteNoncached(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEX
         Ext2WriteAdvanceValid(Fcb, W->ByteOffset.QuadPart + W->Length)) {
 
         W->FileSizesChanged = TRUE;
-        if (!W->PagingIo && CcIsFileCached(W->FileObject)) {
-            CcSetFileSizes(W->FileObject, (PCC_FILE_SIZES)(&(Fcb->Header.AllocationSize)));
+        if (!W->PagingIo) {
+            Ext2SetCacheSizes(W->FileObject, Fcb);
         }
 
         DEBUG(DL_IO, ("Ext2WriteFile: %wZ written FS: %I64xh FA: %I64xh BO: %I64xh LEN: %u\n",
