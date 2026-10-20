@@ -15,12 +15,48 @@ Ext2WriteComplete (IN PEXT2_IRP_CONTEXT IrpContext);
 NTSTATUS
 Ext2WriteFile (IN PEXT2_IRP_CONTEXT IrpContext);
 
-/* Zeros [Start, End) through the cache. Alignment alone does not prove
-   that the range is unwritten: truncation can leave initialized blocks
-   which must be cleared. STATUS_PENDING when the zeroing would have to
-   wait and may not; the error of a zeroing that failed otherwise. It used
-   to answer FALSE for both, and the write was queued again, and failed
-   again, for ever. */
+/* zeros copied into [Start, End) through the cache, a chunk at a time:
+   FALSE when a copy would have to wait and may not */
+static BOOLEAN
+Ext2CopyZeros(IN PFILE_OBJECT FileObject, IN PLARGE_INTEGER Start, IN PLARGE_INTEGER End,
+              IN BOOLEAN Wait)
+{
+    ULONG           Chunk = (ULONG)min((ULONGLONG)(End->QuadPart - Start->QuadPart), 65536ULL);
+    PVOID           Zeros = Ext2AllocatePool(PagedPool, Chunk, EXT2_DATA_MAGIC);
+    LARGE_INTEGER   Offset = *Start;
+    BOOLEAN         Done = TRUE;
+
+    if (Zeros == NULL) {
+        ExRaiseStatus(STATUS_INSUFFICIENT_RESOURCES);
+    }
+    RtlZeroMemory(Zeros, Chunk);
+    __try {
+        while (Done && Offset.QuadPart < End->QuadPart) {
+            ULONG Length = (ULONG)min((ULONGLONG)(End->QuadPart - Offset.QuadPart), (ULONGLONG)Chunk);
+            Done = CcCopyWrite(FileObject, &Offset, Length, Wait, Zeros);
+            Offset.QuadPart += Length;
+        }
+    } __finally {
+        Ext2FreePool(Zeros, EXT2_DATA_MAGIC);
+    }
+    return Done;
+}
+
+/*
+ * Zeros [Start, End) through the cache. Alignment alone does not prove that
+ * the range is unwritten: truncation can leave initialized blocks which must
+ * be cleared. STATUS_PENDING when the zeroing would have to wait and may
+ * not; the error of a zeroing that failed otherwise. It used to answer FALSE
+ * for both, and the write was queued again, and failed again, for ever.
+ *
+ * The cache manager zeroes through a file object it caches. A non-cached
+ * handle of a file that another handle, or a size change, keeps cached has
+ * no private map of its own, and CcZeroData went down its cached path
+ * without one: an access violation, reported as a failed write
+ * (tests/fsx-vm.ps1). The map is anchored on the handle first, as a size
+ * change anchors it (FileSet.c), and a non-cached handle copies zeros
+ * through it: CcZeroData wants sector-aligned offsets from one.
+ */
 NTSTATUS
 Ext2ZeroData (
     IN PEXT2_IRP_CONTEXT IrpContext,
@@ -29,12 +65,21 @@ Ext2ZeroData (
     IN PLARGE_INTEGER    End
     )
 {
+    PEXT2_FCB       Fcb = (PEXT2_FCB)FileObject->FsContext;
+    BOOLEAN         Wait = Ext2CanIWait();
     NTSTATUS        Status = STATUS_SUCCESS;
 
     ASSERT (End && Start && End->QuadPart > Start->QuadPart);
 
     __try {
-        if (!CcZeroData(FileObject, Start, End, Ext2CanIWait())) {
+        if (FileObject->PrivateCacheMap == NULL) {
+            CcInitializeCacheMap(FileObject, (PCC_FILE_SIZES)&Fcb->Header.AllocationSize, FALSE,
+                                 &Ext2Global->CacheManagerCallbacks, Fcb);
+            CcSetReadAheadGranularity(FileObject, READ_AHEAD_GRANULARITY);
+        }
+        if (IsFlagOn(FileObject->Flags, FO_NO_INTERMEDIATE_BUFFERING) ?
+                !Ext2CopyZeros(FileObject, Start, End, Wait) :
+                !CcZeroData(FileObject, Start, End, Wait)) {
             Status = STATUS_PENDING;
         }
     } __except (FsRtlIsNtstatusExpected(GetExceptionCode()) ?
