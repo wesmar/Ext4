@@ -541,8 +541,13 @@ Ext2ReadCheck(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEXT2_RE
  * The locks of a read. A paging read holds PagingIoResource shared, which
  * keeps the file from shrinking under it. A caller's read holds
  * MainResource shared and passes the byte range locks; a non-cached one of
- * a file that is also cached first writes back and purges what the cache
- * holds, under MainResource exclusive, so that the disk is what it reads.
+ * a file that is also cached first writes back the dirty pages of its own
+ * range, under MainResource exclusive, so that the disk holds what it
+ * reads. The cache is kept, as NTFS and FAT keep it: its pages of the range
+ * now equal the disk, and pages outside it may still be dirty. A purge of
+ * the whole file here dropped them - a cached write past a large hole, read
+ * back unbuffered from the start, lost all but the first chunk's range
+ * (tests/fsx-vm.ps1, seed 1).
  */
 static NTSTATUS
 Ext2ReadLock(IN PEXT2_IRP_CONTEXT IrpContext, IN OUT PEXT2_READ R)
@@ -569,13 +574,6 @@ Ext2ReadLock(IN PEXT2_IRP_CONTEXT IrpContext, IN OUT PEXT2_READ R)
         if (!NT_SUCCESS(R->Irp->IoStatus.Status)) {
             return R->Irp->IoStatus.Status;     /* it used to fail as STATUS_UNSUCCESSFUL */
         }
-        ClearLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
-
-        /* the paging I/O in flight first */
-        ExAcquireResourceExclusiveLite(&Fcb->PagingIoResource, TRUE);
-        ExReleaseResourceLite(&Fcb->PagingIoResource);
-        CcPurgeCacheSection(&Fcb->SectionObject, NULL, 0, FALSE);
-
         ExConvertExclusiveToSharedLite(&Fcb->MainResource);
 
     } else {
