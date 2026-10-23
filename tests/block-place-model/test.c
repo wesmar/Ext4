@@ -7,19 +7,25 @@
  *
  * Part 1, the rules: random volumes - groups of any density, some not seen
  * yet (bound = free count), blocks freed but not committed, a short last
- * group - and random requests. Every answer must be the reference's (P1,
- * else the first size at which any group has a run, the first such group
- * from the goal's, its best fit), the run free and no longer than Need,
- * every group's longest-run bound exact after a take, and T2: with no run
- * of Need anywhere, the run taken is longer than half the longest.
+ * group, other files' windows - and random requests. Every answer must be
+ * the reference's (P1 around other windows, else the first size at which
+ * any group has a run outside them - at the sizes up to Need, failing
+ * that, any run, taken from its end - the first such group from the
+ * goal's, its best fit), the run free and no longer than Need, every
+ * group's longest-run bound exact after a take, the windows after it the
+ * reference's, T2: with no run of Need anywhere, the run taken is longer
+ * than half the longest, and T4: blocks in another file's window only
+ * when no run as long lies outside the windows.
  *
  * Part 2, aging: a 2 GiB volume of 4 KiB blocks aged by the workload of
- * tests\aging-vm.ps1, then streams, copies, parallel streams and small
- * files written onto it - once with the production placement and once with
- * the one before it (the first run of Need from the goal on, else the first
- * run of any length): the files' fragments, and how many small files lie
- * right after the one written before them. Then T1: a file grown alone at
- * its end has at most 2 + log2(final / first) fragments.
+ * tests\aging-vm.ps1, then streams, copies, parallel streams, small files
+ * and two files written a block at a time in turn onto it - with the
+ * placement before this one (the first run of Need from the goal on, else
+ * the first run of any length), with the production placement keeping no
+ * windows, and with it as it is: the files' fragments, and how many small
+ * files lie right after the one written before them. Then T1: a file grown
+ * at its end has at most 2 + log2(final / first) fragments, alone and with
+ * another file written between its writes.
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -60,6 +66,9 @@ typedef struct VOLUME {
     LONG    Longest[MAX_GROUPS];        /* -1: not seen */
     ULONG   FreeCount[MAX_GROUPS];
     int     Journaled;                  /* the request may take freed blocks */
+    EXT2_WINDOWS Windows;
+    ULONG   Owner;                      /* the file the request is for */
+    int     NoWindows;                  /* the placement before windows: none kept */
     ULONG   Takes;
 } VOLUME;
 
@@ -83,9 +92,13 @@ static void TakeView(const VOLUME *V, ULONG g, EXT2_BLOCK_VIEW *View)
 
 static int Taken(const EXT2_BLOCK_VIEW *View, ULONG i)
 {
+    ULONG c;
     if (i >= View->Bits) return 1;
     if ((View->Disk[i / 64] >> (i % 64)) & 1) return 1;
-    return View->Freed[0] && ((View->Freed[0][i / 64] >> (i % 64)) & 1);
+    if (View->Freed[0] && ((View->Freed[0][i / 64] >> (i % 64)) & 1)) return 1;
+    for (c = 0; c < View->CutCount; c++)
+        if (i >= View->Cuts[c].Start && i - View->Cuts[c].Start < View->Cuts[c].Count) return 1;
+    return 0;
 }
 
 static ULONG RefRunAt(const EXT2_BLOCK_VIEW *View, ULONG From)
@@ -136,12 +149,12 @@ static unsigned int ModelBound(void *Context, unsigned int g)
     return V->Longest[g] < 0 ? V->FreeCount[g] : (unsigned int)V->Longest[g];
 }
 
-static int ModelTake(void *Context, unsigned int g, unsigned int Hint, unsigned int Want,
-                     unsigned int Need, unsigned int *Index, unsigned int *Count)
+static int ModelTake(void *Context, const EXT2_PLACE_TAKE *Ask, unsigned int *Index, unsigned int *Count)
 {
     VOLUME         *V = Context;
     EXT2_BLOCK_VIEW View;
-    ULONG           Length = 0, At = 0;
+    EXT2_BLOCK_CUT  Cuts[EXT2_WINDOW_SLOTS], After;
+    ULONG           g = Ask->Group, Length = 0, At = 0, n;
 
     V->Takes++;
     if (V->FreeCount[g] == 0) {
@@ -152,29 +165,50 @@ static int ModelTake(void *Context, unsigned int g, unsigned int Hint, unsigned 
         DiskView(V, g, &View);
         V->Longest[g] = (LONG)Ext2ViewLongestRun(&View);
     }
+    n = Ext2WindowCuts(&V->Windows, g, V->Owner, Cuts);
+    if (Ask->Any && n == 0)
+        return EXT2_PLACE_NONE;
     TakeView(V, g, &View);
-    if (Want == 0) {
-        At = Hint;
-        Length = Ext2ViewRunAt(&View, Hint);
-    } else if (!Ext2ViewBestRun(&View, Hint, Want, &At, &Length)) {
+    if (!Ask->Any) {
+        View.Cuts = Cuts;
+        View.CutCount = n;
+    }
+    if (Ask->Want == 0) {
+        At = Ask->Hint;
+        Length = Ext2ViewRunAt(&View, At);
+    } else if (!Ext2ViewBestRun(&View, Ask->Hint, Ask->Want, &At, &Length)) {
         Length = 0;
     }
     if (Length == 0)
         return EXT2_PLACE_NONE;
 
-    *Index = At;
-    *Count = Need < Length ? Need : Length;
-    SetRun(V, g, At, *Count, 1);
+    *Count = Ask->Need < Length ? Ask->Need : Length;
+    *Index = Ask->Any ? At + Length - *Count : At;
+    SetRun(V, g, *Index, *Count, 1);
+    Ext2WindowTaken(&V->Windows, g, *Index, *Count);
+    if (Ask->Room != 0 && !V->NoWindows) {
+        After.Start = *Index + *Count;
+        After.Count = Ext2ViewRunAt(&View, After.Start);
+        if (After.Count > Ask->Room) After.Count = Ask->Room;
+        Ext2WindowSet(&V->Windows, V->Owner, g, After);
+    }
     return 0;
 }
 
-static int Place(VOLUME *V, ULONG Group, ULONG Hint, ULONG Need, ULONG Room, int AtGoal,
+static int Place(VOLUME *V, ULONG Owner, ULONG Group, ULONG Hint, ULONG Need, ULONG Room, int AtGoal,
                  unsigned int *g, unsigned int *Index, unsigned int *Count)
 {
     EXT2_PLACE_IO   Io = { V, V->Groups, V->GroupBits, ModelBound, ModelTake };
     EXT2_PLACE      Request = { Group, Hint, Need, Room, AtGoal };
 
+    V->Owner = Owner;
     return Ext2PlaceBlocks(&Io, &Request, g, Index, Count);
+}
+
+static void CloseFile(VOLUME *V, ULONG Owner)
+{
+    EXT2_BLOCK_CUT None = { 0, 0 };
+    Ext2WindowSet(&V->Windows, Owner, 0, None);
 }
 
 /* ---------------------------------------------------------------- part 1 */
@@ -187,14 +221,34 @@ static void Fail(ULONG Case, const char *What, ULONG a, ULONG b, ULONG c, ULONG 
         printf("FAIL case %lu %s: %lu %lu / %lu %lu\n", Case, What, a, b, c, d);
 }
 
+/* the reference's windows: a plain list, changed by its own rules */
+typedef struct REFWIN { ULONG Owner, Group, Start, Count; } REFWIN;
+#define REF_WINDOWS 10
+
+/* the windows of Group not Owner's, as cuts */
+static ULONG RefCuts(const REFWIN *W, ULONG nW, ULONG Group, ULONG Owner, EXT2_BLOCK_CUT *Cuts)
+{
+    ULONG i, n = 0;
+    for (i = 0; i < nW; i++)
+        if (W[i].Group == Group && W[i].Owner != Owner) {
+            Cuts[n].Start = W[i].Start;
+            Cuts[n].Count = W[i].Count;
+            n++;
+        }
+    return n;
+}
+
 /* the reference answer on the volume before: the shortest run of at least
-   Want (ties: first start from Hint, wrapping), by bits */
-static int RefBest(const VOLUME *V, ULONG g, ULONG Hint, ULONG Want, ULONG *Index, ULONG *Length)
+   Want (ties: first start from Hint, wrapping), by bits, Cuts taken */
+static int RefBest(const VOLUME *V, ULONG g, ULONG Hint, ULONG Want, const EXT2_BLOCK_CUT *Cuts, ULONG nCuts,
+                   ULONG *Index, ULONG *Length)
 {
     EXT2_BLOCK_VIEW View;
     ULONG           Best = 0, BestKey = 0, p = 0;
 
     TakeView(V, g, &View);
+    View.Cuts = Cuts;
+    View.CutCount = nCuts;
     if (Hint >= View.Bits) Hint = 0;
     while (p < View.Bits) {
         ULONG n, Key;
@@ -210,33 +264,91 @@ static int RefBest(const VOLUME *V, ULONG g, ULONG Hint, ULONG Want, ULONG *Inde
     return Best != 0;
 }
 
-static int RefPlace(const VOLUME *V, ULONG Group, ULONG Hint, ULONG Need, ULONG Room, int AtGoal,
-                    ULONG *g, ULONG *Index, ULONG *Count)
+/* the windows after Owner took [Index, Index + Count) of g with Room, the
+   free run after the blocks being Rest long */
+static void RefWindowsAfter(REFWIN *W, ULONG *nW, ULONG Owner, ULONG g, ULONG Index, ULONG Count,
+                            ULONG Room, ULONG Rest)
+{
+    ULONG i, End = Index + Count;
+
+    for (i = 0; i < *nW; ) {
+        ULONG Last = W[i].Start + W[i].Count;
+        if (W[i].Group == g && W[i].Start < End && Last > Index) {
+            if (W[i].Start < Index)  W[i].Count = Index - W[i].Start;
+            else if (Last > End)     { W[i].Start = End; W[i].Count = Last - End; }
+            else                     { W[i] = W[--*nW]; continue; }
+        }
+        i++;
+    }
+    if (Room == 0)
+        return;
+    for (i = 0; i < *nW; i++)
+        if (W[i].Owner == Owner) { W[i] = W[--*nW]; break; }
+    if (Rest > Room) Rest = Room;
+    if (Rest) {
+        W[*nW].Owner = Owner; W[*nW].Group = g; W[*nW].Start = End; W[*nW].Count = Rest;
+        ++*nW;
+    }
+}
+
+static int RefPlace(const VOLUME *V, REFWIN *W, ULONG *nW, ULONG Owner, ULONG Group, ULONG Hint,
+                    ULONG Need, ULONG Room, int AtGoal, ULONG *g, ULONG *Index, ULONG *Count)
 {
     EXT2_BLOCK_VIEW View;
-    ULONG           Want, i, Length;
+    EXT2_BLOCK_CUT  Cuts[REF_WINDOWS];
+    ULONG           Want, i, Length, n, Any;
     ULONG64         Total = (ULONG64)Need + Room;
 
     if (AtGoal) {
         TakeView(V, Group, &View);
+        View.Cuts = Cuts;
+        View.CutCount = RefCuts(W, *nW, Group, Owner, Cuts);
         Length = Hint < View.Bits ? RefRunAt(&View, Hint) : 0;
         if (Length) {
             *g = Group; *Index = Hint; *Count = Need < Length ? Need : Length;
+            RefWindowsAfter(W, nW, Owner, *g, *Index, *Count, Room,
+                            *Index + *Count < View.Bits ? RefRunAt(&View, *Index + *Count) : 0);
             return 0;
         }
     }
     Want = Total < V->GroupBits ? (ULONG)Total : V->GroupBits;
     for (;;) {
-        for (i = 0; i < V->Groups; i++) {
-            ULONG h = (Group + i) % V->Groups;
-            if (RefBest(V, h, i == 0 ? Hint : 0, Want, Index, &Length)) {
-                *g = h; *Count = Need < Length ? Need : Length;
-                return 0;
+        for (Any = 0; Any < (Want <= Need ? 2u : 1u); Any++) {
+            for (i = 0; i < V->Groups; i++) {
+                ULONG h = (Group + i) % V->Groups;
+                n = RefCuts(W, *nW, h, Owner, Cuts);
+                if (Any && n == 0) continue;
+                if (RefBest(V, h, i == 0 ? Hint : 0, Want, Cuts, Any ? 0 : n, Index, &Length)) {
+                    *g = h; *Count = Need < Length ? Need : Length;
+                    if (Any) *Index += Length - *Count;
+                    TakeView(V, h, &View);
+                    View.Cuts = Cuts;
+                    View.CutCount = Any ? 0 : n;
+                    RefWindowsAfter(W, nW, Owner, h, *Index, *Count, Room,
+                                    *Index + *Count < View.Bits ? RefRunAt(&View, *Index + *Count) : 0);
+                    return 0;
+                }
             }
         }
         if (Want == 1) return EXT2_PLACE_NONE;
         Want = Want > Need ? Need : Want - Want / 2;
     }
+}
+
+/* the production table's windows as the reference's, by owner */
+static int SameWindows(const EXT2_WINDOWS *T, const REFWIN *W, ULONG nW)
+{
+    ULONG i, j, Live = 0;
+    for (i = 0; i < EXT2_WINDOW_SLOTS; i++) {
+        const EXT2_WINDOW *s = &T->Slot[i];
+        if (s->Blocks.Count == 0) continue;
+        Live++;
+        for (j = 0; j < nW; j++)
+            if (W[j].Owner == s->Owner) break;
+        if (j == nW || W[j].Group != s->Group || W[j].Start != s->Blocks.Start || W[j].Count != s->Blocks.Count)
+            return 0;
+    }
+    return Live == nW && T->Live == nW;
 }
 
 static void Fill(ULONG64 *Map, ULONG n, ULONG Density)
@@ -256,12 +368,14 @@ static void Fill(ULONG64 *Map, ULONG n, ULONG Density)
 
 static void Rules(void)
 {
-    ULONG Case, Found = 0, Adjacent = 0, Relaxed = 0;
+    ULONG Case, Found = 0, Adjacent = 0, Relaxed = 0, Windowed = 0, Into = 0;
 
     for (Case = 0; Case < RULE_CASES; Case++) {
-        ULONG g, Need, Room, Group, Hint, Longest = 0, LongestAll = 0;
+        ULONG g, Need, Room, Group, Hint, Longest = 0, LongestAll = 0, Owner, nW = 0, k;
         ULONG rg = 0, ri = 0, rc = 0;
         unsigned int pg = 0, pi = 0, pc = 0;
+        REFWIN W[REF_WINDOWS], Wb[REF_WINDOWS];
+        ULONG nWb;
         int adj, Prod, Ref;
 
         Vol.Groups = 1 + Below(Case % 32 == 0 ? 4 : 12);
@@ -282,17 +396,64 @@ static void Rules(void)
         Need = 1 + Below(Below(4) == 0 ? 4096 : 64);
         Room = Below(3) == 0 ? 0 : Below(8192);
         adj = (int)Below(2);
-        memcpy(&Before, &Vol, sizeof(Vol));
+        Owner = 1 + Below(REF_WINDOWS);
 
-        Prod = Place(&Vol, Group, Hint, Need, Room, adj, &pg, &pi, &pc);
-        Ref = RefPlace(&Before, Group, Hint, Need, Room, adj, &rg, &ri, &rc);
+        /* other files' windows - and maybe the owner's - anywhere, some at
+           the goal; the table and the reference's list alike */
+        memset(&Vol.Windows, 0, sizeof(Vol.Windows));
+        if (Below(3) != 0) {
+            ULONG Many = 1 + Below(REF_WINDOWS);
+            for (k = 0; k < Many; k++) {
+                EXT2_BLOCK_CUT w;
+                ULONG o = 1 + Below(REF_WINDOWS), j, gw = Below(Vol.Groups), b = Bits(&Vol, gw);
+                w.Start = gw == Group && Below(4) == 0 ? Hint : Below(b);
+                w.Count = 1 + Below(Below(2) ? 64 : b - w.Start);
+                if (w.Count > b - w.Start) w.Count = b - w.Start;
+                Ext2WindowSet(&Vol.Windows, o, gw, w);
+                for (j = 0; j < nW && W[j].Owner != o; j++) {}
+                W[j].Owner = o; W[j].Group = gw; W[j].Start = w.Start; W[j].Count = w.Count;
+                if (j == nW) nW++;
+            }
+        }
+        memcpy(&Before, &Vol, sizeof(Vol));
+        memcpy(Wb, W, sizeof(W));
+        nWb = nW;
+
+        Prod = Place(&Vol, Owner, Group, Hint, Need, Room, adj, &pg, &pi, &pc);
+        Ref = RefPlace(&Before, W, &nW, Owner, Group, Hint, Need, Room, adj, &rg, &ri, &rc);
         if ((Prod == 0) != (Ref == 0) || (Prod == 0 && (pg != rg || pi != ri || pc != rc))) {
             Fail(Case, "placement differs (group index count)", pg, pi, rg, ri);
             continue;
         }
+        if (!SameWindows(&Vol.Windows, W, nW))
+            Fail(Case, "windows differ", Vol.Windows.Live, nW, Owner, Room);
         if (Prod != 0)
             continue;
         Found++;
+        Windowed += nWb != 0;
+
+        /* T4: in another file's window only when no run as long lies outside them */
+        {
+            EXT2_BLOCK_CUT Cuts[REF_WINDOWS];
+            ULONG Outside = 0, n;
+            int Overlap = 0;
+            for (k = 0; k < nWb; k++)
+                if (Wb[k].Owner != Owner && Wb[k].Group == pg && Wb[k].Start < pi + pc && Wb[k].Start + Wb[k].Count > pi)
+                    Overlap = 1;
+            if (Overlap) {
+                Into++;
+                for (g = 0; g < Before.Groups; g++) {
+                    EXT2_BLOCK_VIEW View;
+                    TakeView(&Before, g, &View);
+                    n = RefCuts(Wb, nWb, g, Owner, Cuts);
+                    View.Cuts = Cuts;
+                    View.CutCount = n;
+                    Longest = RefLongest(&View);
+                    if (Longest > Outside) Outside = Longest;
+                }
+                if (Outside >= pc) Fail(Case, "T4: into a window with a run outside", pc, Outside, pg, pi);
+            }
+        }
 
         /* free before, inside the group, no more than Need */
         {
@@ -328,14 +489,14 @@ static void Rules(void)
             if (2 * pc <= LongestAll) Fail(Case, "T2: run not over half the longest", pc, LongestAll, 0, 0);
         }
     }
-    printf("rules: %lu requests, %lu placed (%lu after the owner, %lu below Need), %lu failed\n",
-           RULE_CASES, Found, Adjacent, Relaxed, Failed);
+    printf("rules: %lu requests, %lu placed (%lu after the owner, %lu below Need, %lu among windows,"
+           " %lu into one), %lu failed\n", RULE_CASES, Found, Adjacent, Relaxed, Windowed, Into, Failed);
 }
 
 /* ---------------------------------------------------------------- part 2 */
 
 typedef struct RUN { ULONG64 Start; ULONG Length; } RUN;
-typedef struct FILE_ { RUN *Runs; ULONG Count, Capacity; ULONG64 Blocks; ULONG Home; int Live; } FILE_;
+typedef struct FILE_ { RUN *Runs; ULONG Count, Capacity; ULONG64 Blocks; ULONG Home, Owner; int Live; } FILE_;
 
 #define AGE_GROUPS      16
 #define AGE_BITS        32768u          /* 128 MiB groups of 4 KiB blocks */
@@ -411,7 +572,7 @@ static int Grow(FILE_ *f, ULONG64 Need, int Stream)
             Adjacent = 1;
         }
         err = OldPolicy ? OldPlace(&Vol, Group, Hint, Ask, &g, &Index, &Count)
-                        : Place(&Vol, Group, Hint, Ask, Stream ? (ULONG)min(f->Blocks, 0xFFFFFFFFull) : 0,
+                        : Place(&Vol, f->Owner, Group, Hint, Ask, Stream ? (ULONG)min(f->Blocks, 0xFFFFFFFFull) : 0,
                                 Adjacent, &g, &Index, &Count);
         if (err) return err;
         AddRun(f, (ULONG64)g * AGE_BITS + Index, Count);
@@ -420,13 +581,28 @@ static int Grow(FILE_ *f, ULONG64 Need, int Stream)
     return 0;
 }
 
+/* the last handle closed: its window goes */
+static void Close(FILE_ *f)
+{
+    CloseFile(&Vol, f->Owner);
+}
+
 static void Delete(FILE_ *f)
 {
     ULONG i;
+    Close(f);
     for (i = 0; i < f->Count; i++)
         SetRun(&Vol, (ULONG)(f->Runs[i].Start / AGE_BITS), (ULONG)(f->Runs[i].Start % AGE_BITS), f->Runs[i].Length, 0);
     free(f->Runs);
     memset(f, 0, sizeof(*f));
+}
+
+/* file i of the aging run, new */
+static FILE_ *New(int i, ULONG Home)
+{
+    Files[i].Home = Home;
+    Files[i].Owner = (ULONG)i + 1;
+    return &Files[i];
 }
 
 /* the aging workload of aging-vm/guest.ps1, in blocks */
@@ -452,13 +628,16 @@ static void Report(const char *Name, const char *Phase, int First, int Count)
     printf("  %-10s %-9s %5lu fragments, %.2f a file (most %lu)\n", Name, Phase, n, (double)n / Count, Worst);
 }
 
-static void Age(const char *Name)
+/* Policy 0: the placement before; 1: the production one keeping no windows; 2: as it is */
+static void Age(const char *Name, int Policy)
 {
     ULONG64 Capacity = (ULONG64)AGE_GROUPS * AGE_BITS, Used = 0, Written = 0;
     int     Live[AGE_FILES], LiveCount = 0, Next_ = 0, i, m;
     ULONG   g;
 
     memset(&Vol, 0, sizeof(Vol));
+    OldPolicy = Policy == 0;
+    Vol.NoWindows = Policy == 1;
     Vol.Groups = AGE_GROUPS;
     Vol.GroupBits = Vol.LastBits = AGE_BITS;
     for (g = 0; g < AGE_GROUPS; g++) {
@@ -475,11 +654,11 @@ static void Age(const char *Name)
         int     SizeFirst = Below(3) == 0;
         if (create && Used + Size > Capacity * 80 / 100 + 16384) create = 0;
         if (create) {
-            FILE_ *f = &Files[Next_];
-            f->Home = Below(16) % AGE_GROUPS;
+            FILE_ *f = New(Next_, Below(16) % AGE_GROUPS);
             f->Live = 1;
             if (SizeFirst) Grow(f, Size, 0);
             else for (ULONG64 left = Size; left; ) { ULONG64 n = left < CHUNK ? left : CHUNK; Grow(f, n, 1); left -= n; }
+            Close(f);
             Live[LiveCount++] = Next_++;
             Used += Size;
             Written += Size;
@@ -508,18 +687,24 @@ static void Age(const char *Name)
 
     /* the measured phases, files from Next_ on */
     m = Next_;
-    for (i = 0; i < 4; i++) { Files[Next_].Home = 0; for (ULONG k = 0; k < 8192; k += 256) Grow(&Files[Next_], 256, 1); Next_++; }
+    for (i = 0; i < 4; i++) {
+        FILE_ *f = New(Next_++, 0);
+        for (ULONG k = 0; k < 8192; k += 256) Grow(f, 256, 1);
+        Close(f);
+    }
     Report(Name, "stream", m, 4);
     m = Next_;
-    for (i = 0; i < 4; i++) { Files[Next_].Home = 0; Grow(&Files[Next_], 8192, 0); Next_++; }
+    for (i = 0; i < 4; i++) { FILE_ *f = New(Next_++, 0); Grow(f, 8192, 0); Close(f); }
     Report(Name, "copy", m, 4);
     m = Next_;
+    for (i = 0; i < 4; i++) New(m + i, 0);
     for (ULONG k = 0; k < 8192; k += 256)
-        for (i = 0; i < 4; i++) { Files[m + i].Home = 0; Grow(&Files[m + i], 256, 1); }
+        for (i = 0; i < 4; i++) Grow(&Files[m + i], 256, 1);
+    for (i = 0; i < 4; i++) Close(&Files[m + i]);
     Next_ += 4;
     Report(Name, "parallel", m, 4);
     m = Next_;
-    for (i = 0; i < 2000; i++) { Files[Next_].Home = 0; Grow(&Files[Next_], 4, 1); Next_++; }
+    for (i = 0; i < 2000; i++) { FILE_ *f = New(Next_++, 0); Grow(f, 4, 1); Close(f); }
     Report(Name, "small", m, 2000);
     {
         ULONG Next = 0;
@@ -528,32 +713,39 @@ static void Age(const char *Name)
         printf("  %-10s small     %5lu of 1999 right after the file before\n", Name, Next);
     }
     m = Next_;
+    for (i = 0; i < 2; i++) New(m + i, 0);
     for (ULONG k = 0; k < 6000; k++)
-        for (i = 0; i < 2; i++) { Files[m + i].Home = 0; Grow(&Files[m + i], 1, 1); }
+        for (i = 0; i < 2; i++) Grow(&Files[m + i], 1, 1);
+    for (i = 0; i < 2; i++) Close(&Files[m + i]);
     Next_ += 2;
     Report(Name, "lockstep", m, 2);
 
     for (i = 0; i < Next_; i++) if (Files[i].Runs) Delete(&Files[i]);
 }
 
-/* T1: one file grown by Chunk at its end, on a volume whose first half is
-   cut into short runs and whose second half is free. Alone, the file has
-   at most 2 + log2(blocks / Chunk) fragments (a first run of at least
-   Chunk, then at least a doubling between two jumps); with another file
-   taking the block after its end every Every-th write, each such take
-   costs at most one jump more - reported, not bounded. */
+/* T1: a file grown by Chunk at its end, on a volume whose first half is
+   cut into short runs and whose second half is free, at most
+   2 + log2(blocks / Chunk) fragments (a first run of at least Chunk, then
+   at least a doubling between two jumps) - alone (Mode 0), and with another
+   file grown the same way between its writes (Mode 1): both files are
+   bounded, each keeping its window. Mode 2: blocks taken right after its
+   end behind the placement's back, as by a full volume's last resort, every
+   eighth write: each costs at most one jump more - reported, not bounded. */
 static void Doubling(void)
 {
-    ULONG   g, Chunk, Every;
+    static const char *Modes[] = { "alone", "+ another file written in turn", "+ the next block taken" };
+    ULONG   g, Chunk, Mode;
 
-    for (Every = 0; Every <= 8; Every += 8) {
+    for (Mode = 0; Mode < 3; Mode++) {
         for (Chunk = 1; Chunk <= 256; Chunk *= 4) {
-            FILE_   f;
-            ULONG   Takes = 0;
+            FILE_   f[2];
+            ULONG   Takes = 0, i;
             double  Bound;
 
             memset(&Vol, 0, sizeof(Vol));
-            memset(&f, 0, sizeof(f));
+            memset(f, 0, sizeof(f));
+            f[0].Owner = 1;
+            f[1].Owner = 2;
             Vol.Groups = AGE_GROUPS;
             Vol.GroupBits = Vol.LastBits = AGE_BITS;
             for (g = 0; g < AGE_GROUPS; g++) {
@@ -561,32 +753,32 @@ static void Doubling(void)
                 Vol.FreeCount[g] = CountFree(&Vol, g);
                 Vol.Longest[g] = -1;
             }
-            while (f.Blocks < 16384) {
-                if (Every && f.Count && Below(Every) == 0) {
-                    ULONG64 End = f.Runs[f.Count - 1].Start + f.Runs[f.Count - 1].Length;
+            while (f[0].Blocks < 16384) {
+                if (Mode == 2 && f[0].Count && Below(8) == 0) {
+                    ULONG64 End = f[0].Runs[f[0].Count - 1].Start + f[0].Runs[f[0].Count - 1].Length;
                     EXT2_BLOCK_VIEW View;
                     g = (ULONG)(End / AGE_BITS);
                     if (g < AGE_GROUPS) {
                         TakeView(&Vol, g, &View);
                         if (!Taken(&View, (ULONG)(End % AGE_BITS))) {
                             SetRun(&Vol, g, (ULONG)(End % AGE_BITS), 1, 1);
+                            Ext2WindowTaken(&Vol.Windows, g, (ULONG)(End % AGE_BITS), 1);
                             Takes++;
                         }
                     }
                 }
-                Grow(&f, Chunk, 1);
+                Grow(&f[0], Chunk, 1);
+                if (Mode == 1) Grow(&f[1], Chunk, 1);
             }
-            Bound = 2 + log((double)f.Blocks / Chunk) / log(2.0);
-            if (Every == 0) {
-                printf("  T1 alone: %3lu-block writes to %llu blocks: %4lu fragments (bound %.1f)\n",
-                       Chunk, f.Blocks, f.Count, Bound);
-                if (f.Count > Bound) Fail(Chunk, "T1: more fragments than the bound", f.Count, (ULONG)Bound, 0, 0);
-            } else {
-                printf("  T1 + another file taking the next block %4lu times: %3lu-block writes: %4lu fragments\n",
-                       Takes, Chunk, f.Count);
-                if (f.Count > Bound + Takes) Fail(Chunk, "T1: more than one jump a take", f.Count, (ULONG)Bound, Takes, 0);
-            }
-            free(f.Runs);
+            Bound = 2 + log((double)f[0].Blocks / Chunk) / log(2.0);
+            printf("  T1 %-30s %3lu-block writes to %llu blocks: %4lu", Modes[Mode], Chunk, f[0].Blocks, f[0].Count);
+            if (Mode == 1) printf(" and %lu", f[1].Count);
+            if (Mode == 2) printf(" fragments, %lu taken\n", Takes);
+            else printf(" fragments (bound %.1f)\n", Bound);
+            for (i = 0; i < (Mode == 1 ? 2u : 1u); i++)
+                if (f[i].Count > Bound + Takes) Fail(Chunk, "T1: more fragments than the bound", f[i].Count, (ULONG)Bound, Takes, Mode);
+            free(f[0].Runs);
+            free(f[1].Runs);
         }
     }
 }
@@ -595,8 +787,10 @@ int main(void)
 {
     Rules();
     printf("aging (2 GiB, 4 KiB blocks):\n");
-    OldPolicy = 1; Age("before");
-    OldPolicy = 0; Age("now");
+    Age("before", 0);
+    Age("no window", 1);
+    Age("now", 2);
+    OldPolicy = 0;
     Doubling();
     printf(Failed ? "BLOCK-PLACE-MODEL: FAILED\n" : "BLOCK-PLACE-MODEL: ALL PASSED\n");
     return Failed ? 1 : 0;

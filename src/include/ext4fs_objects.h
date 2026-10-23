@@ -43,6 +43,12 @@ typedef struct _EXT2_VCB {
        (ext4\BlockAllocator.c) */
     volatile LONG              *GroupLongestRun;
 
+    /* The room kept free after files that grow at their end, in memory
+       only: changed under WindowLock, taken inside a group's BlockLock,
+       never around one (ext4\BlockWindows.c, ext4\BlockAllocator.c) */
+    EXT2_WINDOWS                BlockWindows;
+    EX_PUSH_LOCK                WindowLock;
+
     /* Corruption found this mount: reports printed (the first ones only).
        The superblock write a report or a journal stop asks for, made by a
        system worker: one queued at a time, the volume's teardown waits for

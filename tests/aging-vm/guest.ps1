@@ -14,8 +14,10 @@
 # Then the measured phases, each written into a directory of its own under
 # m\ and flushed: streams (files grown by 1 MiB writes, one after another),
 # copies (size set first), parallel (streams written at once, one thread
-# each) and small files. A file's fragments are its runs of physically
-# contiguous clusters (FSCTL_GET_RETRIEVAL_POINTERS): one is the ideal.
+# each), small files, and interleave (two files grown by 4 KiB writes in
+# turn, as two logs or downloads side by side). A file's fragments are its
+# runs of physically contiguous clusters (FSCTL_GET_RETRIEVAL_POINTERS):
+# one is the ideal.
 # Last, the large files are read back around the cache, where every
 # fragment costs a request to the disk.
 #
@@ -215,9 +217,38 @@ public static class Aging {
             foreach (string p in paths)
                 Write(p, size, sizeFirst, write);
         }
+        return Measured(name, paths, size, clock);
+    }
+
+    // Files files of Size bytes into m\<name>, grown in turn by Write-byte
+    // writes from one thread: each write lands right after the other file's
+    public static string Interleave(string root, string name, int files, long size, int write) {
+        string dir = Path.Combine(root, "m\\" + name);
+        Directory.CreateDirectory(dir);
+        List<string> paths = new List<string>();
+        List<FileStream> streams = new List<FileStream>();
+        Stopwatch clock = Stopwatch.StartNew();
+        try {
+            for (int i = 0; i < files; i++) {
+                paths.Add(Path.Combine(dir, "f" + i + ".bin"));
+                streams.Add(new FileStream(paths[i], FileMode.CreateNew, FileAccess.Write, FileShare.Read, 1));
+            }
+            for (long done = 0; done < size; done += write)
+                foreach (FileStream f in streams)
+                    f.Write(Data, (int)(done % (Data.Length - write)), (int)Math.Min(write, size - done));
+            foreach (FileStream f in streams)
+                f.Flush(true);
+        } finally {
+            foreach (FileStream f in streams)
+                f.Dispose();
+        }
+        return Measured(name, paths, size, clock);
+    }
+
+    static string Measured(string name, List<string> paths, long size, Stopwatch clock) {
         double seconds = clock.Elapsed.TotalSeconds;
-        return String.Format("PHASE {0,-8} {1} x {2} KiB: {3,7:F0} ms {4,7:F1} MB/s {5}", name, files, size / 1024,
-                             seconds * 1000, files * (double)size / Mib / seconds,
+        return String.Format("PHASE {0,-10} {1} x {2} KiB: {3,7:F0} ms {4,7:F1} MB/s {5}", name, paths.Count, size / 1024,
+                             seconds * 1000, paths.Count * (double)size / Mib / seconds,
                              Describe(paths, delegate(string p) { return size; }));
     }
 
@@ -246,7 +277,7 @@ public static class Aging {
             }
         }
         double seconds = clock.Elapsed.TotalSeconds;
-        return String.Format("READ  {0,-8} {1} MiB unbuffered: {2,7:F0} ms {3,7:F1} MB/s", name, bytes / Mib,
+        return String.Format("READ  {0,-10} {1} MiB unbuffered: {2,7:F0} ms {3,7:F1} MB/s", name, bytes / Mib,
                              seconds * 1000, bytes / (double)Mib / seconds);
     }
 }
@@ -260,7 +291,8 @@ try {
     [Aging]::Phase($Root, 'copy', 4, 32MB, $true, $false, 1MB)
     [Aging]::Phase($Root, 'parallel', 4, 32MB, $false, $true, 1MB)
     [Aging]::Phase($Root, 'small', 2000, 16KB, $false, $false, 16KB)
-    foreach ($name in 'stream', 'copy', 'parallel', 'small') { [Aging]::ReadBack($Root, $name) }
+    [Aging]::Interleave($Root, 'interleave', 2, 8MB, 4KB)
+    foreach ($name in 'stream', 'copy', 'parallel', 'small', 'interleave') { [Aging]::ReadBack($Root, $name) }
 } catch {
     "!! $($_.Exception.GetBaseException().Message)"
     exit 1

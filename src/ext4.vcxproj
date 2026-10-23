@@ -87,6 +87,7 @@
     <ClCompile Include="driver\DriverUnload.c" />
     <ClCompile Include="ext4\BlockAllocator.c" />
     <ClCompile Include="ext4\BlockPlacement.c" />
+    <ClCompile Include="ext4\BlockWindows.c" />
     <ClCompile Include="ext4\MetadataBuffers.c" />
     <ClCompile Include="ext4\MetadataChecksums.c" />
     <ClCompile Include="ext4\DirectoryBlocks.c" />
@@ -242,6 +243,7 @@
     <ClInclude Include="include\common.h" />
     <ClInclude Include="include\ext4fs.h" />
     <ClInclude Include="include\RunMap.h" />
+    <ClInclude Include="include\BlockWindows.h" />
     <ClInclude Include="include\FileLimits.h" />
     <ClInclude Include="include\ext4fs_common.h" />
     <ClInclude Include="include\ext4fs_config.h" />

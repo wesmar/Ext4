@@ -58,6 +58,7 @@ Ext2ExpandLast(
     Status = Ext2NewBlock(
                  IrpContext,
                  Vcb,
+                 Mcb->Inode->i_ino,
                  (Mcb->Inode->i_ino - 1) / INODES_PER_GROUP,
                  *Hint != 0 ? (ULONGLONG)*Hint + 1 : 0,
                  Layer == 0 ? Base : 0,

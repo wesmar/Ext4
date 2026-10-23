@@ -87,6 +87,9 @@
     <ClCompile Include="ext4\BlockPlacement.c">
       <Filter>ext4</Filter>
     </ClCompile>
+    <ClCompile Include="ext4\BlockWindows.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
     <ClCompile Include="ext4\MetadataBuffers.c">
       <Filter>ext4</Filter>
     </ClCompile>
@@ -552,6 +555,9 @@
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\RunMap.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\BlockWindows.h">
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\FileLimits.h">

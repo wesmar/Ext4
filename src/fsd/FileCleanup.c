@@ -227,6 +227,11 @@ Ext2CleanupFile(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE_OBJE
     SymLinkDelete = Ext2CleanupFileDelete(FileObject, Fcb, Ccb, NameDelete);
     Ext2CleanupByteLocks(FileObject, Fcb, IrpContext->Irp);
     Ext2CleanupAllocation(IrpContext, Vcb, FileObject, Fcb);
+
+    /* no one left to write at its end: the room kept there is free for all */
+    if (Fcb->OpenHandleCount == 0) {
+        Ext2DropBlockWindow(Vcb, Fcb->Inode->i_ino);
+    }
     return SymLinkDelete;
 }
 

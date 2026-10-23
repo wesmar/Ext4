@@ -17,6 +17,9 @@
  *
  * A run is always maximal: free from its first block to its last, taken
  * (or past the group) on both sides.
+ *
+ * Other files' windows (BlockWindows.h) may be laid over the view as Cuts:
+ * their blocks then count taken too.
  */
 
 #ifndef _EXT4_BLOCK_SEARCH_H_
@@ -26,11 +29,15 @@
 #error EXT2_FREED_SLOTS (ext4fs_ext4.h) must be defined first
 #endif
 
+#include "../include/BlockWindows.h"
+
 #define EXT2_BITS_PER_WORD      64
 
 typedef struct _EXT2_BLOCK_VIEW {
     const ULONG64  *Disk;                       /* the group's bitmap block */
     const ULONG64  *Freed[EXT2_FREED_SLOTS];    /* freed, not yet reusable; NULL: none */
+    const EXT2_BLOCK_CUT *Cuts;                 /* windows of other files, CutCount of them */
+    ULONG           CutCount;
     ULONG           Bits;                       /* the searchable prefix of the group */
 } EXT2_BLOCK_VIEW, *PEXT2_BLOCK_VIEW;
 
@@ -40,11 +47,20 @@ Ext2ViewTaken(const EXT2_BLOCK_VIEW *View, ULONG Word)
 {
     ULONG64 Taken = View->Disk[Word];
     ULONG   Valid = View->Bits - Word * EXT2_BITS_PER_WORD;
+    ULONG   First = Word * EXT2_BITS_PER_WORD;
     ULONG   s;
 
     for (s = 0; s < EXT2_FREED_SLOTS; s++) {
         if (View->Freed[s] != NULL) {
             Taken |= View->Freed[s][Word];
+        }
+    }
+    for (s = 0; s < View->CutCount; s++) {
+        ULONG From = View->Cuts[s].Start, To = From + View->Cuts[s].Count;
+        if (From < First + EXT2_BITS_PER_WORD && To > First) {
+            From = From > First ? From - First : 0;
+            To = To < First + EXT2_BITS_PER_WORD ? To - First : EXT2_BITS_PER_WORD;
+            Taken |= (To - From == EXT2_BITS_PER_WORD ? ~0ULL : ((1ULL << (To - From)) - 1)) << From;
         }
     }
     if (Valid < EXT2_BITS_PER_WORD) {

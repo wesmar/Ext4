@@ -135,9 +135,14 @@ BOOLEAN  Ext2MetadataOverlaps(IN PEXT2_VCB Vcb, IN ULONGLONG Block, IN ULONGLONG
 NTSTATUS
 Ext2MaterializeBlockBitmap(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group);
 
-/* each group's longest free run, unseen until its bitmap is read (BlockAllocator.c) */
+/* each group's longest free run, unseen until its bitmap is read, and no
+   window yet (BlockAllocator.c) */
 NTSTATUS Ext2InitializeBlockRuns(IN PEXT2_VCB Vcb);
 VOID     Ext2FreeBlockRuns(IN PEXT2_VCB Vcb);
+
+/* the room kept after file Owner's end, if any, given up: its last handle
+   closed, or the file cut (BlockWindows.h) */
+VOID     Ext2DropBlockWindow(IN PEXT2_VCB Vcb, IN ULONG Owner);
 
 /* blocks for Inode, counted in its i_blocks; and given back. Room: how
    many blocks the inode may grow by after them (its size so far for a file
@@ -436,6 +441,7 @@ NTSTATUS
 Ext2NewBlock(
     IN PEXT2_IRP_CONTEXT    IrpContext,
     IN PEXT2_VCB            Vcb,
+    IN ULONG                Owner,          /* the inode the blocks are for */
     IN ULONG                GroupHint,
     IN ULONGLONG            BlockHint,
     IN ULONG                Room,

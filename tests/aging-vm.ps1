@@ -6,7 +6,7 @@
 # An empty 2 GiB ext4 volume (tests/aging-vm/image.sh) is aged through
 # ext4.sys by a seeded run of creates and deletes (aging-vm/guest.ps1), then
 # new files are written onto it - streams, copies, parallel streams, small
-# files - and each phase reports its time and its files' fragments (runs of
+# files, two files grown in turn - and each phase reports its time and its files' fragments (runs of
 # contiguous clusters; one per file is the ideal). Linux then checks the
 # volume (e2fsck -fn, no recorded error) and reports how the free space lies
 # (e2freefrag) and the measured files' extents (filefrag).

@@ -27,7 +27,7 @@ $exe = Join-Path $Output 'block-place-model.exe'
 $originalPath = $env:PATH
 try {
     $env:PATH = "$($compiler.DirectoryName);$originalPath"
-    & $compiler.FullName /nologo /W4 /WX /std:clatest "/I$PSScriptRoot/block-place-model" "/I$toolRoot/include" "/I$($sdk.FullName)/ucrt" "/I$($sdk.FullName)/shared" "/I$($sdk.FullName)/um" "$PSScriptRoot/block-place-model/test.c" "$PSScriptRoot/../src/ext4/BlockPlacement.c" "/Fe$exe" "/Fo$Output/" /link "/LIBPATH:$toolRoot/lib/x64" "/LIBPATH:$kits/Lib/$($sdk.Name)/ucrt/x64" "/LIBPATH:$kits/Lib/$($sdk.Name)/um/x64"
+    & $compiler.FullName /nologo /W4 /WX /std:clatest "/I$PSScriptRoot/block-place-model" "/I$toolRoot/include" "/I$($sdk.FullName)/ucrt" "/I$($sdk.FullName)/shared" "/I$($sdk.FullName)/um" "$PSScriptRoot/block-place-model/test.c" "$PSScriptRoot/../src/ext4/BlockPlacement.c" "$PSScriptRoot/../src/ext4/BlockWindows.c" "/Fe$exe" "/Fo$Output/" /link "/LIBPATH:$toolRoot/lib/x64" "/LIBPATH:$kits/Lib/$($sdk.Name)/ucrt/x64" "/LIBPATH:$kits/Lib/$($sdk.Name)/um/x64"
     if ($LASTEXITCODE) { throw "Block placement model compilation failed ($LASTEXITCODE)." }
     & $exe
     if ($LASTEXITCODE) { throw "Block placement model failed ($LASTEXITCODE)." }

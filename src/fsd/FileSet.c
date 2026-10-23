@@ -909,6 +909,9 @@ Ext2TruncateFile(
         return STATUS_SUCCESS;
     }
 
+    /* the end moves: the room kept after the old one goes */
+    Ext2DropBlockWindow(Vcb, Mcb->Inode->i_ino);
+
     /* inline data: to nothing is only leaving inline; else to a block first */
     if (Ext4IsInline(Mcb->Inode)) {
         status = Ext4UninlineFile(IrpContext, Vcb, Mcb, Size->QuadPart != 0);

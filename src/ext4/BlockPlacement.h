@@ -15,20 +15,35 @@
 /* what Take answers besides 0 (taken) and an error of its own */
 #define EXT2_PLACE_NONE     1               /* nothing in this group: go on */
 
+/* one Take: what to look for in a group, and what to leave behind */
+typedef struct _EXT2_PLACE_TAKE {
+    unsigned int    Group;
+    unsigned int    Hint;                   /* where to look from */
+    unsigned int    Want;                   /* 0: the run starting at Hint; else a run of at least Want */
+    unsigned int    Need;                   /* blocks wanted, at most */
+    unsigned int    Room;                   /* > 0: the owner's window after them, at most this */
+    int             Any;                    /* other files' windows count free (BlockWindows.h) */
+} EXT2_PLACE_TAKE;
+
 typedef struct _EXT2_PLACE_IO {
     void           *Context;
     unsigned int    Groups;                 /* searched: 0 .. Groups - 1 */
     unsigned int    GroupBlocks;            /* the longest run a group can have */
 
-    /* at least the longest free run of Group: exact once its bitmap was seen */
+    /* at least the longest free run of Group, windows counted free: exact
+       once its bitmap was seen */
     unsigned int  (*Bound)(void *Context, unsigned int Group);
 
-    /* Up to Need blocks of Group taken, *Index the first, *Count how many:
-       Want 0 - from the run starting at Hint; Want > 0 - from the start of
-       the shortest run of at least Want (Ext2ViewBestRun from Hint).
+    /* Up to Need blocks of Group taken, *Index the first, *Count how many.
+       Want 0: from the run starting at Hint. Want > 0: from the shortest run
+       of at least Want (Ext2ViewBestRun from Hint) - at its start, or with
+       Any, where it holds another file's window, at its end. Other files'
+       windows are taken unless Any; with Any a group that has none answers
+       EXT2_PLACE_NONE at once. Windows the blocks fell in shrink
+       (Ext2WindowTaken); with Room > 0 the owner's window becomes the free
+       run after the blocks, up to Room blocks long.
        0, EXT2_PLACE_NONE, or an error that ends the search. */
-    int           (*Take)(void *Context, unsigned int Group, unsigned int Hint, unsigned int Want,
-                          unsigned int Need, unsigned int *Index, unsigned int *Count);
+    int           (*Take)(void *Context, const EXT2_PLACE_TAKE *Ask, unsigned int *Index, unsigned int *Count);
 } EXT2_PLACE_IO;
 
 typedef struct _EXT2_PLACE {

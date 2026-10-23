@@ -4,8 +4,10 @@
  * The production block search (src\ext4\BlockSearch.h) against a bit-by-bit
  * reference of the same contract, on deterministic random groups: sizes
  * that are not whole words, junk past the end of the last word, densities
- * from empty to full, zero to two overlays of freed blocks, any hint and
- * any wanted length. Every answer must be the reference's: the run at a
+ * from empty to full, zero to two overlays of freed blocks, zero to four
+ * cuts (other files' windows: in a word, across words, whole words, past
+ * the end), any hint and any wanted length. Every answer must be the
+ * reference's: the run at a
  * block, the best fit (shortest run of at least Want, the first from the
  * hint among equals, a run counted whole where it starts) and the longest
  * run; and every run returned must be free in the view and inside the group.
@@ -55,6 +57,11 @@ static int RefTaken(const EXT2_BLOCK_VIEW *View, ULONG i)
     }
     for (s = 0; s < EXT2_FREED_SLOTS; s++) {
         if (View->Freed[s] != NULL && Bit(View->Freed[s], i)) {
+            return 1;
+        }
+    }
+    for (s = 0; s < View->CutCount; s++) {
+        if (i >= View->Cuts[s].Start && i - View->Cuts[s].Start < View->Cuts[s].Count) {
             return 1;
         }
     }
@@ -164,12 +171,13 @@ int main(void)
 
     for (Case = 0; Case < MODEL_CASES; Case++) {
         EXT2_BLOCK_VIEW View;
+        EXT2_BLOCK_CUT Cuts[4];
         ULONG Bits = (Case % MODEL_FULL_EVERY == 0) ? MODEL_MAX_BITS : 1 + Below(4096);
         ULONG Hint = Below(Bits + 64);            /* past the end too */
         ULONG Want = 1 + Below(Below(8) == 0 ? 2048 : 64);
         ULONG Slots = Below(3);
         ULONG GotIndex = 0, GotLength = 0, RefIndex = 0, RefLength = 0;
-        ULONG At = Below(Bits + 8), GotAt, RefAt;
+        ULONG At = Below(Bits + 8), GotAt, RefAt, c;
         BOOLEAN Got, Ref;
 
         Fill(Disk, Bits, Below(257));
@@ -179,6 +187,12 @@ int main(void)
         View.Freed[0] = Slots >= 1 ? FreedA : NULL;
         View.Freed[1] = Slots >= 2 ? FreedB : NULL;
         View.Bits = Bits;
+        View.Cuts = Cuts;
+        View.CutCount = Below(5);
+        for (c = 0; c < View.CutCount; c++) {
+            Cuts[c].Start = Below(4) == 0 ? 64 * Below(Bits / 64 + 1) : Below(Bits + 8);
+            Cuts[c].Count = Below(4) == 0 ? 64 * (1 + Below(3)) : 1 + Below(Below(2) ? 8 : 300);
+        }
 
         /* the run at a block */
         GotAt = Ext2ViewRunAt(&View, At);

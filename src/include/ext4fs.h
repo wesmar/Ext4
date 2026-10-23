@@ -19,6 +19,7 @@
 #include "ext4fs_config.h"
 #include "ext4fs_global.h"
 #include "RunMap.h"
+#include "BlockWindows.h"
 #include "ext4fs_objects.h"
 #include "ext4fs_common.h"
 #include "FileLimits.h"
