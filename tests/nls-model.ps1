@@ -67,11 +67,10 @@ try {
         "static const PROFILE Profiles[] = {`n" + ($rows-join"`n") + "`n};`n"
     [IO.File]::WriteAllText((Join-Path $Output 'profiles.h'),$header,[Text.UTF8Encoding]::new($false))
     $directorySource = Get-Content -Raw -LiteralPath "$PSScriptRoot/../src/ext4/DirectoryOperations.c"
-    $builderStart = $directorySource.IndexOf('struct dentry *Ext2BuildEntry(')
-    $builderEnd = $directorySource.IndexOf("NTSTATUS`r`nExt2AddEntry", $builderStart)
-    if ($builderEnd -lt 0) { $builderEnd = $directorySource.IndexOf("NTSTATUS`nExt2AddEntry", $builderStart) }
-    if ($builderStart -lt 0 -or $builderEnd -lt 0) { throw 'Production dentry builder extraction failed.' }
-    [IO.File]::WriteAllText((Join-Path $Output 'builder.h'),$directorySource.Substring($builderStart,$builderEnd-$builderStart),[Text.UTF8Encoding]::new($false))
+    # the function alone, to its closing brace: what follows it is not the model's
+    $builder = [regex]::Match($directorySource.Replace("`r`n","`n"), '(?ms)^struct dentry \*Ext2BuildEntry\(.*?^\}')
+    if (-not $builder.Success) { throw 'Production dentry builder extraction failed.' }
+    [IO.File]::WriteAllText((Join-Path $Output 'builder.h'),$builder.Value + "`n",[Text.UTF8Encoding]::new($false))
     $builderObject = Join-Path $Output 'builder.obj'
     & $compiler.FullName @options /c "/I$Output" "$PSScriptRoot/nls-model/builder.c" "/Fo$builderObject"
     if($LASTEXITCODE) {throw 'Production dentry builder model compilation failed.'}

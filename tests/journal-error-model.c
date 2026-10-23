@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "JournalFormat.h"      /* JfTidAtLeast, as the production code compares transaction IDs */
 #define IN
 #define TRUE 1
 #define FALSE 0

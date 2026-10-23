@@ -24,7 +24,7 @@ $exe = Join-Path $Output 'journal-error-model.exe'
 $oldPath = $env:PATH
 try {
     $env:PATH = "$($compiler.DirectoryName);$oldPath"
-    & $compiler.FullName /nologo /O2 /W4 /WX /std:clatest "/I$toolRoot/include" "/I$($sdk.FullName)/ucrt" "/I$($sdk.FullName)/shared" "/I$($sdk.FullName)/um" $generated "/Fe$exe" "/Fo$Output/model.obj" /link "/LIBPATH:$toolRoot/lib/$Architecture" "/LIBPATH:$kits/Lib/$($sdk.Name)/ucrt/$Architecture" "/LIBPATH:$kits/Lib/$($sdk.Name)/um/$Architecture"
+    & $compiler.FullName /nologo /O2 /W4 /WX /std:clatest "/I$PSScriptRoot/../src/journal" "/I$toolRoot/include" "/I$($sdk.FullName)/ucrt" "/I$($sdk.FullName)/shared" "/I$($sdk.FullName)/um" $generated "/Fe$exe" "/Fo$Output/model.obj" /link "/LIBPATH:$toolRoot/lib/$Architecture" "/LIBPATH:$kits/Lib/$($sdk.Name)/ucrt/$Architecture" "/LIBPATH:$kits/Lib/$($sdk.Name)/um/$Architecture"
     if ($LASTEXITCODE) { throw "Journal error model compilation failed ($LASTEXITCODE)." }
     & $exe
     if ($LASTEXITCODE) { throw "Journal error model failed ($LASTEXITCODE)." }
