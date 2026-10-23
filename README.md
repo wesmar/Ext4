@@ -47,7 +47,7 @@
 
 > **`ext4.sys`** is a native Windows kernel-mode file system driver for ext2, ext3 and ext4 volumes. It registers with the I/O manager, cache manager and mount manager. An ext4 partition receives a drive letter, appears in Explorer and Disk Management, and supports normal Windows file operations: create, write, rename, map and delete. Metadata updates pass through a **jbd2 journal** that Linux can replay. Writes use **unwritten extents** with Linux-compatible on-disk semantics. The validation pipeline checks Windows-written files from Linux using **`e2fsck` and SHA-256**.
 >
-> The codebase retains parts of **Ext2Fsd** by Matt Wu, **Ext4Fsd** by Bo Branten and Linux ext4/jbd2. Their code, algorithms and licensing scope are identified in [Code Lineage and Redesign](#code-lineage-and-redesign), where a map of every file shows the measured result: 74 % of the project's code lines are written or generated in this project. The active Windows paths were then reorganized, rewritten and tested from Windows through to Linux media verification.
+> The codebase retains parts of **Ext2Fsd** by Matt Wu, **Ext4Fsd** by Bo Branten and Linux ext4/jbd2. Their code, algorithms and licensing scope are identified in [Code Lineage and Redesign](#code-lineage-and-redesign), where a map of every file shows the measured result: 75 % of the project's code lines are written or generated in this project. The active Windows paths were then reorganized, rewritten and tested from Windows through to Linux media verification.
 
 ---
 
@@ -101,7 +101,7 @@ Design rules the code follows:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/lineage/summary-dark.svg">
-  <img src="assets/lineage/summary.svg" width="100%" alt="74 % of the project's 75 276 code lines are written or generated in this project: 53.7 % by hand, 20.7 % by its own generators; 23.5 % still match Ext2Fsd, 2.0 % Ext4Fsd and 0.2 % Linux">
+  <img src="assets/lineage/summary.svg" width="100%" alt="75 % of the project's 76 395 code lines are written or generated in this project: 54.4 % by hand, 20.4 % by its own generators; 23.1 % still match Ext2Fsd, 2.0 % Ext4Fsd and 0.2 % Linux">
 </picture>
 
 <picture>
@@ -123,9 +123,9 @@ Every code file of the driver, `ext4ctl.exe`, the tests and the generators, size
 
 I developed the current Windows architecture around explicit object lifetimes, per-volume transaction ownership and bounded error handling. The active write, allocation, journal, mount, unload and security paths have been replaced or substantially rewritten, with modules organised by responsibility. I verify their behaviour with production-code models and Windows-to-Linux media checks. Mathematical precision guides this work: explicit invariants, bounded state transitions, clear ownership and measured hot paths.
 
-The table below records retained components and their technical lineage. Attribution and licence notices remain with the source. I am continuing the rewrite toward self-contained, independently authored modules, with MIT licensing as a long-term goal for an independent implementation. Seven such modules are MIT-licensed so far. The case folding of casefolded directories, `src/unicode` - tables generated from the Unicode Character Database, the normalizer and their interface - is written from its specification and produces exactly the bytes Linux produces. The code page converters, `src/nls/CharsetMap.c`, the 37 `nls_<code page>.c` files and EUC-JP, are generated from the published Microsoft, ISO 8859, KOI8 and JIS X 0212 mapping tables in a representation of my own; the inherited converters serve only as the reference they are proven equal to. The red-black tree under the buffer heads, the run map and the htree reader, `src/linux/rbtree.c`, is written anew from its rules, each repair once for both mirror images, and checked against a sorted array. The journal's recovery side - the log format (`src/journal/JournalFormat.h`), the replay (`JournalReplay.c`) and the loading of a journal at mount (`JournalLoad.c`) - is written from the rules jbd2 follows, not from its code; the engine that writes the log uses the same format definitions. The orphan cleanup at mount, `src/ext4/Orphans.c`, is new. So are the directories - the name hashes, a directory's blocks and their hash index, the multiset of its caseless names (`NameHash.c`, `DirBlock.c`, `DirIndex.c`, `NameSet.c`) and their use in the driver - and the extent tree (`ExtentCore.c`, `ExtentFile.c`): each written from the rules of the format and proven against a model before the driver used it (see Testing). The current combined driver remains `GPL-2.0-only`.
+The table below records retained components and their technical lineage. Attribution and licence notices remain with the source. I am continuing the rewrite toward self-contained, independently authored modules, with MIT licensing as a long-term goal for an independent implementation. Eight such modules are MIT-licensed so far. The case folding of casefolded directories, `src/unicode` - tables generated from the Unicode Character Database, the normalizer and their interface - is written from its specification and produces exactly the bytes Linux produces. The code page converters, `src/nls/CharsetMap.c`, the 37 `nls_<code page>.c` files and EUC-JP, are generated from the published Microsoft, ISO 8859, KOI8 and JIS X 0212 mapping tables in a representation of my own; the inherited converters serve only as the reference they are proven equal to. The red-black tree under the buffer heads, the run map and the htree reader, `src/linux/rbtree.c`, is written anew from its rules, each repair once for both mirror images, and checked against a sorted array. The journal's recovery side - the log format (`src/journal/JournalFormat.h`), the replay (`JournalReplay.c`) and the loading of a journal at mount (`JournalLoad.c`) - is written from the rules jbd2 follows, not from its code; the engine that writes the log uses the same format definitions. The orphan cleanup at mount, `src/ext4/Orphans.c`, is new. So are the directories - the name hashes, a directory's blocks and their hash index, the multiset of its caseless names (`NameHash.c`, `DirBlock.c`, `DirIndex.c`, `NameSet.c`) and their use in the driver - the extent tree (`ExtentCore.c`, `ExtentFile.c`) and the placement of new blocks (`BlockPlacement.c`): each written from the rules of the format, or of the problem, and proven against a model before the driver used it (see Testing). The current combined driver remains `GPL-2.0-only`.
 
-How much of the code is new is measured, not estimated. Of the 258 379 C tokens written by hand - comments and the generated tables (code pages, case folding, NTSTATUS names) left out - **59.0 %** lie in no run of twelve tokens that also occurs in an origin. **37.1 %** still match Ext2Fsd as Matt Wu left it in Ext3Fsd; **3.7 %** match Ext4Fsd; **0.2 %** matches Linux v6.6 directly. Counted by code line, a line going to the origin of most of its tokens, the driver's hand-written code is 54.2 % new; with `ext4ctl.exe`, the tests and the generators, the project's 75 276 code lines are 53.7 % written by hand and 20.7 % generated by its own tools (the pictures above). The rewritten subsystems are 92-98 % new: the journal (98 %), case folding (97 %), the extent tree (96 %), the code pages (93 %) and the directory index (92 %); the block allocator is 88 % new, the unload 83 % and the name cache 81 %. The retained share sits mostly in the I/O request handlers (`src/fsd`, 30 % of it), the older on-disk code - metadata checksums, indirect blocks, group descriptors, inode storage (21 %) - and the headers (20 %). Exact runs count renamed code as new. A stricter count replaces every identifier, number and string by its kind and compares runs of twenty tokens, so that code which was only renamed counts as inherited too: by it the new share is 41.8 %. `tools/lineage/lineage.py` repeats the measurement.
+How much of the code is new is measured, not estimated. Of the 259 768 C tokens written by hand - comments and the generated tables (code pages, case folding, NTSTATUS names) left out - **59.2 %** lie in no run of twelve tokens that also occurs in an origin. **36.9 %** still match Ext2Fsd as Matt Wu left it in Ext3Fsd; **3.7 %** match Ext4Fsd; **0.2 %** matches Linux v6.6 directly. Counted by code line, a line going to the origin of most of its tokens, the driver's hand-written code is 54.4 % new; with `ext4ctl.exe`, the tests and the generators, the project's 76 395 code lines are 54.4 % written by hand and 20.4 % generated by its own tools (the pictures above). The rewritten subsystems are 92-98 % new: the journal (98 %), case folding (97 %), the extent tree (96 %), block allocation with its placement, search, deferred reuse and metadata map (95 %), the code pages (93 %) and the directory index (92 %); the unload is 83 % new and the name cache 81 %. The retained share sits mostly in the I/O request handlers (`src/fsd`, 30 % of it), the older on-disk code - metadata checksums, indirect blocks, group descriptors, inode storage (21 %) - and the headers (20 %). Exact runs count renamed code as new. A stricter count replaces every identifier, number and string by its kind and compares runs of twenty tokens, so that code which was only renamed counts as inherited too: by it the new share is 41.9 %. `tools/lineage/lineage.py` repeats the measurement.
 
 | Source project | Attribution | Retained components and lineage |
 |---|---|---|
@@ -302,6 +302,7 @@ The design reduces work per I/O and contention between independent files.
 | Driver-owned 64-bit red-black run map | O(log n) lookup, O(n) sequential traversal and merged contiguous mappings without physical-address truncation |
 | Unwritten preallocation | Growing an extent-mapped file reserves blocks; only the initialized tail needs explicit zeroing |
 | Allocation goals based on the inode's block group | Preserves locality and spreads allocations across the volume |
+| Best-fit placement with room to grow, over per-group longest-run bounds (see [Block placement](#block-placement)) | A file continues its last extent where it can and otherwise gets a run for twice its size; on an aged volume a streamed 32 MiB file has 5 fragments instead of 88 |
 | Word-at-a-time block search over the bitmap and pending-free overlays | Finds contiguous runs while excluding file-data blocks whose freeing transaction has not committed |
 | Sorted, merged volume-wide metadata ranges | O(log R) overlap checks protect reserved structures, including relocated `flex_bg` metadata |
 | CPU-scaled lock stripes for names, blocks and inodes | Independent groups and directories can progress concurrently |
@@ -329,6 +330,32 @@ For one specified holder among *T* concurrent holders choosing independently and
 Comparisons use the same guest and storage backend, alternate the volume order and run with Driver Verifier disabled. Exact timings depend on the storage, cache state, CPU allocation and antivirus policy. Performance results are recorded alongside the tested build.
 
 Same-guest comparisons found ext4 ahead in file creation, rename and deletion; NTFS led in enumeration and append-and-flush workloads. Random and sequential I/O varied by workload. Alternating the previous and wide-address builds preserved comparable warm-cache performance; the initial cold-to-warm timing shift was larger than the difference between the builds. These are workload-specific VM results, separate from the bare-metal copy demonstration above.
+
+### Block placement
+
+Where a file's new blocks go decides how many pieces it ends up in, and every piece is a request of its own when the file is read. The placement is portable code (`BlockPlacement.c`), run by the driver over the volume's groups and by `tests/block-place-model.ps1` over simulated ones; `BlockSearch.h` searches inside a group. Its rules, in order:
+
+1. **The file's own place.** Blocks whose place in the file's layout is known - right after the blocks before them, or as far from the nearest extent as they lie from it in the file, when a hole is filled - go there, as many as the free run there holds: an extent grows instead of a new one being made.
+2. **Room to grow.** Otherwise a free run of *Need + Room* is looked for - *Room* is the file's size so far when it is written at its end, nothing otherwise - then of *Need*, then of half as much each time down to one block. At each size the groups are tried from the goal's on, and the first that has such a run gives its **shortest** one (best fit). The blocks come from the run's start, so the rest of the run lies right after them.
+3. **Bounds, not bitmaps.** Every group keeps the length of its longest free run, updated with every change to its bitmap. A group whose bound is below the size is passed over without being locked or read.
+
+What follows from them, checked by the model:
+
+- A file grown alone at its end at least doubles between two new extents: **at most 2 + log₂(final / first) fragments**, not one per write. A 64 MiB file written 4 KiB at a time has 11.
+- With no run of *Need* anywhere, the run taken is longer than half the longest there is.
+- A run is split only when no shorter one holds the size, so long runs stay for the files that need them. Small files fill the short runs in the order they are written; in the model 1952 of 1999 lie right after the one before.
+
+The previous placement took the first run of *Need* after the goal in each group, and failing that the first free run of any length. Measured on the same 2 GiB volume, aged through the driver by the same seeded workload (`tests/aging-vm.ps1`: 6 GB of creates and deletes, the volume kept 55-80 % full), then written with new files:
+
+| Files | Fragments before | Fragments now |
+|---|---|---|
+| The 441 files left by aging, those of 1 MiB or more | 13.8 each, 147 at most | **2.7 each, 7 at most** |
+| 4 × 32 MiB written in 1 MiB appends | 88 each | **5 each** |
+| 4 × 32 MiB with the size set first (as `CopyFile` does) | 27.5 each | **1 each** |
+| 4 × 32 MiB appended by four threads at once | 46 each | **5-10 each** |
+| 2 000 × 16 KiB | 11 in two pieces or more | **none** |
+
+`e2fsck` was clean after every run. Write and read times stayed within this guest's run-to-run spread or improved (medians of alternating runs; its virtual disk sits in the host's cache, which hides most of what a fragment costs), so the fragments are the measure here; on a physical disk each one is a seek or a request.
 
 ---
 
@@ -468,7 +495,7 @@ Ext4/
 
 The driver and control tool are split by responsibility. LUKS header formats, keyslots, metadata parsing, LVM mappings, passphrase handling and driver control have separate modules; on-disk layouts have compile-time offset checks.
 
-`FreedBlocks.c` owns transaction-bound block-reuse protection. `MetadataMap.c` builds the volume-wide system-zone map, including relocated `flex_bg` bitmaps and inode tables. `BlockSearch.h` contains the word-at-a-time bitmap search shared with its independent host model. Ext2/ext3 truncation is isolated in `IndirectTruncate.c`.
+`FreedBlocks.c` owns transaction-bound block-reuse protection. `MetadataMap.c` builds the volume-wide system-zone map, including relocated `flex_bg` bitmaps and inode tables. `BlockSearch.h` contains the word-at-a-time bitmap search shared with its independent host model, and `BlockPlacement.c` the choice of group and run, portable and run by its own model over simulated volumes. Ext2/ext3 truncation is isolated in `IndirectTruncate.c`.
 
 ---
 
@@ -492,6 +519,10 @@ The extent tree is new as well (`ExtentCore.c`, the driver's side in `ExtentFile
 
 `tests/fsx-vm.ps1`, after the `fsx` of xfstests, runs random operations on three files at a time and compares every result with a model of what the files hold: writes cached, write-through and unbuffered, anywhere in the file; reads; the end of file moved down and up; the allocation size set; writes and reads through a mapped view; flushes; handles closed and opened again - on a volume with 4 KiB blocks and one with 1 KiB blocks, then `e2fsck` and every kept file byte-exact as Linux reads it. A seed fixes its operations, so a failure names the seed and the operation, and the guest cuts the failing file's history down to the fewest operations that still fail (ddmin, Zeller and Hildebrandt). The model is checked on NTFS first. Its first night found the four faults of [One file, cached and non-cached](#one-file-cached-and-non-cached), two of them down to one and two operations; on the fixed image **80 seeds of 1 500 operations on each volume - 240 000 operations** - pass, with Linux agreeing to the byte.
 
+`tests/aging-vm.ps1` ages a 2 GiB volume through the driver by a seeded run of creates and deletes - 6 GB written, the volume kept 55-80 % full - then writes streams, copies, parallel streams and small files onto it, reads the large ones back around the cache, and has Linux check the volume and count every file's extents; the seed makes two driver images comparable. `tests/block-place-model.ps1` runs the production placement on 100 000 random volumes and requests against a reference, ages a simulated volume with it and with the placement before, and checks the doubling bound (see [Block placement](#block-placement)).
+
+On 23 October, with the new block placement, everything ran again on the final image under Driver Verifier: the full matrix, fsx (120 000 operations on 4 KiB and 1 KiB blocks), the extent-tree volumes, the 16 TiB boundary fixture with a reload between its phases, the dedicated ext2/ext3 fixture, the planted-corruption fixture, the 18 orphan volumes, two aging seeds and the e2fsprogs corpus (219 images, 196 walked: no crash, hang or harness error). Every host model passed, on x64 and x86 where it builds both.
+
 On 17 October, with the directories and the extent tree new, everything ran again on the final image under Driver Verifier: the full matrix, the e2fsprogs corpus (219 images, 196 walked: no crash, hang or harness error), the planted-corruption fixture, the dedicated ext2/ext3 fixture and the 18 orphan volumes. A crash run whose directory grows to 2 000 names, its index splitting as it goes, gave **5 004 crash states**, each one accepted by `e2fsck`, every file flushed and left alone holding what its flush returned; 40 of them, replayed by the driver itself, equal `e2fsck`'s replay. The three new models passed once more under AddressSanitizer and UndefinedBehaviorSanitizer (gcc, WSL).
 
 Earlier campaigns on the previous release covered the fresh 16 TiB boundary fixtures, ENOSPC with and without hole reuse, scaling through **1/2/4/8 threads in one process** and **10 loaded stop/start cycles**.
@@ -508,7 +539,7 @@ The full matrix covers functional operations, security boundaries, parallel I/O,
 
 Real **ext2 with 1 KiB blocks** and **ext3 with 4 KiB blocks** also passed a separate write regression: Linux-seeded data, direct/single/double-indirect growth, truncation in the middle of indirect ranges, rename, delete, shrink/regrow with zero-tail checks, service reload and independent Linux read-back. The wide-address fixture additionally checks sparse indirect mappings at the 32-bit on-disk pointer boundary. Both legacy volumes finished with clean `e2fsck -fn`. This is targeted compatibility coverage, rather than the complete ext4 feature matrix.
 
-The write-path review added fault-injection models that compile the production block builder, symlink writer, journal registration, revoke and device-sync functions. They check sparse-run boundaries, paging writes beyond EOF, failed inode and buffer saves, allocation failures and error propagation through recovery flushes. The xattr parser model checks malformed ranges and rejection before allocation when the block checksum verifier fails. These user-mode models pass on x86 and x64; kernel runtime validation remains x64. A separate block-search model compares the production word scan, including pending-free overlays, against a bit-by-bit oracle over 200,000 cases. Windows-created block-backed symlinks were also checked by Linux on 1 KiB and 4 KiB volumes, including target contents, the trailing terminator, boundary rejection and clean `e2fsck -fn` without repair.
+The write-path review added fault-injection models that compile the production block builder, symlink writer, journal registration, revoke and device-sync functions. They check sparse-run boundaries, paging writes beyond EOF, failed inode and buffer saves, allocation failures and error propagation through recovery flushes. The xattr parser model checks malformed ranges and rejection before allocation when the block checksum verifier fails. These user-mode models pass on x86 and x64; kernel runtime validation remains x64. A separate block-search model compares the production word scan, including pending-free overlays, against a bit-by-bit oracle over 200,000 cases: the run at a block, the best fit and the longest run. The block-placement model runs the production placement on 100,000 random volumes and requests - groups seen and unseen, pending frees, a short last group - and every answer equals the reference's. Windows-created block-backed symlinks were also checked by Linux on 1 KiB and 4 KiB volumes, including target contents, the trailing terminator, boundary rejection and clean `e2fsck -fn` without repair.
 
 I develop this driver as a solo project. The validation combines several hours of iterative builds and targeted diagnosis with repeatable model and cross-platform checks. A short final matrix is the regression checkpoint; the retained build symbols, seeds and logs are what make a failure reproducible.
 
@@ -537,6 +568,7 @@ I develop this driver as a solo project. The validation combines several hours o
 - **Name forms:** a name reaches the disk as UTF-8 of at most 255 bytes, a character beyond the BMP as four bytes; a longer name is refused before anything changes.
 - **Extent tree:** the extents are exactly the file's blocks after every insert, conversion and cut - none mapped twice, none lost, no node or block leaked; every node passes Linux's own checks; preallocated blocks read as zeros, from Windows and from Linux, until written.
 - **One file, every view:** cached, unbuffered and mapped reads of the same bytes return the same bytes after every operation, whichever handles wrote them; a request that raises is completed once, with its own status.
+- **Block placement:** a request goes to its place in the file's layout when the run there is free, else to the first group from the goal's with a run of the size tried and its shortest such run; every run taken was free and no longer than asked; every group's bound is its exact longest run after each change; with no run of the size asked anywhere the run taken is longer than half the longest; a file grown alone at its end has at most 2 + log₂(final / first) fragments.
 
 ```mermaid
 flowchart LR
@@ -569,6 +601,13 @@ sed 's/\r$//' tests/journal-replay-wsl.sh | bash -s -- 3000
 
 # Production block search against an independent bit-by-bit oracle
 pwsh tests\block-search-model.ps1
+
+# Production block placement: its rules against a reference on random volumes,
+# then aging against the placement before it
+pwsh tests\block-place-model.ps1
+
+# How files lie on a volume aged through the driver (seeded; Linux checks it)
+pwsh tests\aging-vm.ps1 -Seed 1
 
 # Production write-path and journal error contracts (runs both models)
 pwsh tests\journal-error-model.ps1 -Architecture x64
@@ -636,7 +675,7 @@ Configure the disposable guest and test-image paths in `tests/testenv.local.psd1
 | Orphans | The kernel's orphans after a crash and while frozen, in the orphan file and on the classic list; debugfs-made deletions and truncations; bad orphans and an unsound orphan file |
 | Wide physical addresses | Sparse GPT volumes crossing 2³² blocks with 1/2/4 KiB blocks; high data, extent-tree and EA blocks; legacy-pointer boundary |
 | Legacy formats | Actual ext2/ext3 media: write, indirect-block growth, shrink/regrow, rename, delete and read-back after reload |
-| Deterministic models | Production run map, red-black tree, bitmap search and VPB reclaimer; independent oracles, tree invariants, pending-free overlays, ownership and forced allocation failures |
+| Deterministic models | Production run map, red-black tree, bitmap search, block placement and VPB reclaimer; independent oracles, tree invariants, pending-free overlays, ownership and forced allocation failures |
 | Lifecycle | Repeated stop/start with concurrent file access, drive-letter restoration and clean guest restarts |
 | Malformed media | Bounded traversal and read-back, attempted writes, dismount and Verifier checks; mount refusal and read-only fallback are recorded separately |
 | Planted corruption | Bitmap, inode and directory-block checksum failures under `errors=continue` and `errors=remount-ro`: refused, recorded in the superblock, new data allocated around the damaged group; Linux checks the records and the data. A superblock that fails its checksum: mounted read-only, files read, writes refused, not a byte of the superblock changed |

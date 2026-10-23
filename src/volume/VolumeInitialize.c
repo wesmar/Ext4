@@ -577,9 +577,14 @@ Ext2LoadGroups(IN PEXT2_VCB Vcb, IN OUT PEXT2_MOUNT_STATE State)
     }
     State->GroupLoaded = TRUE;
 
-    /* which groups failed a bitmap check (none yet), and where all the
-       metadata is, for the allocator; both freed with the groups */
+    /* which groups failed a bitmap check (none yet), their longest free
+       runs (none seen yet), and where all the metadata is, for the
+       allocator; all freed with the groups */
     Status = Ext2InitializeGroupHealth(Vcb);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+    Status = Ext2InitializeBlockRuns(Vcb);
     if (!NT_SUCCESS(Status)) {
         return Status;
     }

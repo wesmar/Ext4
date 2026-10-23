@@ -86,6 +86,7 @@
     <ClCompile Include="driver\DriverSettings.c" />
     <ClCompile Include="driver\DriverUnload.c" />
     <ClCompile Include="ext4\BlockAllocator.c" />
+    <ClCompile Include="ext4\BlockPlacement.c" />
     <ClCompile Include="ext4\MetadataBuffers.c" />
     <ClCompile Include="ext4\MetadataChecksums.c" />
     <ClCompile Include="ext4\DirectoryBlocks.c" />
@@ -226,6 +227,7 @@
     <ClInclude Include="volume\crypt_internal.h" />
     <ClInclude Include="volume\vcb_internal.h" />
     <ClInclude Include="ext4\BlockSearch.h" />
+    <ClInclude Include="ext4\BlockPlacement.h" />
     <ClInclude Include="ext4\ExtentCore.h" />
     <ClInclude Include="ext4\DirBlock.h" />
     <ClInclude Include="ext4\DirIndex.h" />

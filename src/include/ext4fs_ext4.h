@@ -126,15 +126,25 @@ BOOLEAN  Ext2MetadataOverlaps(IN PEXT2_VCB Vcb, IN ULONGLONG Block, IN ULONGLONG
    checkpoint after the commit, so a crash before leaves the old owner's
    data in place. File data is written in place and must wait. */
 #define EXT2_ALLOC_JOURNALED        0x00000001
+/* the goal is the blocks' place in the owner's layout - right after the
+   blocks before them, or as far from the nearest extent as they are in the
+   file: the free run there is taken first (BlockPlacement.c P1) */
+#define EXT2_ALLOC_AT_GOAL          0x00000002
 
 /* the block bitmap of a lazily initialised group written out (BlockAllocator.c) */
 NTSTATUS
 Ext2MaterializeBlockBitmap(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group);
 
-/* blocks for Inode, counted in its i_blocks; and given back */
+/* each group's longest free run, unseen until its bitmap is read (BlockAllocator.c) */
+NTSTATUS Ext2InitializeBlockRuns(IN PEXT2_VCB Vcb);
+VOID     Ext2FreeBlockRuns(IN PEXT2_VCB Vcb);
+
+/* blocks for Inode, counted in its i_blocks; and given back. Room: how
+   many blocks the inode may grow by after them (its size so far for a file
+   written at its end), which the placement keeps free when it can */
 NTSTATUS
 Ext2AllocateInodeBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN struct inode *Inode,
-                        IN ULONGLONG Goal, IN ULONG Flags, OUT PULONGLONG Block,
+                        IN ULONGLONG Goal, IN ULONG Room, IN ULONG Flags, OUT PULONGLONG Block,
                         IN OUT PULONG Count);
 NTSTATUS
 Ext2ReleaseInodeBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN struct inode *Inode,
@@ -428,6 +438,7 @@ Ext2NewBlock(
     IN PEXT2_VCB            Vcb,
     IN ULONG                GroupHint,
     IN ULONGLONG            BlockHint,
+    IN ULONG                Room,
     OUT PULONGLONG          Block,
     IN OUT PULONG           Number,
     IN ULONGLONG            BlockLimit,

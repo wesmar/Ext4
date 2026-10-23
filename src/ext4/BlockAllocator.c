@@ -21,10 +21,19 @@
  * none of it metadata - and only then revoked in the journal and cleared:
  * a revoke of a block still in use would make a replay drop its logged
  * contents.
+ *
+ * Where blocks go is BlockPlacement.c's: this file gives it each group's
+ * bound - the longest free run of its bitmap, kept with every change to it
+ * (GroupLongestRun), or before the bitmap is first read the descriptor's
+ * free count - and the taking of blocks in a group.
  */
 
 #include "ext4fs.h"
 #include "BlockSearch.h"
+#include "BlockPlacement.h"
+
+#define EXT2_BLOCK_RUNS_TAG     'RB4E'
+#define EXT2_RUN_UNSEEN         ((LONG)-1)
 
 /* ---------------------------------------------------------------- geometry */
 
@@ -39,6 +48,53 @@ static __inline ULONG
 Ext2GroupBlocks(IN PEXT2_VCB Vcb, IN ULONG Group)
 {
     return (ULONG)min((ULONGLONG)BLOCKS_PER_GROUP, TOTAL_BLOCKS - Ext2GroupFirst(Vcb, Group));
+}
+
+/* the whole group as its bitmap on disk has it, freed blocks counted free */
+static __inline VOID
+Ext2DiskView(IN PEXT2_VCB Vcb, IN ULONG Group, IN struct buffer_head *Bh, OUT PEXT2_BLOCK_VIEW View)
+{
+    RtlZeroMemory(View, sizeof(*View));
+    View->Disk = (const ULONG64 *)Bh->b_data;
+    View->Bits = Ext2GroupBlocks(Vcb, Group);
+}
+
+/* ---------------------------------------------------------------- the runs */
+
+/* every group unseen: built with the groups at mount, freed with them */
+NTSTATUS
+Ext2InitializeBlockRuns(IN PEXT2_VCB Vcb)
+{
+    ULONG g;
+
+    Vcb->GroupLongestRun = Ext2AllocatePool(PagedPool, (SIZE_T)Vcb->sbi.s_groups_count * sizeof(LONG),
+                                            EXT2_BLOCK_RUNS_TAG);
+    if (Vcb->GroupLongestRun == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    for (g = 0; g < Vcb->sbi.s_groups_count; g++) {
+        Vcb->GroupLongestRun[g] = EXT2_RUN_UNSEEN;
+    }
+    return STATUS_SUCCESS;
+}
+
+VOID
+Ext2FreeBlockRuns(IN PEXT2_VCB Vcb)
+{
+    if (Vcb->GroupLongestRun != NULL) {
+        Ext2FreePool((PVOID)Vcb->GroupLongestRun, EXT2_BLOCK_RUNS_TAG);
+        Vcb->GroupLongestRun = NULL;
+    }
+}
+
+/* Group's bitmap as it now is, its BlockLock held */
+static __inline VOID
+Ext2NoteLongestRun(IN PEXT2_VCB Vcb, IN ULONG Group, IN struct buffer_head *Bh)
+{
+    EXT2_BLOCK_VIEW View;
+
+    Ext2DiskView(Vcb, Group, Bh, &View);
+    WriteNoFence(&Vcb->GroupLongestRun[Group], (LONG)Ext2ViewLongestRun(&View));
 }
 
 /* ---------------------------------------------------------------- one group */
@@ -134,8 +190,9 @@ Ext2LoadBlockBitmap(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG 
 
 /*
  * The descriptor's free count from the bitmap after it changed, its
- * checksums, and the volume total moved by the exact difference. Counted,
- * not adjusted by the change: a count that had drifted is right again.
+ * checksums, the group's longest run, and the volume total moved by the
+ * exact difference. Counted, not adjusted by the change: a count that had
+ * drifted is right again.
  */
 static NTSTATUS
 Ext2RecountGroupBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group,
@@ -148,6 +205,7 @@ Ext2RecountGroupBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULO
 
     RtlInitializeBitMap(&Bitmap, (PULONG)bh->b_data, Ext2GroupBlocks(Vcb, Group));
     After = RtlNumberOfClearBits(&Bitmap);
+    Ext2NoteLongestRun(Vcb, Group, bh);
     ext4_free_blks_set(sb, gd, (__u32)After);
     ext4_block_bitmap_csum_set(sb, Group, gd, bh);
     if (!Ext2SaveGroup(IrpContext, Vcb, Group)) {
@@ -157,100 +215,142 @@ Ext2RecountGroupBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULO
     return STATUS_SUCCESS;
 }
 
+/* one Ext2NewBlock: what its placement's calls work with */
+typedef struct _EXT2_PLACE_STATE {
+    PEXT2_IRP_CONTEXT   IrpContext;
+    PEXT2_VCB           Vcb;
+    ULONGLONG           Limit;      /* the reach of the owner's block pointers */
+    ULONG               Flags;
+    ULONGLONG           Block;      /* the first block taken */
+    NTSTATUS            Status;     /* why a Take ended the search */
+} EXT2_PLACE_STATE, *PEXT2_PLACE_STATE;
+
 /*
- * Allocate in Group, its stripe's BlockLock held: STATUS_SUCCESS with
- * *Block / *Number, STATUS_DISK_FULL when the group has nothing to give
- * or is out of use (the next one is tried), anything else stops the search.
+ * Take blocks in Group, its stripe's BlockLock held, as EXT2_PLACE_IO.Take
+ * asks: STATUS_SUCCESS with *Index / *Count, STATUS_DISK_FULL when the group
+ * has nothing to give or is out of use (the search goes on), anything else
+ * ends the search.
  */
 static NTSTATUS
-Ext2AllocateInLockedGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group,
-                          IN ULONG Hint, IN ULONGLONG Limit, IN ULONG Flags, OUT PULONGLONG Block,
-                          IN OUT PULONG Number, OUT struct buffer_head **Gb,
-                          OUT struct buffer_head **Bh)
+Ext2TakeInLockedGroup(IN PEXT2_PLACE_STATE P, IN ULONG Group, IN ULONG Hint, IN ULONG Want,
+                      IN ULONG Need, OUT PULONG Index, OUT PULONG Count,
+                      OUT struct buffer_head **Gb, OUT struct buffer_head **Bh)
 {
+    PEXT2_VCB               Vcb = P->Vcb;
     struct super_block     *sb = &Vcb->sb;
     struct ext4_group_desc *gd;
     EXT2_BLOCK_VIEW         View;
     RTL_BITMAP              Bitmap;
     ULONGLONG               First = Ext2GroupFirst(Vcb, Group);
     ULONG                   GroupBits = Ext2GroupBlocks(Vcb, Group);
-    ULONG                   Index;
+    ULONG                   Length = 0;
     NTSTATUS                Status;
 
     gd = ext4_get_group_desc(sb, Group, Gb);
     if (gd == NULL) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    if (ext4_free_blks_count(sb, gd) == 0 || Ext2GroupCorrupt(Vcb, Group, EXT2_GROUP_BLOCK_BITMAP)) {
+    if (Ext2GroupCorrupt(Vcb, Group, EXT2_GROUP_BLOCK_BITMAP)) {
         return STATUS_DISK_FULL;
     }
-    Status = Ext2LoadBlockBitmap(IrpContext, Vcb, Group, gd, Bh);
+    if (ext4_free_blks_count(sb, gd) == 0) {
+        WriteNoFence(&Vcb->GroupLongestRun[Group], 0);     /* known without the bitmap */
+        return STATUS_DISK_FULL;
+    }
+    Status = Ext2LoadBlockBitmap(P->IrpContext, Vcb, Group, gd, Bh);
     if (!NT_SUCCESS(Status)) {
         /* a bitmap found corrupt just now: reported, and skipped like a full group */
         return Status == STATUS_DISK_CORRUPT_ERROR ? STATUS_DISK_FULL : Status;
     }
+    if (ReadNoFence(&Vcb->GroupLongestRun[Group]) == EXT2_RUN_UNSEEN) {
+        Ext2NoteLongestRun(Vcb, Group, *Bh);
+        /* nothing free in the whole group although the descriptor said so:
+           believe the bitmap */
+        if (ReadNoFence(&Vcb->GroupLongestRun[Group]) == 0) {
+            Status = Ext2RecountGroupBlocks(P->IrpContext, Vcb, Group, gd, *Bh);
+            return NT_SUCCESS(Status) ? STATUS_DISK_FULL : Status;
+        }
+    }
 
     /* the caller's pointer width may leave only a prefix of the group */
     View.Disk = (const ULONG64 *)(*Bh)->b_data;
-    View.Bits = (ULONG)min((ULONGLONG)GroupBits, Limit - First);
+    View.Bits = (ULONG)min((ULONGLONG)GroupBits, P->Limit - First);
     Ext2FreedBlocksOf(Vcb, Group, View.Freed);
-    if (Flags & EXT2_ALLOC_JOURNALED) {
+    if (P->Flags & EXT2_ALLOC_JOURNALED) {
         ULONG s;
         for (s = 0; s < EXT2_FREED_SLOTS; s++) {
             View.Freed[s] = NULL;   /* journaled contents may take them now */
         }
     }
 
-    if (!Ext2FindClearRun(&View, Hint, Number, &Index)) {
-        /* nothing free in the whole group although the descriptor said so,
-           with nothing waiting for a commit either: believe the bitmap */
-        if (View.Bits == GroupBits && View.Freed[0] == NULL && View.Freed[1] == NULL) {
-            Status = Ext2RecountGroupBlocks(IrpContext, Vcb, Group, gd, *Bh);
-            if (!NT_SUCCESS(Status)) {
-                return Status;
-            }
-        }
+    if (Want == 0) {
+        *Index = Hint;
+        Length = Ext2ViewRunAt(&View, Hint);
+    } else if (!Ext2ViewBestRun(&View, Hint, Want, Index, &Length)) {
+        Length = 0;
+    }
+    if (Length == 0) {
         return STATUS_DISK_FULL;
     }
+    *Count = min(Need, Length);
 
     /* a bitmap that marks metadata free is corrupt: nothing is handed out
        from it, and the search goes on in the other groups */
-    ASSERT(Index < View.Bits && *Number <= View.Bits - Index);
-    if (Ext2MetadataOverlaps(Vcb, First + Index, *Number)) {
+    ASSERT(*Index < View.Bits && *Count <= View.Bits - *Index);
+    if (Ext2MetadataOverlaps(Vcb, First + *Index, *Count)) {
         if (Ext2MarkGroupCorrupt(Vcb, Group, EXT2_GROUP_BLOCK_BITMAP)) {
-            Ext2ReportCorruption(Vcb, 0, First + Index, -EFSCORRUPTED);
+            Ext2ReportCorruption(Vcb, 0, First + *Index, -EFSCORRUPTED);
         }
         return STATUS_DISK_FULL;
     }
 
     RtlInitializeBitMap(&Bitmap, (PULONG)(*Bh)->b_data, GroupBits);
-    RtlSetBits(&Bitmap, Index, *Number);
+    RtlSetBits(&Bitmap, *Index, *Count);
     mark_buffer_dirty(*Bh);
-    Status = Ext2RecountGroupBlocks(IrpContext, Vcb, Group, gd, *Bh);
+    Status = Ext2RecountGroupBlocks(P->IrpContext, Vcb, Group, gd, *Bh);
     if (!NT_SUCCESS(Status)) {
         return Status;
     }
 
     /* A dirty range left from the blocks' previous life must not be
        written by the lazy writer into their new owner. */
-    *Block = First + Index;
-    if (!Ext2RemoveBlockExtent(Vcb, NULL, *Block, *Number)) {
+    P->Block = First + *Index;
+    if (!Ext2RemoveBlockExtent(Vcb, NULL, P->Block, *Count)) {
         Ext2JournalAbandon(Vcb, STATUS_INSUFFICIENT_RESOURCES);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS
-Ext2AllocateInGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group,
-                    IN ULONG Hint, IN ULONGLONG Limit, IN ULONG Flags, OUT PULONGLONG Block,
-                    IN OUT PULONG Number)
+/* EXT2_PLACE_IO.Bound: no free run of Group is longer */
+static unsigned int
+Ext2GroupBound(void *Context, unsigned int Group)
 {
-    PERESOURCE          Held = Ext2LockGroupBlocks(Vcb, Group);
+    PEXT2_VCB               Vcb = ((PEXT2_PLACE_STATE)Context)->Vcb;
+    LONG                    Longest = ReadNoFence(&Vcb->GroupLongestRun[Group]);
+    struct ext4_group_desc *gd;
+
+    if (Ext2GroupCorrupt(Vcb, Group, EXT2_GROUP_BLOCK_BITMAP)) {
+        return 0;
+    }
+    if (Longest != EXT2_RUN_UNSEEN) {
+        return (unsigned int)Longest;
+    }
+    gd = ext4_get_group_desc(&Vcb->sb, Group, NULL);
+    return gd != NULL ? (unsigned int)ext4_free_blks_count(&Vcb->sb, gd) : 0;
+}
+
+/* EXT2_PLACE_IO.Take */
+static int
+Ext2GroupTake(void *Context, unsigned int Group, unsigned int Hint, unsigned int Want,
+              unsigned int Need, unsigned int *Index, unsigned int *Count)
+{
+    PEXT2_PLACE_STATE   P = (PEXT2_PLACE_STATE)Context;
+    PERESOURCE          Held = Ext2LockGroupBlocks(P->Vcb, Group);
     struct buffer_head *gb = NULL, *bh = NULL;
     NTSTATUS            Status;
 
-    Status = Ext2AllocateInLockedGroup(IrpContext, Vcb, Group, Hint, Limit, Flags, Block, Number, &gb, &bh);
+    Status = Ext2TakeInLockedGroup(P, Group, Hint, Want, Need, (PULONG)Index, (PULONG)Count, &gb, &bh);
     if (bh != NULL) {
         fini_bh(&bh);
     }
@@ -258,7 +358,14 @@ Ext2AllocateInGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG 
         fini_bh(&gb);
     }
     Ext2UnlockGroup(Held);
-    return Status;
+    if (Status == STATUS_DISK_FULL) {
+        return EXT2_PLACE_NONE;
+    }
+    if (!NT_SUCCESS(Status)) {
+        P->Status = Status;
+        return -1;
+    }
+    return 0;
 }
 
 /*
@@ -352,57 +459,75 @@ Ext2ReleaseRange(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONGLONG
 
 /* ---------------------------------------------------------------- the interface */
 
+/*
+ * Up to *Number blocks, placed by Ext2PlaceBlocks: BlockHint is where they
+ * belong (with EXT2_ALLOC_AT_GOAL their place in the owner's layout), Room how
+ * much the owner may grow after them; without a hint the search starts at
+ * GroupHint. *Block and *Number the run taken, or STATUS_DISK_FULL.
+ */
 NTSTATUS
 Ext2NewBlock(
     IN PEXT2_IRP_CONTEXT    IrpContext,
     IN PEXT2_VCB            Vcb,
     IN ULONG                GroupHint,
     IN ULONGLONG            BlockHint,
+    IN ULONG                Room,
     OUT PULONGLONG          Block,
     IN OUT PULONG           Number,
     IN ULONGLONG            BlockLimit,
     IN ULONG                Flags
 )
 {
-    ULONGLONG   Limit = min(TOTAL_BLOCKS, BlockLimit);
-    ULONG       SearchGroups, Group, Tried, Hint = 0;
-    NTSTATUS    Status;
+    EXT2_PLACE_STATE    State;
+    EXT2_PLACE_IO       Io;
+    EXT2_PLACE          Request;
+    unsigned int        Group, Index, Count;
+    int                 Err;
 
     *Block = 0;
-    if (*Number == 0 || Limit <= EXT2_FIRST_DATA_BLOCK) {
+    RtlZeroMemory(&State, sizeof(State));
+    State.Limit = min(TOTAL_BLOCKS, BlockLimit);
+    if (*Number == 0 || State.Limit <= EXT2_FIRST_DATA_BLOCK) {
         return STATUS_INVALID_PARAMETER;
     }
+    State.IrpContext = IrpContext;
+    State.Vcb = Vcb;
+    State.Flags = Flags;
+
     /* The caller's on-disk pointer width bounds the search, not the volume. */
-    SearchGroups = (ULONG)((Limit - EXT2_FIRST_DATA_BLOCK - 1) / BLOCKS_PER_GROUP + 1);
+    Io.Context = &State;
+    Io.Groups = (ULONG)((State.Limit - EXT2_FIRST_DATA_BLOCK - 1) / BLOCKS_PER_GROUP + 1);
+    Io.GroupBlocks = BLOCKS_PER_GROUP;
+    Io.Bound = Ext2GroupBound;
+    Io.Take = Ext2GroupTake;
 
     Ext2JournalJoin(Vcb);       /* before the lock: see Ext2JournalJoin */
     if (IsVcbReadOnly(Vcb)) {
         return STATUS_MEDIA_WRITE_PROTECTED;
     }
 
-    /* The goal is the block after a file's last extent. Outside the
-       searchable volume (an extent ending at its last block) it says
-       nothing: the search starts at the hint group instead of failing. */
-    if (GroupHint >= SearchGroups) {
-        GroupHint = SearchGroups - 1;
-    }
-    if (BlockHint >= EXT2_FIRST_DATA_BLOCK && BlockHint < Limit) {
-        GroupHint = (ULONG)((BlockHint - EXT2_FIRST_DATA_BLOCK) / BLOCKS_PER_GROUP);
-        Hint = (ULONG)((BlockHint - EXT2_FIRST_DATA_BLOCK) % BLOCKS_PER_GROUP);
+    /* A hint outside the searchable volume (an extent ending at its last
+       block) says nothing: the search starts at the hint group instead. */
+    Request.Group = min(GroupHint, Io.Groups - 1);
+    Request.Hint = 0;
+    Request.Need = *Number;
+    Request.Room = Room;
+    Request.AtGoal = FALSE;
+    if (BlockHint >= EXT2_FIRST_DATA_BLOCK && BlockHint < State.Limit) {
+        Request.Group = (ULONG)((BlockHint - EXT2_FIRST_DATA_BLOCK) / BLOCKS_PER_GROUP);
+        Request.Hint = (ULONG)((BlockHint - EXT2_FIRST_DATA_BLOCK) % BLOCKS_PER_GROUP);
+        Request.AtGoal = (Flags & EXT2_ALLOC_AT_GOAL) != 0;
     }
 
-    /* every group once, from the goal's on, wrapping */
-    for (Tried = 0, Group = GroupHint; Tried < SearchGroups; Tried++) {
-        Status = Ext2AllocateInGroup(IrpContext, Vcb, Group, Hint, Limit, Flags, Block, Number);
-        if (Status != STATUS_DISK_FULL) {
-            if (NT_SUCCESS(Status)) {
-                DEBUG(DL_INF, ("Ext2NewBlock: blocks %I64xh - %I64xh allocated\n",
-                               *Block, *Block + *Number));
-            }
-            return Status;
-        }
-        Hint = 0;
-        Group = (Group + 1 == SearchGroups) ? 0 : Group + 1;
+    Err = Ext2PlaceBlocks(&Io, &Request, &Group, &Index, &Count);
+    if (Err == 0) {
+        *Block = State.Block;
+        *Number = Count;
+        DEBUG(DL_INF, ("Ext2NewBlock: blocks %I64xh - %I64xh allocated\n", *Block, *Block + *Number));
+        return STATUS_SUCCESS;
+    }
+    if (Err != EXT2_PLACE_NONE) {
+        return State.Status;
     }
 
     /* what is left waits for a commit: ask for it now, not at the interval */
@@ -506,13 +631,13 @@ Ext2BlocksToSectors(IN PEXT2_VCB Vcb, IN ULONG Count)
 
 NTSTATUS
 Ext2AllocateInodeBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN struct inode *Inode,
-                        IN ULONGLONG Goal, IN ULONG Flags, OUT PULONGLONG Block,
+                        IN ULONGLONG Goal, IN ULONG Room, IN ULONG Flags, OUT PULONGLONG Block,
                         IN OUT PULONG Count)
 {
     PEXT2_VCB   Vcb = Inode->i_sb->s_priv;
     NTSTATUS    Status;
 
-    Status = Ext2NewBlock(IrpContext, Vcb, 0, Goal, Block, Count, EXT2_EXTENT_BLOCK_LIMIT, Flags);
+    Status = Ext2NewBlock(IrpContext, Vcb, 0, Goal, Room, Block, Count, EXT2_EXTENT_BLOCK_LIMIT, Flags);
     if (NT_SUCCESS(Status)) {
         Inode->i_blocks += Ext2BlocksToSectors(Vcb, *Count);
     }

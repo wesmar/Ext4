@@ -92,7 +92,7 @@ static int EfNew(void *Context, unsigned long long Goal, unsigned long long *Blo
     ULONG               count = 1;
     NTSTATUS            status;
 
-    status = Ext2AllocateInodeBlocks(e->IrpContext, e->Inode, Goal, EXT2_ALLOC_JOURNALED, &block, &count);
+    status = Ext2AllocateInodeBlocks(e->IrpContext, e->Inode, Goal, 0, EXT2_ALLOC_JOURNALED, &block, &count);
     if (!NT_SUCCESS(status))
         return Ext2LinuxError(status);
     e->InodeChanged = TRUE;
@@ -238,14 +238,24 @@ int ext4_ext_get_blocks(void *icb, handle_t *handle, struct inode *inode, ext4_l
         return (int)count;
     }
 
-    /* blocks for it: no more than one extent of its kind holds */
+    /* blocks for it: no more than one extent of its kind holds. A goal the
+       tree took from an extent is the blocks' place in the file's layout;
+       a file written at its end (the block before mapped) may grow by as
+       much as it holds already */
     {
         ULONGLONG start = 0;
         ULONG     got = (ULONG)min(count, (unsigned long)(prealloc ? EX_UNWRITTEN_MAX : EX_INIT_MAX));
+        ULONG     how = S_ISDIR(inode->i_mode) ? EXT2_ALLOC_JOURNALED : 0;
+        ULONG     room = 0;
         NTSTATUS  status;
+        EX_EXTENT before;
+        unsigned long long before_next, before_goal;
 
-        status = Ext2AllocateInodeBlocks((PEXT2_IRP_CONTEXT)icb, inode, goal,
-                                         S_ISDIR(inode->i_mode) ? EXT2_ALLOC_JOURNALED : 0, &start, &got);
+        if (goal != e.T.Goal)
+            how |= EXT2_ALLOC_AT_GOAL;
+        if (iblock > 0 && ExMap(&e.T, iblock - 1, &before, &before_next, &before_goal) == EX_OK)
+            room = iblock;
+        status = Ext2AllocateInodeBlocks((PEXT2_IRP_CONTEXT)icb, inode, goal, room, how, &start, &got);
         if (!NT_SUCCESS(status))
             return Ext2LinuxError(status);
         if (got == 0)

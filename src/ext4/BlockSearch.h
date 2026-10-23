@@ -14,6 +14,9 @@
  * next free bit (a set bit of ~taken), then the next taken one; whole
  * words of taken or free blocks are skipped by one test each, so a search
  * costs O(words + runs), not O(bits).
+ *
+ * A run is always maximal: free from its first block to its last, taken
+ * (or past the group) on both sides.
  */
 
 #ifndef _EXT4_BLOCK_SEARCH_H_
@@ -72,56 +75,66 @@ Ext2ViewNext(const EXT2_BLOCK_VIEW *View, ULONG From, BOOLEAN Free)
     return View->Bits;
 }
 
-/*
- * Free runs starting in [From, To): the first of at least Want blocks sets
- * *Index; the first run of any length is kept in *AnyIndex / *AnyLength
- * unless one was kept already.
- */
-static __inline BOOLEAN
-Ext2ViewFindRun(const EXT2_BLOCK_VIEW *View, ULONG From, ULONG To, ULONG Want,
-                PULONG Index, PULONG AnyIndex, PULONG AnyLength)
+/* the free run that starts at From: its length, 0 when From is taken */
+static __inline ULONG
+Ext2ViewRunAt(const EXT2_BLOCK_VIEW *View, ULONG From)
 {
-    ULONG Start = Ext2ViewNext(View, From, TRUE);
-
-    while (Start < To) {
-        ULONG End = Ext2ViewNext(View, Start + 1, FALSE);
-
-        if (*AnyLength == 0) {
-            *AnyIndex = Start;
-            *AnyLength = End - Start;
-        }
-        if (End - Start >= Want) {
-            *Index = Start;
-            return TRUE;
-        }
-        Start = Ext2ViewNext(View, End, TRUE);
+    if (From >= View->Bits || Ext2ViewNext(View, From, TRUE) != From) {
+        return 0;
     }
-    return FALSE;
+    return Ext2ViewNext(View, From, FALSE) - From;
 }
 
 /*
- * Where to allocate: a run of *Number from Hint on, then from the start of
- * the group; failing that the first shorter run from Hint on (else from
- * the start), *Number cut to its length. FALSE: nothing free at all.
+ * Best fit: the shortest run of at least Want blocks (Want > 0), and of
+ * runs as short the first from Hint on, wrapping - *Index, *Length. The run
+ * around Hint counts whole, where it starts. FALSE: no run is that long.
  */
 static __inline BOOLEAN
-Ext2FindClearRun(const EXT2_BLOCK_VIEW *View, ULONG Hint, PULONG Number, PULONG Index)
+Ext2ViewBestRun(const EXT2_BLOCK_VIEW *View, ULONG Hint, ULONG Want, PULONG Index, PULONG Length)
 {
-    ULONG AnyIndex = 0, AnyLength = 0;
+    ULONG Best = 0, Pass, From, To, Start, End;
 
     if (Hint >= View->Bits) {
         Hint = 0;
     }
-    if (Ext2ViewFindRun(View, Hint, View->Bits, *Number, Index, &AnyIndex, &AnyLength) ||
-        Ext2ViewFindRun(View, 0, Hint, *Number, Index, &AnyIndex, &AnyLength)) {
-        return TRUE;
+    for (Pass = 0; Pass < 2; Pass++) {
+        /* runs starting in [Hint, Bits), then in [0, Hint); one that holds
+           Hint without starting there belongs to the second pass */
+        From = Pass ? 0 : Hint;
+        To = Pass ? Hint : View->Bits;
+        if (Pass == 0 && Hint > 0 && Ext2ViewNext(View, Hint - 1, TRUE) == Hint - 1) {
+            From = Ext2ViewNext(View, Hint, FALSE);
+        }
+        for (Start = Ext2ViewNext(View, From, TRUE); Start < To; Start = Ext2ViewNext(View, End, TRUE)) {
+            End = Ext2ViewNext(View, Start + 1, FALSE);
+            if (End - Start >= Want && (Best == 0 || End - Start < Best)) {
+                Best = End - Start;
+                *Index = Start;
+                if (Best == Want) {
+                    *Length = Best;     /* none can fit better */
+                    return TRUE;
+                }
+            }
+        }
     }
-    if (AnyLength == 0) {
-        return FALSE;
+    *Length = Best;
+    return Best != 0;
+}
+
+/* the length of the longest run, 0 when nothing is free */
+static __inline ULONG
+Ext2ViewLongestRun(const EXT2_BLOCK_VIEW *View)
+{
+    ULONG Longest = 0, Start, End;
+
+    for (Start = Ext2ViewNext(View, 0, TRUE); Start < View->Bits; Start = Ext2ViewNext(View, End, TRUE)) {
+        End = Ext2ViewNext(View, Start + 1, FALSE);
+        if (End - Start > Longest) {
+            Longest = End - Start;
+        }
     }
-    *Index = AnyIndex;
-    *Number = AnyLength < *Number ? AnyLength : *Number;
-    return TRUE;
+    return Longest;
 }
 
 #endif /* _EXT4_BLOCK_SEARCH_H_ */

@@ -84,6 +84,9 @@
     <ClCompile Include="ext4\BlockAllocator.c">
       <Filter>ext4</Filter>
     </ClCompile>
+    <ClCompile Include="ext4\BlockPlacement.c">
+      <Filter>ext4</Filter>
+    </ClCompile>
     <ClCompile Include="ext4\MetadataBuffers.c">
       <Filter>ext4</Filter>
     </ClCompile>
@@ -504,6 +507,9 @@
       <Filter>volume</Filter>
     </ClInclude>
     <ClInclude Include="ext4\BlockSearch.h">
+      <Filter>ext4</Filter>
+    </ClInclude>
+    <ClInclude Include="ext4\BlockPlacement.h">
       <Filter>ext4</Filter>
     </ClInclude>
     <ClInclude Include="ext4\ExtentCore.h">

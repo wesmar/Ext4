@@ -21,7 +21,7 @@ static int ext4_xattr_new_block(PEXT2_IRP_CONTEXT IrpContext, struct inode *inod
 	NTSTATUS	status;
 
 	status = Ext2AllocateInodeBlocks(IrpContext, inode, ext4_inode_to_goal_block(inode),
-					 EXT2_ALLOC_JOURNALED, &found, &count);
+					 0, EXT2_ALLOC_JOURNALED, &found, &count);
 	*block = found;
 	return NT_SUCCESS(status) ? 0 : Ext2LinuxError(status);
 }

@@ -451,8 +451,8 @@ $kept = New-Object 'System.Collections.Generic.List[int]'
 if (Test-Path $fsx) { Remove-Item -Recurse -Force $fsx }
 New-Item -ItemType Directory $fsx | Out-Null
 # Defender scans every file closed on a volume that is not NTFS: the run
-# would measure the scanner
-Add-MpPreference -ExclusionPath $fsx
+# would measure the scanner (a scanner that is down neither scans nor stops the run)
+try { Add-MpPreference -ExclusionPath $fsx } catch { "  (Defender exclusion not set: $($_.Exception.Message))" }
 $failed = 0
 $clock = [Diagnostics.Stopwatch]::StartNew()
 try {
@@ -471,7 +471,7 @@ try {
         }
     }
 } finally {
-    Remove-MpPreference -ExclusionPath $fsx
+    try { Remove-MpPreference -ExclusionPath $fsx } catch { }
 }
 [IO.File]::WriteAllText((Join-Path $Root 'sums.txt'), (($sums | ForEach-Object { "$_`n" }) -join ''), [Text.Encoding]::ASCII)
 $done = if ($failed) { $seed - $FirstSeed } else { $Seeds }

@@ -52,17 +52,21 @@ Ext2ExpandLast(
         INC_MEM_COUNT(PS_BLOCK_DATA, pData, BLOCK_SIZE);
     }
 
-    /* allocate block from disk */
+    /* allocate block from disk: *Hint is the file's block before these
+       (0: none), the goal the one after it; a data block's logical index
+       is how far the file has grown */
     Status = Ext2NewBlock(
                  IrpContext,
                  Vcb,
                  (Mcb->Inode->i_ino - 1) / INODES_PER_GROUP,
-                 *Hint,
+                 *Hint != 0 ? (ULONGLONG)*Hint + 1 : 0,
+                 Layer == 0 ? Base : 0,
                  &NewBlock,
                  Number,
                  EXT2_INDIRECT_BLOCK_LIMIT,
                  /* indirect and directory blocks go through the journal */
-                 (Layer > 0 || IsMcbDirectory(Mcb)) ? EXT2_ALLOC_JOURNALED : 0
+                 ((Layer > 0 || IsMcbDirectory(Mcb)) ? EXT2_ALLOC_JOURNALED : 0) |
+                 (*Hint != 0 ? EXT2_ALLOC_AT_GOAL : 0)
              );
     *Block = (ULONG)NewBlock;
 
@@ -104,7 +108,7 @@ Ext2ExpandLast(
 errorout:
 
     if (NT_SUCCESS(Status)) {
-        *Hint = *Block + *Number;
+        *Hint = *Block + *Number - 1;
         if (Data) {
             *Data = pData;
             ASSERT(*Number == 1);

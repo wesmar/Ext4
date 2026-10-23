@@ -37,6 +37,12 @@ typedef struct _EXT2_VCB {
        set once and read without a lock (ext4\GroupCache.c) */
     volatile LONG              *GroupCorrupt;
 
+    /* The longest free run of each group's block bitmap, or -1 before the
+       bitmap is first read this mount: written with every change to the
+       bitmap under its group's BlockLock, read without a lock as a bound
+       (ext4\BlockAllocator.c) */
+    volatile LONG              *GroupLongestRun;
+
     /* Corruption found this mount: reports printed (the first ones only).
        The superblock write a report or a journal stop asks for, made by a
        system worker: one queued at a time, the volume's teardown waits for

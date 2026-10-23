@@ -84,6 +84,7 @@ Ext2PutGroup(IN PEXT2_VCB Vcb)
 {
 
     Ext2FreeMetadataMap(Vcb);
+    Ext2FreeBlockRuns(Vcb);
     Ext2FreeGroupHealth(Vcb);
     if (NULL == Vcb->sbi.s_gd) {
         return;

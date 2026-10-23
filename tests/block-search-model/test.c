@@ -5,8 +5,10 @@
  * reference of the same contract, on deterministic random groups: sizes
  * that are not whole words, junk past the end of the last word, densities
  * from empty to full, zero to two overlays of freed blocks, any hint and
- * any wanted length. Every answer must be the reference's, and every run
- * returned must be free in the view and inside the group.
+ * any wanted length. Every answer must be the reference's: the run at a
+ * block, the best fit (shortest run of at least Want, the first from the
+ * hint among equals, a run counted whole where it starts) and the longest
+ * run; and every run returned must be free in the view and inside the group.
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -59,45 +61,50 @@ static int RefTaken(const EXT2_BLOCK_VIEW *View, ULONG i)
     return 0;
 }
 
-/* the contract, one bit at a time */
-static BOOLEAN RefPass(const EXT2_BLOCK_VIEW *View, ULONG From, ULONG To, ULONG Want,
-                       ULONG *Index, ULONG *AnyIndex, ULONG *AnyLength)
+static ULONG RefRunAt(const EXT2_BLOCK_VIEW *View, ULONG From)
 {
-    ULONG p = From;
+    ULONG End = From;
 
-    for (;;) {
-        ULONG End;
+    while (End < View->Bits && !RefTaken(View, End)) End++;
+    return End - From;
+}
+
+/* every maximal run, by its start: the shortest of at least Want, ties to
+   the first start from Hint on, wrapping */
+static BOOLEAN RefBestRun(const EXT2_BLOCK_VIEW *View, ULONG Hint, ULONG Want, ULONG *Index, ULONG *Length)
+{
+    ULONG Best = 0, BestKey = 0, p = 0;
+
+    if (Hint >= View->Bits) Hint = 0;
+    while (p < View->Bits) {
+        ULONG Start, End, Key;
         while (p < View->Bits && RefTaken(View, p)) p++;
-        if (p >= To || p >= View->Bits) {
-            return FALSE;
-        }
-        End = p;
-        while (End < View->Bits && !RefTaken(View, End)) End++;
-        if (*AnyLength == 0) {
-            *AnyIndex = p;
-            *AnyLength = End - p;
-        }
-        if (End - p >= Want) {
-            *Index = p;
-            return TRUE;
+        if (p >= View->Bits) break;
+        Start = p;
+        End = Start + RefRunAt(View, Start);
+        Key = Start >= Hint ? Start - Hint : Start + View->Bits;
+        if (End - Start >= Want &&
+            (Best == 0 || End - Start < Best || (End - Start == Best && Key < BestKey))) {
+            Best = End - Start;
+            BestKey = Key;
+            *Index = Start;
         }
         p = End;
     }
+    *Length = Best;
+    return Best != 0;
 }
 
-static BOOLEAN RefFind(const EXT2_BLOCK_VIEW *View, ULONG Hint, ULONG *Number, ULONG *Index)
+static ULONG RefLongest(const EXT2_BLOCK_VIEW *View)
 {
-    ULONG AnyIndex = 0, AnyLength = 0;
+    ULONG Longest = 0, p = 0;
 
-    if (Hint >= View->Bits) Hint = 0;
-    if (RefPass(View, Hint, View->Bits, *Number, Index, &AnyIndex, &AnyLength) ||
-        RefPass(View, 0, Hint, *Number, Index, &AnyIndex, &AnyLength)) {
-        return TRUE;
+    while (p < View->Bits) {
+        ULONG Length = RefTaken(View, p) ? 0 : RefRunAt(View, p);
+        if (Length > Longest) Longest = Length;
+        p += Length ? Length : 1;
     }
-    if (AnyLength == 0) return FALSE;
-    *Index = AnyIndex;
-    if (AnyLength < *Number) *Number = AnyLength;
-    return TRUE;
+    return Longest;
 }
 
 /* a map with about Density/256 of its bits set, in runs, junk past Bits */
@@ -120,9 +127,40 @@ static void Fill(ULONG64 *Map, ULONG Bits, ULONG Density)
     }
 }
 
+static ULONG Failed;
+
+static void Fail(ULONG Case, const char *What, ULONG Bits, ULONG Hint, ULONG Want,
+                 ULONG Got, ULONG GotLength, ULONG Ref, ULONG RefLength)
+{
+    if (Failed++ < 10) {
+        printf("FAIL case %lu %s: bits %lu hint %lu want %lu: got %lu+%lu, want %lu+%lu\n",
+               Case, What, Bits, Hint, Want, Got, GotLength, Ref, RefLength);
+    }
+}
+
+/* the run [Index, Index + Length) lies in the group, free in the view, maximal at its end */
+static void CheckRun(ULONG Case, const EXT2_BLOCK_VIEW *View, ULONG Index, ULONG Length)
+{
+    ULONG i;
+
+    if (Length == 0 || Index + Length > View->Bits) {
+        Fail(Case, "run outside the group", View->Bits, 0, 0, Index, Length, 0, 0);
+        return;
+    }
+    for (i = Index; i < Index + Length; i++) {
+        if (RefTaken(View, i)) {
+            Fail(Case, "run holds a taken block", View->Bits, 0, 0, Index, Length, i, 0);
+            return;
+        }
+    }
+    if (!RefTaken(View, Index + Length)) {
+        Fail(Case, "run not maximal", View->Bits, 0, 0, Index, Length, 0, 0);
+    }
+}
+
 int main(void)
 {
-    ULONG Case, Failed = 0, Found = 0, Partial = 0;
+    ULONG Case, Fits = 0, Exact = 0, Ats = 0;
 
     for (Case = 0; Case < MODEL_CASES; Case++) {
         EXT2_BLOCK_VIEW View;
@@ -130,7 +168,8 @@ int main(void)
         ULONG Hint = Below(Bits + 64);            /* past the end too */
         ULONG Want = 1 + Below(Below(8) == 0 ? 2048 : 64);
         ULONG Slots = Below(3);
-        ULONG GotIndex = 0, RefIndex = 0, GotNumber = Want, RefNumber = Want;
+        ULONG GotIndex = 0, GotLength = 0, RefIndex = 0, RefLength = 0;
+        ULONG At = Below(Bits + 8), GotAt, RefAt;
         BOOLEAN Got, Ref;
 
         Fill(Disk, Bits, Below(257));
@@ -141,37 +180,38 @@ int main(void)
         View.Freed[1] = Slots >= 2 ? FreedB : NULL;
         View.Bits = Bits;
 
-        Got = Ext2FindClearRun(&View, Hint, &GotNumber, &GotIndex);
-        Ref = RefFind(&View, Hint, &RefNumber, &RefIndex);
-
-        if (Got != Ref || (Got && (GotIndex != RefIndex || GotNumber != RefNumber))) {
-            if (Failed++ < 10) {
-                printf("FAIL case %lu: bits %lu hint %lu want %lu slots %lu: got %d %lu+%lu, want %d %lu+%lu\n",
-                       Case, Bits, Hint, Want, Slots, Got, GotIndex, GotNumber, Ref, RefIndex, RefNumber);
-            }
-            continue;
+        /* the run at a block */
+        GotAt = Ext2ViewRunAt(&View, At);
+        RefAt = (At < Bits && !RefTaken(&View, At)) ? RefRunAt(&View, At) : 0;
+        if (GotAt != RefAt) {
+            Fail(Case, "run at", Bits, At, 0, At, GotAt, At, RefAt);
+        } else if (GotAt) {
+            Ats++;
+            CheckRun(Case, &View, At, GotAt);
         }
-        if (Got) {
-            ULONG i;
-            Found++;
-            Partial += GotNumber < Want;
-            if (GotNumber == 0 || GotNumber > Want || GotIndex + GotNumber > Bits) {
-                Failed++;
-                printf("FAIL case %lu: run %lu+%lu outside the group of %lu\n", Case, GotIndex, GotNumber, Bits);
-                continue;
+
+        /* best fit */
+        Got = Ext2ViewBestRun(&View, Hint, Want, &GotIndex, &GotLength);
+        Ref = RefBestRun(&View, Hint, Want, &RefIndex, &RefLength);
+        if (Got != Ref || (Got && (GotIndex != RefIndex || GotLength != RefLength))) {
+            Fail(Case, "best fit", Bits, Hint, Want, GotIndex, Got ? GotLength : 0, RefIndex, Ref ? RefLength : 0);
+        } else if (Got) {
+            Fits++;
+            Exact += GotLength == Want;
+            CheckRun(Case, &View, GotIndex, GotLength);
+            if (GotIndex > 0 && !RefTaken(&View, GotIndex - 1)) {
+                Fail(Case, "best fit not a whole run", Bits, Hint, Want, GotIndex, GotLength, 0, 0);
             }
-            for (i = GotIndex; i < GotIndex + GotNumber; i++) {
-                if (RefTaken(&View, i)) {
-                    Failed++;
-                    printf("FAIL case %lu: block %lu of the run is taken\n", Case, i);
-                    break;
-                }
-            }
+        }
+
+        /* the longest run */
+        if (Ext2ViewLongestRun(&View) != RefLongest(&View)) {
+            Fail(Case, "longest", Bits, 0, 0, 0, Ext2ViewLongestRun(&View), 0, RefLongest(&View));
         }
     }
 
-    printf("block search: %lu cases, %lu found (%lu shorter than wanted), %lu failed\n",
-           MODEL_CASES, Found, Partial, Failed);
+    printf("block search: %lu cases - %lu runs at a block, %lu best fits (%lu exact), %lu failed\n",
+           MODEL_CASES, Ats, Fits, Exact, Failed);
     printf(Failed ? "BLOCK-SEARCH-MODEL: FAILED\n" : "BLOCK-SEARCH-MODEL: ALL PASSED\n");
     return Failed ? 1 : 0;
 }
