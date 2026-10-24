@@ -23,7 +23,8 @@
  * contents.
  *
  * Where blocks go is BlockPlacement.c's: this file gives it each group's
- * bound - the longest free run of its bitmap, kept with every change to it
+ * bound - no free run of its bitmap is longer: the longest, grown with
+ * every release and made exact again by a search it sent in vain
  * (GroupLongestRun), or before the bitmap is first read the descriptor's
  * free count - and the taking of blocks in a group, around the windows of
  * other files (BlockWindows.c, one table for the volume under WindowLock,
@@ -93,7 +94,7 @@ Ext2FreeBlockRuns(IN PEXT2_VCB Vcb)
     }
 }
 
-/* Group's bitmap as it now is, its BlockLock held */
+/* Group's bitmap as it now is, its BlockLock held: the bound exact */
 static __inline VOID
 Ext2NoteLongestRun(IN PEXT2_VCB Vcb, IN ULONG Group, IN struct buffer_head *Bh)
 {
@@ -101,6 +102,31 @@ Ext2NoteLongestRun(IN PEXT2_VCB Vcb, IN ULONG Group, IN struct buffer_head *Bh)
 
     Ext2DiskView(Vcb, Group, Bh, &View);
     WriteNoFence(&Vcb->GroupLongestRun[Group], (LONG)Ext2ViewLongestRun(&View));
+}
+
+/*
+ * Blocks from Index on freed in Group, its BlockLock held: the bound grows
+ * to the run they are now part of, if that is longer. A take leaves it as
+ * it is - it only has to be no shorter than the longest run - and a search
+ * it sends in vain makes it exact again (Ext2TakeInLockedGroup). Recounted
+ * whole after every change, it was a fortieth of the time of deleting
+ * 17 000 files on a volume of scattered free space.
+ */
+static __inline VOID
+Ext2NoteFreedRun(IN PEXT2_VCB Vcb, IN ULONG Group, IN struct buffer_head *Bh, IN ULONG Index)
+{
+    EXT2_BLOCK_VIEW View;
+    LONG            Bound = ReadNoFence(&Vcb->GroupLongestRun[Group]);
+    ULONG           Start, Run;
+
+    if (Bound == EXT2_RUN_UNSEEN) {
+        return;             /* the group's first search sees it whole */
+    }
+    Ext2DiskView(Vcb, Group, Bh, &View);
+    Run = Ext2ViewRunAround(&View, Index, &Start);
+    if ((LONG)Run > Bound) {
+        WriteNoFence(&Vcb->GroupLongestRun[Group], (LONG)Run);
+    }
 }
 
 /* ---------------------------------------------------------------- the windows */
@@ -222,9 +248,9 @@ Ext2LoadBlockBitmap(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG 
 
 /*
  * The descriptor's free count from the bitmap after it changed, its
- * checksums, the group's longest run, and the volume total moved by the
- * exact difference. Counted, not adjusted by the change: a count that had
- * drifted is right again.
+ * checksums, and the volume total moved by the exact difference. Counted,
+ * not adjusted by the change: a count that had drifted is right again.
+ * The group's bound is the caller's (Ext2NoteFreedRun).
  */
 static NTSTATUS
 Ext2RecountGroupBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group,
@@ -237,7 +263,6 @@ Ext2RecountGroupBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULO
 
     RtlInitializeBitMap(&Bitmap, (PULONG)bh->b_data, Ext2GroupBlocks(Vcb, Group));
     After = RtlNumberOfClearBits(&Bitmap);
-    Ext2NoteLongestRun(Vcb, Group, bh);
     ext4_free_blks_set(sb, gd, (__u32)After);
     ext4_block_bitmap_csum_set(sb, Group, gd, bh);
     if (!Ext2SaveGroup(IrpContext, Vcb, Group)) {
@@ -332,6 +357,19 @@ Ext2TakeInLockedGroup(IN PEXT2_PLACE_STATE P, IN const EXT2_PLACE_TAKE *Ask, OUT
         At = Ask->Hint;
         Length = Ext2ViewRunAt(&View, At);
     } else if (!Ext2ViewBestRun(&View, Ask->Hint, Ask->Want, &At, &Length)) {
+        /* The bound let the search in, and nothing hid blocks from it: the
+           bound is too high (takes since it was exact only shortened runs).
+           Made exact, it keeps the next search of that size out. With
+           windows, uncommitted frees or only a prefix of the group in the
+           view it may be right. */
+        ULONG s;
+        BOOLEAN Hidden = View.CutCount != 0 || View.Bits != GroupBits;
+        for (s = 0; s < EXT2_FREED_SLOTS; s++) {
+            Hidden |= View.Freed[s] != NULL;
+        }
+        if (!Hidden) {
+            Ext2NoteLongestRun(Vcb, Group, *Bh);
+        }
         Length = 0;
     }
     if (Length == 0) {
@@ -471,6 +509,7 @@ Ext2ReleaseInGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG G
         mark_buffer_dirty(bh);
         Status = Ext2RecountGroupBlocks(IrpContext, Vcb, Group, gd, bh);
         if (NT_SUCCESS(Status)) {
+            Ext2NoteFreedRun(Vcb, Group, bh, Index);
             /* filed in the journal: reusable once the release commits;
                without memory for that, at once, as before */
             if (!Ext2DeferFreedBlocks(Vcb, Group, Index, Count)) {
@@ -666,6 +705,7 @@ Ext2MaterializeBlockBitmap(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN
         Status = Ext2LoadBlockBitmap(IrpContext, Vcb, Group, gd, &bh);
         if (NT_SUCCESS(Status)) {
             Status = Ext2RecountGroupBlocks(IrpContext, Vcb, Group, gd, bh);
+            Ext2NoteLongestRun(Vcb, Group, bh);
         }
     }
     if (bh != NULL) {

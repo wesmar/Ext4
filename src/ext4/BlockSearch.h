@@ -101,6 +101,33 @@ Ext2ViewRunAt(const EXT2_BLOCK_VIEW *View, ULONG From)
     return Ext2ViewNext(View, From, FALSE) - From;
 }
 
+/* the free run that holds bit At, whole: its length and *Start; 0 when At
+   is taken. Back to the taken bit before At a word at a time, as forward. */
+static __inline ULONG
+Ext2ViewRunAround(const EXT2_BLOCK_VIEW *View, ULONG At, PULONG Start)
+{
+    ULONG           Word = At / EXT2_BITS_PER_WORD;
+    ULONG64         Below = (1ULL << (At % EXT2_BITS_PER_WORD)) - 1;
+    unsigned long   Bit;
+
+    if (At >= View->Bits || Ext2ViewNext(View, At, TRUE) != At) {
+        return 0;
+    }
+    for (;;) {
+        if (_BitScanReverse64(&Bit, Ext2ViewTaken(View, Word) & Below)) {
+            *Start = Word * EXT2_BITS_PER_WORD + Bit + 1;
+            break;
+        }
+        if (Word == 0) {
+            *Start = 0;
+            break;
+        }
+        Word--;
+        Below = ~0ULL;
+    }
+    return Ext2ViewNext(View, At, FALSE) - *Start;
+}
+
 /*
  * Best fit: the shortest run of at least Want blocks (Want > 0), and of
  * runs as short the first from Hint on, wrapping - *Index, *Length. The run

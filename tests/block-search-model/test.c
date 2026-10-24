@@ -8,7 +8,7 @@
  * cuts (other files' windows: in a word, across words, whole words, past
  * the end), any hint and any wanted length. Every answer must be the
  * reference's: the run at a
- * block, the best fit (shortest run of at least Want, the first from the
+ * block, the whole run around one, the best fit (shortest run of at least Want, the first from the
  * hint among equals, a run counted whole where it starts) and the longest
  * run; and every run returned must be free in the view and inside the group.
  */
@@ -167,7 +167,7 @@ static void CheckRun(ULONG Case, const EXT2_BLOCK_VIEW *View, ULONG Index, ULONG
 
 int main(void)
 {
-    ULONG Case, Fits = 0, Exact = 0, Ats = 0;
+    ULONG Case, Fits = 0, Exact = 0, Ats = 0, Arounds = 0;
 
     for (Case = 0; Case < MODEL_CASES; Case++) {
         EXT2_BLOCK_VIEW View;
@@ -204,6 +204,25 @@ int main(void)
             CheckRun(Case, &View, At, GotAt);
         }
 
+        /* the run around a block */
+        {
+            ULONG GotStart = 0, RefStart = At, Around = Ext2ViewRunAround(&View, At, &GotStart);
+            ULONG RefAround = 0;
+            if (At < Bits && !RefTaken(&View, At)) {
+                while (RefStart > 0 && !RefTaken(&View, RefStart - 1)) RefStart--;
+                RefAround = RefRunAt(&View, RefStart);
+            }
+            if (Around != RefAround || (Around && GotStart != RefStart)) {
+                Fail(Case, "run around", Bits, At, 0, GotStart, Around, RefStart, RefAround);
+            } else if (Around) {
+                Arounds++;
+                CheckRun(Case, &View, GotStart, Around);
+                if (GotStart > 0 && !RefTaken(&View, GotStart - 1)) {
+                    Fail(Case, "run around not whole", Bits, At, 0, GotStart, Around, 0, 0);
+                }
+            }
+        }
+
         /* best fit */
         Got = Ext2ViewBestRun(&View, Hint, Want, &GotIndex, &GotLength);
         Ref = RefBestRun(&View, Hint, Want, &RefIndex, &RefLength);
@@ -224,8 +243,8 @@ int main(void)
         }
     }
 
-    printf("block search: %lu cases - %lu runs at a block, %lu best fits (%lu exact), %lu failed\n",
-           MODEL_CASES, Ats, Fits, Exact, Failed);
+    printf("block search: %lu cases - %lu runs at a block, %lu runs around one, %lu best fits (%lu exact), %lu failed\n",
+           MODEL_CASES, Ats, Arounds, Fits, Exact, Failed);
     printf(Failed ? "BLOCK-SEARCH-MODEL: FAILED\n" : "BLOCK-SEARCH-MODEL: ALL PASSED\n");
     return Failed ? 1 : 0;
 }

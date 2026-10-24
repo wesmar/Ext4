@@ -6,16 +6,17 @@
  * of src\ext4\BlockSearch.h) on simulated volumes.
  *
  * Part 1, the rules: random volumes - groups of any density, some not seen
- * yet (bound = free count), blocks freed but not committed, a short last
- * group, other files' windows - and random requests. Every answer must be
- * the reference's (P1 around other windows, else the first size at which
- * any group has a run outside them - at the sizes up to Need, failing
- * that, any run, taken from its end - the first such group from the
- * goal's, its best fit), the run free and no longer than Need, every
- * group's longest-run bound exact after a take, the windows after it the
- * reference's, T2: with no run of Need anywhere, the run taken is longer
- * than half the longest, and T4: blocks in another file's window only
- * when no run as long lies outside the windows.
+ * yet (bound = free count), some with a bound above their longest run (as
+ * a take leaves it), blocks freed but not committed, a short last group,
+ * other files' windows - and random requests. Every answer must be the
+ * reference's (P1 around other windows, else the first size at which any
+ * group has a run outside them - at the sizes up to Need, failing that,
+ * any run, taken from its end - the first such group from the goal's, its
+ * best fit), the run free and no longer than Need, no group's bound below
+ * its longest run after a take, the windows after it the reference's, T2:
+ * with no run of Need anywhere, the run taken is longer than half the
+ * longest, and T4: blocks in another file's window only when no run as
+ * long lies outside the windows.
  *
  * Part 2, aging: a 2 GiB volume of 4 KiB blocks aged by the workload of
  * tests\aging-vm.ps1, then streams, copies, parallel streams, small files
@@ -69,6 +70,7 @@ typedef struct VOLUME {
     EXT2_WINDOWS Windows;
     ULONG   Owner;                      /* the file the request is for */
     int     NoWindows;                  /* the placement before windows: none kept */
+    int     Recount;                    /* the bound recounted after every change, as before */
     ULONG   Takes;
 } VOLUME;
 
@@ -138,7 +140,14 @@ static void SetRun(VOLUME *V, ULONG g, ULONG Index, ULONG Count, int Set)
     }
     V->FreeCount[g] = Set ? V->FreeCount[g] - Count : V->FreeCount[g] + Count;
     DiskView(V, g, &View);
-    V->Longest[g] = (LONG)Ext2ViewLongestRun(&View);
+    if (V->Recount) {
+        V->Longest[g] = (LONG)Ext2ViewLongestRun(&View);
+    } else if (!Set && V->Longest[g] >= 0) {
+        /* the driver's bound (BlockAllocator.c): a take leaves it as it is,
+           a release grows it to the run around the blocks freed */
+        ULONG Start, Run = Ext2ViewRunAround(&View, Index, &Start);
+        if ((LONG)Run > V->Longest[g]) V->Longest[g] = (LONG)Run;
+    }
 }
 
 
@@ -177,6 +186,13 @@ static int ModelTake(void *Context, const EXT2_PLACE_TAKE *Ask, unsigned int *In
         At = Ask->Hint;
         Length = Ext2ViewRunAt(&View, At);
     } else if (!Ext2ViewBestRun(&View, Ask->Hint, Ask->Want, &At, &Length)) {
+        /* the driver's: a search that nothing hid blocks from makes the
+           bound exact */
+        if (View.CutCount == 0 && View.Freed[0] == NULL) {
+            EXT2_BLOCK_VIEW Disk;
+            DiskView(V, g, &Disk);
+            V->Longest[g] = (LONG)Ext2ViewLongestRun(&Disk);
+        }
         Length = 0;
     }
     if (Length == 0)
@@ -368,7 +384,7 @@ static void Fill(ULONG64 *Map, ULONG n, ULONG Density)
 
 static void Rules(void)
 {
-    ULONG Case, Found = 0, Adjacent = 0, Relaxed = 0, Windowed = 0, Into = 0;
+    ULONG Case, Found = 0, Adjacent = 0, Relaxed = 0, Windowed = 0, Into = 0, Above = 0;
 
     for (Case = 0; Case < RULE_CASES; Case++) {
         ULONG g, Need, Room, Group, Hint, Longest = 0, LongestAll = 0, Owner, nW = 0, k;
@@ -388,7 +404,13 @@ static void Rules(void)
             Fill(Vol.Freed[g], Bits(&Vol, g), Below(64));
             Vol.FreeCount[g] = CountFree(&Vol, g);
             DiskView(&Vol, g, &View);
-            Vol.Longest[g] = Below(3) == 0 ? -1 : (LONG)RefLongest(&View);
+            /* not seen yet, exact, or above the longest run - as a take
+               leaves it */
+            switch (Below(3)) {
+            case 0:  Vol.Longest[g] = -1; break;
+            case 1:  Vol.Longest[g] = (LONG)RefLongest(&View); break;
+            default: Vol.Longest[g] = (LONG)(RefLongest(&View) + Below(View.Bits - RefLongest(&View) + 1)); break;
+            }
         }
         Vol.Journaled = Below(4) == 0;
         Group = Below(Vol.Groups);
@@ -465,12 +487,14 @@ static void Rules(void)
                 if (Taken(&View, i)) { Fail(Case, "took a taken block", pg, i, 0, 0); break; }
         }
 
-        /* the bounds stay exact */
+        /* no bound below its group's longest run (P3 passes over a group
+           only below it); one above is what the take left */
         for (g = 0; g < Vol.Groups; g++) {
             EXT2_BLOCK_VIEW View;
             DiskView(&Vol, g, &View);
-            if (Vol.Longest[g] >= 0 && (ULONG)Vol.Longest[g] != RefLongest(&View))
-                Fail(Case, "bound not exact", g, Vol.Longest[g], RefLongest(&View), 0);
+            if (Vol.Longest[g] >= 0 && (ULONG)Vol.Longest[g] < RefLongest(&View))
+                Fail(Case, "bound below the longest run", g, Vol.Longest[g], RefLongest(&View), 0);
+            Above += Vol.Longest[g] >= 0 && (ULONG)Vol.Longest[g] > RefLongest(&View);
             if (Vol.FreeCount[g] != CountFree(&Vol, g))
                 Fail(Case, "free count", g, Vol.FreeCount[g], CountFree(&Vol, g), 0);
         }
@@ -490,7 +514,8 @@ static void Rules(void)
         }
     }
     printf("rules: %lu requests, %lu placed (%lu after the owner, %lu below Need, %lu among windows,"
-           " %lu into one), %lu failed\n", RULE_CASES, Found, Adjacent, Relaxed, Windowed, Into, Failed);
+           " %lu into one; %lu bounds above their longest run after), %lu failed\n",
+           RULE_CASES, Found, Adjacent, Relaxed, Windowed, Into, Above, Failed);
 }
 
 /* ---------------------------------------------------------------- part 2 */
@@ -506,6 +531,18 @@ typedef struct FILE_ { RUN *Runs; ULONG Count, Capacity; ULONG64 Blocks; ULONG H
 
 static FILE_ Files[AGE_FILES];
 static int   OldPolicy;
+static int   Quiet;                     /* a run only compared, not reported */
+static ULONG64 AgeFragments;            /* every fragment counted in a run */
+static ULONG64 AgeHash;                 /* and where each one lies (FNV-1a) */
+
+static void HashRuns(const FILE_ *f)
+{
+    ULONG i;
+    for (i = 0; i < f->Count; i++) {
+        AgeHash = (AgeHash ^ f->Runs[i].Start) * 0x100000001B3ULL;
+        AgeHash = (AgeHash ^ f->Runs[i].Length) * 0x100000001B3ULL;
+    }
+}
 
 static void AddRun(FILE_ *f, ULONG64 Start, ULONG Length)
 {
@@ -624,11 +661,15 @@ static void Report(const char *Name, const char *Phase, int First, int Count)
     for (i = First; i < First + Count; i++) {
         n += Files[i].Count;
         if (Files[i].Count > Worst) Worst = Files[i].Count;
+        HashRuns(&Files[i]);
     }
-    printf("  %-10s %-9s %5lu fragments, %.2f a file (most %lu)\n", Name, Phase, n, (double)n / Count, Worst);
+    AgeFragments += n;
+    if (!Quiet)
+        printf("  %-10s %-9s %5lu fragments, %.2f a file (most %lu)\n", Name, Phase, n, (double)n / Count, Worst);
 }
 
-/* Policy 0: the placement before; 1: the production one keeping no windows; 2: as it is */
+/* Policy 0: the placement before; 1: the production one keeping no windows;
+   2: as it is; 3: as it is, its bounds recounted after every change */
 static void Age(const char *Name, int Policy)
 {
     ULONG64 Capacity = (ULONG64)AGE_GROUPS * AGE_BITS, Used = 0, Written = 0;
@@ -636,8 +677,11 @@ static void Age(const char *Name, int Policy)
     ULONG   g;
 
     memset(&Vol, 0, sizeof(Vol));
+    AgeFragments = 0;
+    AgeHash = 0xCBF29CE484222325ULL;
     OldPolicy = Policy == 0;
     Vol.NoWindows = Policy == 1;
+    Vol.Recount = Policy == 3;
     Vol.Groups = AGE_GROUPS;
     Vol.GroupBits = Vol.LastBits = AGE_BITS;
     for (g = 0; g < AGE_GROUPS; g++) {
@@ -680,9 +724,12 @@ static void Age(const char *Name, int Policy)
         for (i = 0; i < LiveCount; i++) {
             n += Files[Live[i]].Count;
             if (Files[Live[i]].Blocks >= 256) { big++; bigRuns += Files[Live[i]].Count; }
+            HashRuns(&Files[Live[i]]);
         }
-        printf("  %-10s aged: %d files, %lu fragments, files of 1 MiB or more %.2f each\n",
-               Name, LiveCount, n, big ? (double)bigRuns / big : 0.0);
+        AgeFragments += n;
+        if (!Quiet)
+            printf("  %-10s aged: %d files, %lu fragments, files of 1 MiB or more %.2f each\n",
+                   Name, LiveCount, n, big ? (double)bigRuns / big : 0.0);
     }
 
     /* the measured phases, files from Next_ on */
@@ -710,7 +757,9 @@ static void Age(const char *Name, int Policy)
         ULONG Next = 0;
         for (i = m; i + 1 < m + 2000; i++)
             Next += Files[i + 1].Runs[0].Start == Files[i].Runs[Files[i].Count - 1].Start + Files[i].Runs[Files[i].Count - 1].Length;
-        printf("  %-10s small     %5lu of 1999 right after the file before\n", Name, Next);
+        AgeFragments += Next;
+        if (!Quiet)
+            printf("  %-10s small     %5lu of 1999 right after the file before\n", Name, Next);
     }
     m = Next_;
     for (i = 0; i < 2; i++) New(m + i, 0);
@@ -790,6 +839,23 @@ int main(void)
     Age("before", 0);
     Age("no window", 1);
     Age("now", 2);
+    {
+        /* The bound is only never below the longest run - a take leaves it,
+           a release grows it, a search sent in vain makes it exact - and the
+           placement has to be the one an exact bound gives, block for block:
+           it only visits more groups. */
+        ULONG64 Fragments = AgeFragments, Hash = AgeHash;
+        ULONG   Visits = Vol.Takes;
+        int     Same;
+        Quiet = 1;
+        Age("recounted", 3);
+        Quiet = 0;
+        Same = AgeFragments == Fragments && AgeHash == Hash;
+        printf("  now, its bound recounted after every change: %s; %lu groups searched, %lu as it is\n",
+               Same ? "the same placement, block for block" : "ANOTHER PLACEMENT", Vol.Takes, Visits);
+        if (!Same)
+            Fail(0, "placement depends on the bound above the longest run", (ULONG)Fragments, (ULONG)AgeFragments, 0, 0);
+    }
     OldPolicy = 0;
     Doubling();
     printf(Failed ? "BLOCK-PLACE-MODEL: FAILED\n" : "BLOCK-PLACE-MODEL: ALL PASSED\n");
