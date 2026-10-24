@@ -119,7 +119,8 @@ Ext2Close (IN PEXT2_IRP_CONTEXT IrpContext)
             FileObject->FsContext2 = Ccb = NULL;
         }
 
-        /* only deref fcb, Ext2ReleaseFcb might lead deadlock */
+        /* not Ext2ReleaseFcb: a close inside a purge or a flush would wait
+           for the FcbLock its own thread holds (Ext2ReleaseFcbAtClose) */
         FcbDerefDeferred = TRUE;
         if (IsFlagOn(Fcb->Flags, FCB_DELETE_PENDING) ||
             NULL == Fcb->Mcb ||
@@ -155,8 +156,7 @@ Ext2Close (IN PEXT2_IRP_CONTEXT IrpContext)
 
         /* the Fcb may be freed once its count is down: nothing of it is
            read after the dereference */
-        if (FcbDerefDeferred &&
-            Ext2DerefXcb(&Fcb->ReferenceCount) == 0 && FcbGone) {
+        if (FcbDerefDeferred && Ext2ReleaseFcbAtClose(Vcb, Fcb, FcbGone) && FcbGone) {
             Ext2FcbGone(Vcb);
         }
     }

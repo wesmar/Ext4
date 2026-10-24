@@ -76,6 +76,8 @@ typedef struct _EXT2_VCB {
     /* List of FCBs for open files on this volume */
     ERESOURCE                   FcbLock;
     LIST_ENTRY                  FcbList;
+    LIST_ENTRY                  FcbIdleList; /* the reaper's: Fcbs as they became idle (Fcb->IdleLink) */
+    KSPIN_LOCK                  FcbIdleLock; /* guards FcbIdleList: a close changes it without FcbLock */
     LONG                        FcbCount;
     LONG                        FcbGone;    /* idle Fcbs of deleted files since the last reaper scan */
 
@@ -295,6 +297,10 @@ typedef struct _EXT2_FCB {
     /* List of FCBs for this volume */
     LIST_ENTRY                      Next;
     LARGE_INTEGER                   TsDrop; /* drop time */
+    /* on Vcb->FcbIdleList from its last release on, linked to itself
+       otherwise; a reference taken again leaves it there until the
+       reaper meets it (CacheReaper.c). Under Vcb->FcbIdleLock. */
+    LIST_ENTRY                      IdleLink;
 
     SECTION_OBJECT_POINTERS         SectionObject;
 

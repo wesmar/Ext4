@@ -409,6 +409,9 @@ Ext2QueryUnusedFcb(PEXT2_VCB Vcb, PLIST_ENTRY List, LONGLONG Now, BOOLEAN Everyt
 
     BOOLEAN         Over;
 
+    KIRQL           Irql;
+    LIST_ENTRY      Expired;
+
     ExAcquireResourceExclusiveLite(&Vcb->FcbLock, TRUE);
 
     /* this scan takes every idle Fcb of a deleted file there is */
@@ -418,12 +421,24 @@ Ext2QueryUnusedFcb(PEXT2_VCB Vcb, PLIST_ENTRY List, LONGLONG Now, BOOLEAN Everyt
        down to the low water mark */
     Over = (ULONG)Vcb->FcbCount > Ext2FcbHighWater();
 
-    for (Link = Vcb->FcbList.Flink; Link != &Vcb->FcbList; Link = Next) {
+    /* Only the idle Fcbs, in the order they became idle (Ext2ReleaseFcb,
+       Ext2ReleaseFcbAtClose). The scan went over every Fcb: a bulk copy
+       leaves thousands of files referenced, their close waiting for the
+       cache manager to let go of their data, and past the high water mark
+       every close made a scan walk all of them. A count seen at 0 here
+       stays so: a reference is taken from 0 only under FcbLock, and a
+       close counts down under FcbIdleLock. */
+    InitializeListHead(&Expired);
+    KeAcquireSpinLock(&Vcb->FcbIdleLock, &Irql);
+    for (Link = Vcb->FcbIdleList.Flink; Link != &Vcb->FcbIdleList; Link = Next) {
 
         Next = Link->Flink;
-        Fcb = CONTAINING_RECORD(Link, EXT2_FCB, Next);
+        Fcb = CONTAINING_RECORD(Link, EXT2_FCB, IdleLink);
 
+        /* taken again since: off the list, put back by its next release */
         if (Fcb->ReferenceCount > 0) {
+            RemoveEntryList(&Fcb->IdleLink);
+            InitializeListHead(&Fcb->IdleLink);
             continue;
         }
 
@@ -433,29 +448,57 @@ Ext2QueryUnusedFcb(PEXT2_VCB Vcb, PLIST_ENTRY List, LONGLONG Now, BOOLEAN Everyt
         }
 
         /* TsDrop 0: deleted or delete pending, nothing worth keeping. The
-           idle Fcbs follow in the order they became idle (Ext2ReleaseFcb
-           puts those of deleted files first and the others last), so the
-           first one still young ends the scan: every later one is younger.
-           The scan went on to the end instead, under the exclusive FcbLock,
-           and past the high water mark every close kicked it - creating
-           files in a cache of 16 000 took a full scan per file. */
+           idle Fcbs follow in the order they became idle (those of deleted
+           files first, the others last), so the first one still young ends
+           the scan: every later one is younger. The scan went on to the end
+           instead, under the exclusive FcbLock, and past the high water
+           mark every close kicked it - creating files in a cache of 16 000
+           took a full scan per file. */
         if (!Everything && Fcb->TsDrop.QuadPart != 0 &&
             Fcb->TsDrop.QuadPart + EXT4_FCB_KEEP > Now &&
-            !(Over && (ULONG)Vcb->FcbCount > Ext2FcbLowWater())) {
+            !(Over && (ULONG)Vcb->FcbCount - Count > Ext2FcbLowWater())) {
             Deadline = Ext2EarlierDeadline(Deadline, Fcb->TsDrop.QuadPart + EXT4_FCB_KEEP);
             break;
         }
 
+        RemoveEntryList(&Fcb->IdleLink);
+        InsertTailList(&Expired, &Fcb->IdleLink);
+        Count++;
+    }
+    KeReleaseSpinLock(&Vcb->FcbIdleLock, Irql);
+
+    /* their names are let go of outside the spin lock */
+    while (!IsListEmpty(&Expired)) {
+        Fcb = CONTAINING_RECORD(RemoveHeadList(&Expired), EXT2_FCB, IdleLink);
+        InitializeListHead(&Fcb->IdleLink);
         RemoveEntryList(&Fcb->Next);
         Ext2UnlinkFcb(Fcb);
         Ext2DerefXcb(&Vcb->FcbCount);
         InsertTailList(List, &Fcb->Next);
-        Count++;
     }
 
     ExReleaseResourceLite(&Vcb->FcbLock);
 
     return Deadline;
+}
+
+/* Fcb off the idle list if nobody references it, FcbLock held exclusively:
+   then its count stays at 0 (see above) */
+static BOOLEAN
+Ext2TakeIdleFcb(PEXT2_VCB Vcb, PEXT2_FCB Fcb)
+{
+    KIRQL   Irql;
+    BOOLEAN Idle;
+
+    KeAcquireSpinLock(&Vcb->FcbIdleLock, &Irql);
+    Idle = Fcb->ReferenceCount == 0;
+    if (Idle) {
+        RemoveEntryList(&Fcb->IdleLink);
+        InitializeListHead(&Fcb->IdleLink);
+    }
+    KeReleaseSpinLock(&Vcb->FcbIdleLock, Irql);
+
+    return Idle;
 }
 
 /*
@@ -478,7 +521,7 @@ Ext2DropIdleFcbs(PEXT2_VCB Vcb)
     while (!IsListEmpty(&Vcb->FcbList)) {
         next = RemoveHeadList(&Vcb->FcbList);
         Fcb = CONTAINING_RECORD(next, EXT2_FCB, Next);
-        if (Fcb->ReferenceCount > 0) {
+        if (!Ext2TakeIdleFcb(Vcb, Fcb)) {
             InsertTailList(&busy, &Fcb->Next);
             continue;
         }

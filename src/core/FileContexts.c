@@ -44,6 +44,7 @@ Ext2AllocateFcb (
     Fcb->OpenHandleCount = 0;
     Fcb->ReferenceCount = 0;
     InitializeListHead(&Fcb->CcbList);
+    InitializeListHead(&Fcb->IdleLink);
     Fcb->Vcb = Vcb;
     Fcb->Inode = Mcb->Inode;
 
@@ -189,6 +190,66 @@ Ext2FreeFcb (IN PEXT2_FCB Fcb)
     }
 }
 
+/*
+ * Fcb to the reaper's idle list, FcbIdleLock held: those of deleted files
+ * (Gone) first, the others last, in the order they became idle. Still on it
+ * if it was taken again since its last release, it moves.
+ */
+static __inline VOID
+Ext2FcbIdleLocked(IN PEXT2_VCB Vcb, IN PEXT2_FCB Fcb, IN BOOLEAN Gone)
+{
+    RemoveEntryList(&Fcb->IdleLink);
+    if (Gone) {
+        InsertHeadList(&Vcb->FcbIdleList, &Fcb->IdleLink);
+    } else {
+        InsertTailList(&Vcb->FcbIdleList, &Fcb->IdleLink);
+    }
+}
+
+static VOID
+Ext2FcbIdle(IN PEXT2_VCB Vcb, IN PEXT2_FCB Fcb, IN BOOLEAN Gone)
+{
+    KIRQL   Irql;
+
+    KeAcquireSpinLock(&Vcb->FcbIdleLock, &Irql);
+    Ext2FcbIdleLocked(Vcb, Fcb, Gone);
+    KeReleaseSpinLock(&Vcb->FcbIdleLock, Irql);
+}
+
+/*
+ * The reference of a file object's Ccb, dropped at its close; TRUE when it
+ * was the last one, and the Fcb may be freed from then on. A close comes
+ * from inside a purge or a flush that holds FcbLock as well (the cache
+ * manager lets go of its file objects there), so it cannot wait for that
+ * lock as Ext2ReleaseFcb does. The Fcb goes to the idle list under
+ * FcbIdleLock instead, in the same hold as its count goes down: the reaper
+ * looks at counts under that lock too, so it finds this close either done
+ * or not begun - never an Fcb idle but off the list, which it would not see
+ * again (a dismounted volume whose last file was closed so would never go,
+ * and sc stop wait for it for ever). TsDrop is the caller's, set under the
+ * Fcb's MainResource.
+ */
+BOOLEAN
+Ext2ReleaseFcbAtClose(IN PEXT2_VCB Vcb, IN PEXT2_FCB Fcb, IN BOOLEAN Gone)
+{
+    KIRQL   Irql;
+    LONG    Count;
+    BOOLEAN Last;
+
+    for (Count = Fcb->ReferenceCount; Count > 1; Count = Fcb->ReferenceCount) {
+        if (InterlockedCompareExchange(&Fcb->ReferenceCount, Count - 1, Count) == Count) {
+            return FALSE;
+        }
+    }
+
+    KeAcquireSpinLock(&Vcb->FcbIdleLock, &Irql);
+    Ext2FcbIdleLocked(Vcb, Fcb, Gone);
+    Last = Ext2DerefXcb(&Fcb->ReferenceCount) == 0;
+    KeReleaseSpinLock(&Vcb->FcbIdleLock, Irql);
+
+    return Last;
+}
+
 VOID
 Ext2ReleaseFcb (IN PEXT2_FCB Fcb)
 {
@@ -217,17 +278,14 @@ Ext2ReleaseFcb (IN PEXT2_FCB Fcb)
     ExAcquireResourceExclusiveLite(&Fcb->MainResource, TRUE);
 
     Mcb = Fcb->Mcb;
-    RemoveEntryList(&Fcb->Next);
-
     Gone = IsFlagOn(Fcb->Flags, FCB_DELETE_PENDING) ||
            NULL == Mcb || IsFileDeleted(Mcb);
     if (Gone) {
-        InsertHeadList(&Vcb->FcbList, &Fcb->Next);
         Fcb->TsDrop.QuadPart = 0;
     } else {
-        InsertTailList(&Vcb->FcbList, &Fcb->Next);
         KeQuerySystemTime(&Fcb->TsDrop);
     }
+    Ext2FcbIdle(Vcb, Fcb, Gone);
     ExReleaseResourceLite(&Fcb->MainResource);
     ExReleaseResourceLite(&Vcb->FcbLock);
 

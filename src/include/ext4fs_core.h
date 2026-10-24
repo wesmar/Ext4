@@ -55,6 +55,9 @@ Ext2DropIdleFcbs (IN PEXT2_VCB Vcb);
 VOID
 Ext2ReleaseFcb (IN PEXT2_FCB Fcb);
 
+BOOLEAN
+Ext2ReleaseFcbAtClose (IN PEXT2_VCB Vcb, IN PEXT2_FCB Fcb, IN BOOLEAN Gone);
+
 VOID
 Ext2InsertFcb(PEXT2_VCB Vcb, PEXT2_FCB Fcb);
 

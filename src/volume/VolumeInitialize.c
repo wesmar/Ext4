@@ -239,6 +239,8 @@ Ext2InitializeVcbObjects(IN PEXT2_VCB Vcb, IN PEXT2_SUPER_BLOCK sb,
 
     /* initialize Fcb list head */
     InitializeListHead(&Vcb->FcbList);
+    InitializeListHead(&Vcb->FcbIdleList);
+    KeInitializeSpinLock(&Vcb->FcbIdleLock);
 
     /* the name cache: hash, stripes and reaping order, and the inode node
        table with it, sized for this machine (Ext2InitializeNameCache) */
