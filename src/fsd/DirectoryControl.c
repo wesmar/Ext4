@@ -140,10 +140,15 @@ Ext2EntryInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PEXT2_FCB Dc
 {
     struct inode    Inode = { 0 };
     PEXT2_MCB       Mcb;
+    BOOLEAN         Cached;
 
     RtlZeroMemory(E, sizeof(EXT2_ENTRY_INFO));
 
-    Mcb = Ext2SearchMcb(Vcb, Dcb->Mcb, Name);
+    /* the cached name, else the cached inode (an open hard link of it may
+       be ahead of the disk), else the disk */
+    Inode.i_ino = Ino;
+    Inode.i_sb = &Vcb->sb;
+    Mcb = Ext2FindCachedEntry(Vcb, Dcb->Mcb, Ino, Name, &Inode, &Cached);
     if (Mcb != NULL) {
         /* a link not followed yet, or demoted: its target may exist now
            (under LinkLock, like every change of a link) */
@@ -155,10 +160,7 @@ Ext2EntryInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PEXT2_FCB Dc
         return;
     }
 
-    /* an open hard link of this inode may be ahead of the disk */
-    Inode.i_ino = Ino;
-    Inode.i_sb = &Vcb->sb;
-    if (!Ext2PeekCachedInode(Vcb, Ino, &Inode) && !Ext2LoadInode(Vcb, &Inode)) {
+    if (!Cached && !Ext2LoadInode(Vcb, &Inode)) {
         /* An inode that cannot be read (corrupt, and reported) is listed
            by its name all the same, as Linux lists it - an empty read-only
            file; opening it fails. It used to be left out: the damage was

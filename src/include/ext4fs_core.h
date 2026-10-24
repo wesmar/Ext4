@@ -67,8 +67,15 @@ Ext2FreeMcb (
     IN PEXT2_MCB        Mcb
 );
 
+/* Chains (a power of two) chains of inode nodes: one for every name the
+   cache keeps, since every cached name holds an Icb (Ext2InitializeNameCache).
+   With 256 the chains grew to ~100 nodes at 25 000 cached names, walked under
+   the IcbLock spin lock by every new name - opens/s fell by a third. */
+NTSTATUS
+Ext2InitializeIcbTable (IN PEXT2_VCB Vcb, IN ULONG Chains);
+
 VOID
-Ext2InitializeIcbTable (IN PEXT2_VCB Vcb);
+Ext2DestroyIcbTable (IN PEXT2_VCB Vcb);
 
 BOOLEAN
 Ext2AttachIcb (
@@ -87,13 +94,6 @@ VOID
 Ext2UnhashIcb (
     IN PEXT2_VCB        Vcb,
     IN PEXT2_ICB        Icb
-);
-
-BOOLEAN
-Ext2PeekCachedInode (
-    IN PEXT2_VCB        Vcb,
-    IN ULONG            Ino,
-    OUT struct inode   *Inode
 );
 
 VOID
@@ -284,6 +284,12 @@ Ext2SearchMcb(
     PEXT2_MCB           Parent,
     PUNICODE_STRING     FileName
 );
+
+/* a listing's entry: its cached name by way of its inode, else the cached
+   inode copied (*Cached) */
+PEXT2_MCB
+Ext2FindCachedEntry(IN PEXT2_VCB Vcb, IN PEXT2_MCB Parent, IN ULONG Ino, IN PUNICODE_STRING FileName,
+                    OUT struct inode *Inode, OUT PBOOLEAN Cached);
 
 ULONG
 Ext2HashMcbName(IN PUNICODE_STRING Name);

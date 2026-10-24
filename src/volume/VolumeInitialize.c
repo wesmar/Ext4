@@ -240,15 +240,12 @@ Ext2InitializeVcbObjects(IN PEXT2_VCB Vcb, IN PEXT2_SUPER_BLOCK sb,
     /* initialize Fcb list head */
     InitializeListHead(&Vcb->FcbList);
 
-    /* the name cache: hash, stripes and reaping order, sized for this
-       machine (Ext2InitializeNameCache) */
+    /* the name cache: hash, stripes and reaping order, and the inode node
+       table with it, sized for this machine (Ext2InitializeNameCache) */
     Status = Ext2InitializeNameCache(Vcb);
     if (!NT_SUCCESS(Status)) {
         return Status;
     }
-
-    /* initialize the inode node table */
-    Ext2InitializeIcbTable(Vcb);
 
     /* initialize directory notify list */
     InitializeListHead(&Vcb->NotifyList);

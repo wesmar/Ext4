@@ -212,14 +212,25 @@ Ext2IcbHasOtherName(IN PEXT2_VCB Vcb, IN PEXT2_ICB Icb, IN PEXT2_MCB Except)
  *    bytes of table per name kept;
  *  - stripes: as many as the processors call for (Ext2StripeCount, where
  *    the reasoning is), never more than chains.
+ *
+ * The inode table (InodeCache.c) gets a chain for every name kept - a
+ * cached inode has a cached name - singly linked, so at the same 8 bytes a
+ * name: a listing looks up every entry's inode there first (half a chain
+ * more per lookup cost a twelfth of a listing of 20 000 cached names).
  */
 NTSTATUS
 Ext2InitializeNameCache(IN PEXT2_VCB Vcb)
 {
-    ULONG   Chains, Stripes, i;
+    ULONG       Chains, Stripes, i;
+    NTSTATUS    Status;
 
     Chains = Ext2RoundUpPow2(max(Ext2McbHighWater() / EXT4_NAMES_PER_CHAIN, EXT4_MIN_CHAINS));
     Stripes = Ext2StripeCount(Chains);
+
+    Status = Ext2InitializeIcbTable(Vcb, Chains * EXT4_NAMES_PER_CHAIN);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
 
     InitializeListHead(&Vcb->McbList);
     KeInitializeSpinLock(&Vcb->McbLruLock);
@@ -250,6 +261,7 @@ Ext2InitializeNameCache(IN PEXT2_VCB Vcb)
 VOID
 Ext2DestroyNameCache(IN PEXT2_VCB Vcb)
 {
+    Ext2DestroyIcbTable(Vcb);
     if (Vcb->McbStripes) {
         Ext2FreeStripes(Vcb->McbStripes, Vcb->McbStripeMask + 1, Vcb->McbStripePool);
         Vcb->McbStripes = NULL;
@@ -498,6 +510,93 @@ Ext2SearchMcb(
     Ext2ReleaseNameStripe(Stripe, FALSE);
     Ext2DerefMcb(Dir);
 
+    return Found;
+}
+
+/* the cached inode Ino copied to *Inode, when it is cached and loaded */
+static BOOLEAN
+Ext2CopyCachedInode(IN PEXT2_VCB Vcb, IN ULONG Ino, OUT struct inode *Inode)
+{
+    PEXT2_ICB   Icb;
+    KIRQL       Irql;
+    BOOLEAN     Found = FALSE;
+
+    KeAcquireSpinLock(&Vcb->IcbLock, &Irql);
+    Icb = Ext2FindIcbLocked(Vcb, Ino);
+    if (Icb != NULL && IsFlagOn(Icb->Flags, ICB_INODE_LOADED)) {
+        *Inode = Icb->Inode;
+        Found = TRUE;
+    }
+    KeReleaseSpinLock(&Vcb->IcbLock, Irql);
+    return Found;
+}
+
+/*
+ * For a listing: the cached name FileName of directory Parent, which names
+ * inode Ino, referenced - else NULL, and *Cached tells whether *Inode is a
+ * copy of the cached inode (an open hard link of it may be ahead of the
+ * disk). The inode is looked up first, by number: a name is cached only
+ * with its inode, so an entry of a directory too large for the cache is
+ * mostly answered "neither" by one short walk, and a cached name is found
+ * among the few names of its inode instead of in the name hash. (Both
+ * walks used to be made for such an entry, the name hash first: two
+ * fifths of the time of a listing of 40 000 files.) An inode with one
+ * name - a directory, a file of one link - has that name in this
+ * directory as the entry: the spelling is not compared. Another name of
+ * the inode in the same directory - a hard link beside it - is left to
+ * Ext2SearchMcb.
+ */
+PEXT2_MCB
+Ext2FindCachedEntry(IN PEXT2_VCB Vcb, IN PEXT2_MCB Parent, IN ULONG Ino, IN PUNICODE_STRING FileName,
+                    OUT struct inode *Inode, OUT PBOOLEAN Cached)
+{
+    PEXT2_MCB   Dir, Found = NULL;
+    PEXT2_ICB   Icb;
+    PLIST_ENTRY List;
+    KIRQL       Irql;
+    BOOLEAN     OneName = FALSE;
+
+    *Cached = FALSE;
+    if (Ext2IsDot(FileName) || Ext2IsDotDot(FileName)) {
+        return Ext2SearchMcb(Vcb, Parent, FileName);
+    }
+    Dir = Ext2ReferDirectory(Vcb, Parent);
+    if (Dir == NULL) {
+        return NULL;
+    }
+
+    /* only names in the tree: the reaper takes one out under IcbLock once
+       it found it unreferenced (Ext2LookupMcbByInode) */
+    KeAcquireSpinLock(&Vcb->IcbLock, &Irql);
+    Icb = Ext2FindIcbLocked(Vcb, Ino);
+    if (Icb != NULL) {
+        for (List = Icb->Names.Flink; List != &Icb->Names; List = List->Flink) {
+            PEXT2_MCB Name = CONTAINING_RECORD(List, EXT2_MCB, IcbLink);
+            if (Name->Parent == Dir && IsFlagOn(Name->Flags, MCB_ENTRY_TREE) &&
+                !IsFlagOn(Name->Flags, MCB_FILE_DELETED)) {
+                Found = Name;
+                Ext2ReferMcb(Found);
+                break;
+            }
+        }
+        if (Found != NULL) {
+            OneName = S_ISDIR(Icb->Inode.i_mode) || Icb->Inode.i_nlink == 1;
+        } else if (IsFlagOn(Icb->Flags, ICB_INODE_LOADED)) {
+            *Inode = Icb->Inode;
+            *Cached = TRUE;
+        }
+    }
+    KeReleaseSpinLock(&Vcb->IcbLock, Irql);
+
+    /* the spelling lies in paged pool: compared with the lock let go */
+    if (Found != NULL && !OneName && !Ext2SameName(&Found->ShortName, FileName)) {
+        Ext2DerefMcb(Found);
+        Found = Ext2SearchMcb(Vcb, Dir, FileName);
+        if (Found == NULL) {
+            *Cached = Ext2CopyCachedInode(Vcb, Ino, Inode);
+        }
+    }
+    Ext2DerefMcb(Dir);
     return Found;
 }
 

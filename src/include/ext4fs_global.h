@@ -73,14 +73,6 @@ typedef struct DECLSPEC_CACHEALIGN _EXT2_GROUP_STRIPE {
                                    not yet committed, under BlockLock (ext4\FreedBlocks.c) */
 } EXT2_GROUP_STRIPE, *PEXT2_GROUP_STRIPE;
 
-/* buckets of the per-volume inode node hash (EXT2_VCB.IcbTable): as many
-   as the name hash has, since every cached name holds an Icb. With 256 the
-   chains grew to ~100 nodes at 25 000 cached names, walked under the IcbLock
-   spin lock by every new name - opens/s fell by a third. Inode numbers are
-   allocated densely, so the low bits spread them evenly (power of two: the
-   modulo is a mask). */
-#define EXT2_ICB_BUCKETS    4096
-
 /* EXT2_GLOBAL_DATA
 
    Data that is not specific to a mounted volume */

@@ -20,32 +20,65 @@
  * disk is done once, under the Icb's EntryResource (Ext2InsertName).
  */
 
-VOID
-Ext2InitializeIcbTable(IN PEXT2_VCB Vcb)
+/* the table of Chains chains (a power of two): with the name hash, sized
+   with it (Ext2InitializeNameCache), freed with it */
+NTSTATUS
+Ext2InitializeIcbTable(IN PEXT2_VCB Vcb, IN ULONG Chains)
 {
     ULONG i;
 
     KeInitializeSpinLock(&Vcb->IcbLock);
-    for (i = 0; i < EXT2_ICB_BUCKETS; i++) {
-        InitializeListHead(&Vcb->IcbTable[i]);
+    Vcb->IcbTable = Ext2AllocatePool(NonPagedPool, sizeof(SINGLE_LIST_ENTRY) * Chains, TAG_VPB);
+    if (Vcb->IcbTable == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
     }
+    for (i = 0; i < Chains; i++) {
+        Vcb->IcbTable[i].Next = NULL;
+    }
+    Vcb->IcbMask = Chains - 1;
     Vcb->NumOfIcb = 0;
+    return STATUS_SUCCESS;
+}
+
+VOID
+Ext2DestroyIcbTable(IN PEXT2_VCB Vcb)
+{
+    if (Vcb->IcbTable) {
+        Ext2FreePool(Vcb->IcbTable, TAG_VPB);
+        Vcb->IcbTable = NULL;
+    }
 }
 
 PEXT2_ICB
 Ext2FindIcbLocked(IN PEXT2_VCB Vcb, IN ULONG Ino)
 {
-    PLIST_ENTRY Head = &Vcb->IcbTable[Ino % EXT2_ICB_BUCKETS];
-    PLIST_ENTRY List;
+    PSINGLE_LIST_ENTRY Link;
 
-    for (List = Head->Flink; List != Head; List = List->Flink) {
-        PEXT2_ICB Icb = CONTAINING_RECORD(List, EXT2_ICB, Link);
-        if (Icb->Inode.i_ino == Ino) {
+    for (Link = Vcb->IcbTable[Ino & Vcb->IcbMask].Next; Link != NULL; Link = Link->Next) {
+        PEXT2_ICB Icb = CONTAINING_RECORD(Link, EXT2_ICB, Link);
+        if (Icb->Ino == Ino) {
             return Icb;
         }
     }
 
     return NULL;
+}
+
+/* Icb out of its chain, IcbLock held: found from the chain's head, which
+   is a node or two away */
+static VOID
+Ext2UnhashIcbLocked(IN PEXT2_VCB Vcb, IN PEXT2_ICB Icb)
+{
+    PSINGLE_LIST_ENTRY Prev = &Vcb->IcbTable[Icb->Ino & Vcb->IcbMask];
+
+    while (Prev->Next != &Icb->Link) {
+        ASSERT(Prev->Next != NULL);
+        Prev = Prev->Next;
+    }
+    Prev->Next = Icb->Link.Next;
+    Icb->Link.Next = NULL;
+    SetLongFlag(Icb->Flags, ICB_UNHASHED);
+    Vcb->NumOfIcb--;
 }
 
 static VOID
@@ -100,6 +133,7 @@ Ext2AttachIcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN ULONG Ino)
         Fresh->Identifier.Type = EXT2ICB;
         Fresh->Identifier.Size = sizeof(EXT2_ICB);
         InitializeListHead(&Fresh->Names);
+        Fresh->Ino = Ino;
         Fresh->Inode.i_ino = Ino;
         Fresh->Inode.i_sb = &Vcb->sb;
 
@@ -113,7 +147,7 @@ Ext2AttachIcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN ULONG Ino)
         if (Icb == NULL) {
             Icb = Fresh;
             Fresh = NULL;
-            InsertHeadList(&Vcb->IcbTable[Ino % EXT2_ICB_BUCKETS], &Icb->Link);
+            PushEntryList(&Vcb->IcbTable[Ino & Vcb->IcbMask], &Icb->Link);
             Vcb->NumOfIcb++;
         }
     } else {
@@ -168,9 +202,7 @@ Ext2DetachIcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb)
     if (--Icb->Refercount == 0) {
         ASSERT(Icb->Fcb == NULL);
         if (!IsFlagOn(Icb->Flags, ICB_UNHASHED)) {
-            RemoveEntryList(&Icb->Link);
-            SetLongFlag(Icb->Flags, ICB_UNHASHED);
-            Vcb->NumOfIcb--;
+            Ext2UnhashIcbLocked(Vcb, Icb);
         }
         Free = TRUE;
     }
@@ -198,10 +230,7 @@ Ext2UnhashIcb(IN PEXT2_VCB Vcb, IN PEXT2_ICB Icb)
     KeAcquireSpinLock(&Vcb->IcbLock, &Irql);
     SetLongFlag(Icb->Flags, ICB_FILE_DELETED);
     if (!IsFlagOn(Icb->Flags, ICB_UNHASHED)) {
-        RemoveEntryList(&Icb->Link);
-        InitializeListHead(&Icb->Link);
-        SetLongFlag(Icb->Flags, ICB_UNHASHED);
-        Vcb->NumOfIcb--;
+        Ext2UnhashIcbLocked(Vcb, Icb);
     }
     KeReleaseSpinLock(&Vcb->IcbLock, Irql);
 }
@@ -226,29 +255,6 @@ Ext2DropLink(IN PEXT2_VCB Vcb, IN struct inode *Inode)
     KeReleaseSpinLock(&Vcb->IcbLock, Irql);
 
     return Last;
-}
-
-/*
- * Copy the cached inode of Ino, if any. Directory listings use it so that a
- * name whose own Mcb is not cached still shows the live size of an open,
- * hard-linked file instead of the stale on-disk copy.
- */
-BOOLEAN
-Ext2PeekCachedInode(IN PEXT2_VCB Vcb, IN ULONG Ino, OUT struct inode *Inode)
-{
-    PEXT2_ICB   Icb;
-    KIRQL       Irql;
-    BOOLEAN     Found = FALSE;
-
-    KeAcquireSpinLock(&Vcb->IcbLock, &Irql);
-    Icb = Ext2FindIcbLocked(Vcb, Ino);
-    if (Icb && IsFlagOn(Icb->Flags, ICB_INODE_LOADED)) {
-        *Inode = Icb->Inode;
-        Found = TRUE;
-    }
-    KeReleaseSpinLock(&Vcb->IcbLock, Irql);
-
-    return Found;
 }
 
 /*

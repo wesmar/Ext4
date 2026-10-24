@@ -105,9 +105,13 @@ typedef struct _EXT2_VCB {
 
     /* Inode nodes (EXT2_ICB) hashed by inode number: every name of a
        hard-linked file resolves to the same node, so all of them share
-       one struct inode, one block map and one Fcb (cache). */
+       one struct inode, one block map and one Fcb (cache). A chain for
+       every name the cache keeps, a power of two of singly linked ones
+       (Ext2InitializeIcbTable): chain Ino & IcbMask, so the inodes of a
+       directory written together never share one */
     KSPIN_LOCK                  IcbLock;
-    LIST_ENTRY                  IcbTable[EXT2_ICB_BUCKETS];
+    PSINGLE_LIST_ENTRY          IcbTable;
+    ULONG                       IcbMask;
     ULONG                       NumOfIcb;
 
     /* Link list to Global */
@@ -363,8 +367,10 @@ struct _EXT2_ICB {
     /* Number of attached Mcbs (names, including deleted-but-open ones) */
     LONG                            Refercount;
 
-    /* Link into Vcb->IcbTable[hash] */
-    LIST_ENTRY                      Link;
+    /* Link into Vcb->IcbTable[hash], and the key beside it: a walk of a
+       chain reads one cache line of each node (Inode.i_ino lies far off) */
+    SINGLE_LIST_ENTRY               Link;
+    ULONG                           Ino;
 
     /* Attached Mcbs (Mcb->IcbLink); live names come first */
     LIST_ENTRY                      Names;
@@ -430,6 +436,11 @@ struct _EXT2_MCB {
     LIST_ENTRY                      Hash;
     ULONG                           NameHash;
 
+    /* Link into Icb->Names. With the fields above in the first 64 bytes:
+       a walk of either list - the name hash or an inode's names - reads
+       one cache line of each name it passes */
+    LIST_ENTRY                      IcbLink;
+
     /* Target Mcb of a symlink (Vcb->LinkLock) */
     PEXT2_MCB                       Target;
 
@@ -438,9 +449,6 @@ struct _EXT2_MCB {
     /* The inode this name refers to, and a shortcut into it */
     PEXT2_ICB                       Icb;
     struct inode                   *Inode;
-
-    /* Link into Icb->Names */
-    LIST_ENTRY                      IcbLink;
 
     /* The name in its directory (Vcb->NameLock). The path is no field of
        its own: built from the names up the tree when asked
