@@ -49,6 +49,18 @@ Ext2DestroyIcbTable(IN PEXT2_VCB Vcb)
     }
 }
 
+/*
+ * No Icb of inode Ino, as a walk under the lock would have found at the
+ * moment of the read: its chain is empty. Read without the lock: an Icb
+ * cached before keeps its chain non-empty, and one attached at that very
+ * moment holds the inode as the disk does, which the caller reads instead.
+ */
+BOOLEAN
+Ext2IcbAbsent(IN PEXT2_VCB Vcb, IN ULONG Ino)
+{
+    return ReadPointerNoFence((PVOID *)&Vcb->IcbTable[Ino & Vcb->IcbMask].Next) == NULL;
+}
+
 PEXT2_ICB
 Ext2FindIcbLocked(IN PEXT2_VCB Vcb, IN ULONG Ino)
 {
@@ -62,6 +74,30 @@ Ext2FindIcbLocked(IN PEXT2_VCB Vcb, IN ULONG Ino)
     }
 
     return NULL;
+}
+
+/*
+ * A listing knows the inode numbers of a leaf's names before it hands out
+ * the first, and then looks each one up here - in hash order, so at random
+ * in the table, each lookup waiting for its lines one after the other. It
+ * fetches them first, all at once: the chain heads (Node FALSE), then the
+ * first node each head points to. Without the lock: a prefetch never
+ * faults, and a pointer gone stale costs one line fetched in vain. The node
+ * itself is never read here - it may be freed by now.
+ */
+VOID
+Ext2PrefetchIcb(IN PEXT2_VCB Vcb, IN ULONG Ino, IN BOOLEAN Node)
+{
+    PSINGLE_LIST_ENTRY Head = &Vcb->IcbTable[Ino & Vcb->IcbMask];
+
+    if (!Node) {
+        PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Head);
+    } else {
+        PVOID First = ReadPointerNoFence((PVOID *)&Head->Next);
+        if (First != NULL) {
+            PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, First);
+        }
+    }
 }
 
 /* Icb out of its chain, IcbLock held: found from the chain's head, which

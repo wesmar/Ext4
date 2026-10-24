@@ -213,10 +213,11 @@ Ext2IcbHasOtherName(IN PEXT2_VCB Vcb, IN PEXT2_ICB Icb, IN PEXT2_MCB Except)
  *  - stripes: as many as the processors call for (Ext2StripeCount, where
  *    the reasoning is), never more than chains.
  *
- * The inode table (InodeCache.c) gets a chain for every name kept - a
- * cached inode has a cached name - singly linked, so at the same 8 bytes a
- * name: a listing looks up every entry's inode there first (half a chain
- * more per lookup cost a twelfth of a listing of 20 000 cached names).
+ * The inode table (InodeCache.c) gets EXT4_INODE_CHAINS_PER_NAME chains for
+ * every name kept - a cached inode has a cached name - singly linked, at 8
+ * bytes a chain: a listing looks up every entry's inode there first, and
+ * in a directory larger than the cache most of them in vain, which an
+ * empty chain answers from the table alone.
  */
 NTSTATUS
 Ext2InitializeNameCache(IN PEXT2_VCB Vcb)
@@ -227,7 +228,7 @@ Ext2InitializeNameCache(IN PEXT2_VCB Vcb)
     Chains = Ext2RoundUpPow2(max(Ext2McbHighWater() / EXT4_NAMES_PER_CHAIN, EXT4_MIN_CHAINS));
     Stripes = Ext2StripeCount(Chains);
 
-    Status = Ext2InitializeIcbTable(Vcb, Chains * EXT4_NAMES_PER_CHAIN);
+    Status = Ext2InitializeIcbTable(Vcb, Chains * EXT4_NAMES_PER_CHAIN * EXT4_INODE_CHAINS_PER_NAME);
     if (!NT_SUCCESS(Status)) {
         return Status;
     }
@@ -559,6 +560,11 @@ Ext2FindCachedEntry(IN PEXT2_VCB Vcb, IN PEXT2_MCB Parent, IN ULONG Ino, IN PUNI
     *Cached = FALSE;
     if (Ext2IsDot(FileName) || Ext2IsDotDot(FileName)) {
         return Ext2SearchMcb(Vcb, Parent, FileName);
+    }
+    /* most entries of a directory larger than the cache: neither name nor
+       inode, told by one word of the table, without the lock */
+    if (Ext2IcbAbsent(Vcb, Ino)) {
+        return NULL;
     }
     Dir = Ext2ReferDirectory(Vcb, Parent);
     if (Dir == NULL) {

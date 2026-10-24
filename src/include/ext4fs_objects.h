@@ -484,6 +484,13 @@ struct _EXT2_MCB {
    the high water mark, smallest table */
 #define EXT4_NAMES_PER_CHAIN        2
 #define EXT4_MIN_CHAINS             64
+/* inode chains per name kept (InodeCache.c): a listing of a directory
+   larger than the cache looks up every entry's inode, mostly in vain. At a
+   quarter of a node per chain, e^-1/4 = 78 % of those lookups end at an
+   empty head in the table, which stays in the processor's cache, instead of
+   at a node, which does not (an Icb is a kilobyte, 16 000 of them do not
+   fit): 40 000 files listed 717 -> 621 ns per entry, at 8 bytes per chain */
+#define EXT4_INODE_CHAINS_PER_NAME  4
 /* 2^64 / golden ratio: a multiply by it spreads pointer bits (Knuth) */
 #define EXT4_FIBONACCI_64           0x9E3779B97F4A7C15ULL
 /* a reaper pass looks at most at FACTOR * wanted + EXTRA names */

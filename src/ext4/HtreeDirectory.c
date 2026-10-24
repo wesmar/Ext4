@@ -504,6 +504,20 @@ out:
     return rc;
 }
 
+/* The inodes of the names just read, about to be looked up one by one in
+   hash order, at random in the inode cache: their places fetched first, all
+   at once (Ext2PrefetchIcb) - the chain heads, then the nodes they lead to. */
+static void HtPrefetch(struct inode *dir, struct rb_node *node)
+{
+    PEXT2_VCB       Vcb = (PEXT2_VCB)dir->i_sb->s_priv;
+    struct rb_node *at;
+
+    for (at = node; at; at = rb_next(at))
+        Ext2PrefetchIcb(Vcb, rb_entry(at, struct fname, rb_hash)->inode, FALSE);
+    for (at = node; at; at = rb_next(at))
+        Ext2PrefetchIcb(Vcb, rb_entry(at, struct fname, rb_hash)->inode, TRUE);
+}
+
 /* a chain of names to the caller; a full buffer leaves the rest for later */
 static int HtHandOut(struct file *filp, void *cookie, filldir_t filldir, struct fname *n)
 {
@@ -573,6 +587,7 @@ int ext3_dx_readdir(struct file *filp, filldir_t filldir, void *context)
                 break;
             }
             info->curr_node = rb_first(&info->root);
+            HtPrefetch(dir, info->curr_node);
         }
         n = rb_entry(info->curr_node, struct fname, rb_hash);
         info->curr_hash = n->hash;

@@ -67,15 +67,22 @@ Ext2FreeMcb (
     IN PEXT2_MCB        Mcb
 );
 
-/* Chains (a power of two) chains of inode nodes: one for every name the
-   cache keeps, since every cached name holds an Icb (Ext2InitializeNameCache).
-   With 256 the chains grew to ~100 nodes at 25 000 cached names, walked under
-   the IcbLock spin lock by every new name - opens/s fell by a third. */
+/* Chains (a power of two) chains of inode nodes: EXT4_INODE_CHAINS_PER_NAME
+   for every name the cache keeps, since every cached name holds an Icb
+   (Ext2InitializeNameCache). With 256 the chains grew to ~100 nodes at
+   25 000 cached names, walked under the IcbLock spin lock by every new name -
+   opens/s fell by a third. */
 NTSTATUS
 Ext2InitializeIcbTable (IN PEXT2_VCB Vcb, IN ULONG Chains);
 
 VOID
 Ext2DestroyIcbTable (IN PEXT2_VCB Vcb);
+
+VOID
+Ext2PrefetchIcb (IN PEXT2_VCB Vcb, IN ULONG Ino, IN BOOLEAN Node);
+
+BOOLEAN
+Ext2IcbAbsent (IN PEXT2_VCB Vcb, IN ULONG Ino);
 
 BOOLEAN
 Ext2AttachIcb (
