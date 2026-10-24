@@ -179,10 +179,15 @@ Ext2CheckDismount (
 
         if (Vpb->ReferenceCount) {
             bTearDown = TRUE;
-        } else {
+        } else if (!IsFlagOn(Vcb->Flags, VCB_STREAM_TEARING) && Vcb->ReferenceCount == 0) {
             bDeleted = TRUE;
             Ext2LeaveVpb(Vpb);
         }
+        /* else: a teardown under way, whose thread decides once it is done
+           (below), or Fcbs left - in the Fcb reaper's hands perhaps, which
+           frees the last of them and comes back (Ext2FreeFcb). Destroyed
+           under them, the volume went with its names while the reaper still
+           let go of theirs. */
 
         DEBUG(DL_DBG, ("Ext2CheckDismount: Vpb: %p bDeleted=%d bTearDown=%d\n",
                         Vpb, bDeleted, bTearDown));
@@ -251,7 +256,7 @@ ReleaseVpb:
         if (IsFlagOn(Vcb->Flags, VCB_STREAM_TEARDOWN)) {
             bTearDown = FALSE;
         } else {
-            SetLongFlag(Vcb->Flags, VCB_STREAM_TEARDOWN);
+            SetLongFlag(Vcb->Flags, VCB_STREAM_TEARDOWN | VCB_STREAM_TEARING);
         }
     }
 
@@ -262,15 +267,25 @@ ReleaseVpb:
         DEBUG(DL_DBG, ( "Ext2CheckDismount: Tearing vcb %p ...\n", Vcb));
         Ext2TearDownStream(Vcb);
 
-        /* the stream was the last file object on the volume; if no Fcb
+        /* The stream was the last file object on the volume; if no Fcb
            references the Vcb either, nobody will ever come back to finish
-           it - so finish it here */
+           it - so finish it here. Decided under the locks the callers take
+           above: while the stream went, one of them (the unload's, the Fcb
+           reaper's freeing the last Fcb) saw its Vpb reference gone and
+           destroyed the volume under this thread - its device, and a VPB of
+           ours given back to the device, freed while still read here
+           (bugcheck 0xD1 under Verifier, an sc stop after a remount storm). */
+        ExAcquireResourceExclusiveLite(&Ext2Global->Resource, TRUE);
+        ExAcquireResourceExclusiveLite(&Vcb->MainResource, TRUE);
+        ClearLongFlag(Vcb->Flags, VCB_STREAM_TEARING);
         IoAcquireVpbSpinLock(&Irql);
         if (Vpb->ReferenceCount == 0 && Vcb->ReferenceCount == 0) {
             Ext2LeaveVpb(Vpb);
             bDeleted = TRUE;
         }
         IoReleaseVpbSpinLock(Irql);
+        ExReleaseResourceLite(&Vcb->MainResource);
+        ExReleaseResourceLite(&Ext2Global->Resource);
     }
 
     if (bDeleted) {

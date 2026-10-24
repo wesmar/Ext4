@@ -267,6 +267,7 @@ typedef struct _EXT2_VCB {
 #define VCB_FORCE_WRITING       0x00004000
 #define VCB_DEVICE_REMOVED      0x00008000
 #define VCB_WRITE_STOPPED       0x00010000  /* stopped writing on an error: read-only until dismount */
+#define VCB_STREAM_TEARING      0x00020000  /* Ext2TearDownStream under way: its owner decides the dismount */
 #define VCB_JOURNAL_RECOVER     0x00080000
 #define VCB_RO_COMPAT_READ_ONLY 0x01000000
 #define VCB_READ_ONLY           0x08000000
