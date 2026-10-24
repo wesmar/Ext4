@@ -898,7 +898,8 @@ Ext2MoveMcbToHead(PEXT2_VCB Vcb, PEXT2_MCB Mcb)
  * McbReapLock - so a candidate stays valid while its stripe is taken. Its
  * reference count is final under that stripe (lookups take references
  * under it) and under IcbLock (Ext2LookupMcbByInode takes them there);
- * the name leaves the tree under both, so neither can revive it after.
+ * the name leaves the tree and its inode's names under both, so neither
+ * can revive it after.
  */
 static ULONG
 Ext2ReapUnusedMcbsLocked(PEXT2_VCB Vcb, ULONG Number, PLIST_ENTRY Reaped)
@@ -951,6 +952,11 @@ Ext2ReapUnusedMcbsLocked(PEXT2_VCB Vcb, ULONG Number, PLIST_ENTRY Reaped)
             ClearLongFlag(Mcb->Flags, MCB_VCB_LINK);
             if (Parent) {
                 Ext2UnhashMcbLocked(Mcb);
+            }
+            /* off its inode's names too, under the same hold: nothing
+               that walks them may take a reference from here on */
+            if (Mcb->Icb) {
+                Ext2DropIcbNameLocked(Mcb->Icb, Mcb);
             }
         }
         KeReleaseSpinLockFromDpcLevel(&Vcb->McbLruLock);

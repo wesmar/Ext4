@@ -213,6 +213,24 @@ Ext2AttachIcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, IN ULONG Ino)
     return TRUE;
 }
 
+/*
+ * Mcb leaves the names of Icb, under IcbLock; Mcb->Icb and the Icb's count
+ * stay for Ext2DetachIcb. The name reaper calls it where it finds the name
+ * unreferenced: left on the list until the free, a dead name was there for
+ * whoever walks the names - a hard link deleted meanwhile handed its Fcb
+ * to it (Ext2NameUnlinked), and the Fcb was left on freed memory.
+ */
+VOID
+Ext2DropIcbNameLocked(IN PEXT2_ICB Icb, IN PEXT2_MCB Mcb)
+{
+    RemoveEntryList(&Mcb->IcbLink);
+    InitializeListHead(&Mcb->IcbLink);
+    if (Icb->Inode.i_priv == Mcb) {
+        Icb->Inode.i_priv = IsListEmpty(&Icb->Names) ? NULL :
+                            CONTAINING_RECORD(Icb->Names.Flink, EXT2_MCB, IcbLink);
+    }
+}
+
 /* Take Mcb off its Icb; the Icb goes away with its last name. */
 VOID
 Ext2DetachIcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb)
@@ -227,12 +245,7 @@ Ext2DetachIcb(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb)
 
     KeAcquireSpinLock(&Vcb->IcbLock, &Irql);
 
-    RemoveEntryList(&Mcb->IcbLink);
-    InitializeListHead(&Mcb->IcbLink);
-    if (Icb->Inode.i_priv == Mcb) {
-        Icb->Inode.i_priv = IsListEmpty(&Icb->Names) ? NULL :
-                            CONTAINING_RECORD(Icb->Names.Flink, EXT2_MCB, IcbLink);
-    }
+    Ext2DropIcbNameLocked(Icb, Mcb);
 
     ASSERT(Icb->Refercount > 0);
     if (--Icb->Refercount == 0) {

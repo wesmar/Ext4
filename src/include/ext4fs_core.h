@@ -98,6 +98,12 @@ Ext2DetachIcb (
 );
 
 VOID
+Ext2DropIcbNameLocked (
+    IN PEXT2_ICB        Icb,
+    IN PEXT2_MCB        Mcb
+);
+
+VOID
 Ext2UnhashIcb (
     IN PEXT2_VCB        Vcb,
     IN PEXT2_ICB        Icb
