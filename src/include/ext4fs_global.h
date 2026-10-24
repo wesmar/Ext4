@@ -126,6 +126,8 @@ typedef struct _EXT2_GLOBAL {
     LIST_ENTRY                  DismountingVcbList;
     LIST_ENTRY                  SwapVpbList;    /* VPBs of ours still on devices (VolumeDismount.c) */
     KSPIN_LOCK                  SwapVpbLock;
+    FAST_MUTEX                  SwapVpbMutex;   /* one pass of Ext2ReclaimVpbs at a time */
+    ULONGLONG                   SwapVpbsHeldSince; /* interrupt time an sc stop first met one */
 
     /* Cleaning thread related: resource cleaner */
     EXT2_REAPER                 FcbReaper;

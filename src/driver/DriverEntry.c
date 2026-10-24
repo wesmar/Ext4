@@ -75,7 +75,7 @@ DriverUnload (IN PDRIVER_OBJECT DriverObject)
      */
     Ext2DeleteControlDevices();
 
-    /* Prepare-to-unload returned every published VPB before handing off. */
+    /* Prepare-to-unload settled every published VPB before handing off. */
     ASSERT(!Ext2VpbsPending());
 
     Ext4WriteLogSave();
@@ -222,6 +222,7 @@ Ext2InitializeGlobal(IN PUNICODE_STRING RegistryPath)
     InitializeListHead(&(Ext2Global->DismountingVcbList));
     InitializeListHead(&(Ext2Global->SwapVpbList));
     KeInitializeSpinLock(&Ext2Global->SwapVpbLock);
+    ExInitializeFastMutex(&Ext2Global->SwapVpbMutex);
     Ext4CryptInitialize();
     ExInitializeResourceLite(&(Ext2Global->Resource));
     /* before the file systems are registered: a mount may wait on it */

@@ -145,9 +145,11 @@ Ext2ClearVpbFlag (IN PVPB     Vpb,
 BOOLEAN
 Ext2TrackVpbSwap(IN PVPB Old, IN PVPB Swap);
 BOOLEAN
+Ext2VpbIsOurs(IN PVPB Vpb);
+BOOLEAN
 Ext2VpbsPending(VOID);
 BOOLEAN
-Ext2ReclaimVpbs(VOID);
+Ext2ReclaimVpbs(IN BOOLEAN Unloading);
 
 BOOLEAN
 Ext2CheckDismount (

@@ -244,6 +244,11 @@ Ext2DestroyVcb (IN PEXT2_VCB Vcb)
     IoDeleteDevice(Vcb->DeviceObject);
     DEC_MEM_COUNT(PS_VCB, Vcb->DeviceObject, sizeof(EXT2_VCB));
 
+    /* a volume dismounted by force gave its device a VPB of ours: with
+       the volume gone the device can have its own back, before another
+       file system mounts ours and keeps it */
+    Ext2ReclaimVpbs(FALSE);
+
     /* one volume fewer stands between "sc stop" and DriverUnload */
     InterlockedDecrement(&Ext2Global->VcbTeardownsInFlight);
     Ext2UnloadKick();

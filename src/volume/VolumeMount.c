@@ -56,6 +56,24 @@ Ext2IsMediaWriteProtected (
     return (BOOLEAN)(Status == STATUS_MEDIA_WRITE_PROTECTED);
 }
 
+/*
+ * An unload takes no new volumes - except on a device that still carries a
+ * VPB a forced dismount of ours published. Refused, that VPB would go to
+ * RAW for the first raw open (every file system before it declines an ext
+ * volume), and RAW keeps it for as long as it likes: the unload could only
+ * leave an allocation of ours behind (VolumePointerOwnership.c). Mounted
+ * here, the volume is dismounted by the unload like any other, and the
+ * VPB comes back when it goes. Once unload is pending, nothing is mounted.
+ */
+static BOOLEAN
+Ext2MayMount(IN PVPB Vpb)
+{
+    if (IsFlagOn(Ext2Global->Flags, EXT2_UNLOAD_PENDING)) {
+        return FALSE;
+    }
+    return Ext2Global->UnloadState == EXT2_UNLOAD_IDLE || Ext2VpbIsOurs(Vpb);
+}
+
 NTSTATUS
 Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 {
@@ -102,17 +120,15 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
             __leave;
         }
 
-        if (Ext2Global->UnloadState != EXT2_UNLOAD_IDLE ||
-            IsFlagOn(Ext2Global->Flags, EXT2_UNLOAD_PENDING)) {
-            Status = STATUS_UNRECOGNIZED_VOLUME;
-            __leave;
-        }
-
-
         Irp = IrpContext->Irp;
         IoStackLocation = IoGetCurrentIrpStackLocation(Irp);
         TargetDeviceObject =
             IoStackLocation->Parameters.MountVolume.DeviceObject;
+
+        if (!Ext2MayMount(IoStackLocation->Parameters.MountVolume.Vpb)) {
+            Status = STATUS_UNRECOGNIZED_VOLUME;
+            __leave;
+        }
 
         dwBytes = sizeof(DISK_GEOMETRY);
         Status = Ext2DiskIoControl(
@@ -189,8 +205,7 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
             ExAcquireResourceExclusiveLite(&(Ext2Global->Resource), TRUE);
             GlobalDataResourceAcquired = TRUE;
 
-            if (Ext2Global->UnloadState != EXT2_UNLOAD_IDLE ||
-                IsFlagOn(Ext2Global->Flags, EXT2_UNLOAD_PENDING)) {
+            if (!Ext2MayMount(Vpb)) {
                 Status = STATUS_UNRECOGNIZED_VOLUME;
                 __leave;
             }

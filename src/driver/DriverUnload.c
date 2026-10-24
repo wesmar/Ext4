@@ -40,8 +40,10 @@
  *            volume still has open handles it sleeps on an event that
  *            cleanup, close and volume teardown signal, so it retries the
  *            moment the state changes and not a tick later.
- *   remove   both control devices are deleted: only then is the driver's
- *            device list empty, which is what the kernel insists on.
+ *   remove   both control devices are deleted, once no volume device is
+ *            left: only then is the driver's device list empty, which is
+ *            what the kernel insists on, and a device sc stop marked is
+ *            the last to go, which is what runs DriverUnload.
  *   release  the last reference to \ext4 is the file object behind the
  *            handle DriverEntry keeps open. The thread that drops it runs
  *            DriverUnload and unmaps the image before it gets control back,
@@ -282,10 +284,12 @@ Ext2PrepareToUnload (IN PEXT2_IRP_CONTEXT IrpContext)
             __leave;
         }
 
-        /* Reclaim our published VPBs before surrendering unload control.
-           An I/O-manager reference can outlive IRP_MJ_CLOSE; retaining
-           ownership and retrying is safer than leaking Swap or freeing Old. */
-        if (!Ext2ReclaimVpbs()) {
+        /* Settle our published VPBs before surrendering unload control:
+           each goes back once the I/O manager lets go of the old one (a
+           reference can outlive IRP_MJ_CLOSE), or - an sc stop, after a
+           grace period - stays with the file system that mounted it
+           (VolumePointerOwnership.c). */
+        if (!Ext2ReclaimVpbs(TRUE)) {
             Status = STATUS_DEVICE_BUSY;
             __leave;
         }
@@ -426,6 +430,35 @@ Ext2SendPrepareToUnload(VOID)
 }
 
 /*
+ * TRUE while a volume device of ours still exists, deleted or not. sc stop
+ * marked only the devices that existed when it ran, and the I/O manager
+ * runs DriverUnload only when a marked device is the last of the driver's
+ * to go. A volume mounted during the stop (VolumeMount.c) has an unmarked
+ * device, which the filter attached to it may hold for a moment after
+ * IoDeleteDevice: the control devices, marked, must outlive it.
+ */
+static BOOLEAN
+Ext2VolumeDevicesLeft(VOID)
+{
+    PDEVICE_OBJECT  Devices[64];
+    ULONG           Count = 0, i;
+    BOOLEAN         Left = FALSE;
+
+    if (IoEnumerateDeviceObjectList(Ext2Global->DiskdevObject->DriverObject, Devices,
+                                    sizeof(Devices), &Count) == STATUS_BUFFER_TOO_SMALL) {
+        return TRUE;
+    }
+    for (i = 0; i < Count; i++) {
+        if (Devices[i] != Ext2Global->DiskdevObject &&
+            Devices[i]->DeviceType == FILE_DEVICE_DISK_FILE_SYSTEM) {
+            Left = TRUE;
+        }
+        ObDereferenceObject(Devices[i]);
+    }
+    return Left;
+}
+
+/*
  * Delete both control devices (and the DOS name that points at one of
  * them). Runs once, from the drain thread or from DriverUnload, whichever
  * comes first. The pointer references DriverEntry took keep the device
@@ -476,17 +509,18 @@ Ext2UnloadKick(VOID)
  * TRUE while a dismounting volume waits for nothing but the I/O manager.
  * IRP_MJ_CLOSE sets VolumeReleased before it returns, and the I/O manager
  * drops the file object's Vpb reference only after that, in IopDeleteFile,
- * without calling the driver again. A retry woken by the close can still
- * see that reference; this recognises the window: the driver itself holds
- * nothing (no FCB, CCB or open file object: Vcb->ReferenceCount is 0) and
- * the Vpb counts more than the metadata stream accounts for.
+ * without calling the driver again. So does an open the dismounted volume
+ * refused: its Vpb reference comes and goes with no word to the driver.
+ * A retry that met such a reference left the volume standing, and the
+ * reference may be gone by the time it is looked at here - so the window
+ * is recognised by the driver alone holding nothing (no FCB, CCB or open
+ * file object: Vcb->ReferenceCount is 0), whatever the Vpb counts.
  */
 static BOOLEAN
 Ext2IoManagerHoldsVolume(VOID)
 {
     PLIST_ENTRY Link;
     BOOLEAN     Pending = FALSE;
-    KIRQL       Irql;
 
     ExAcquireResourceSharedLite(&Ext2Global->Resource, TRUE);
     for (Link  = Ext2Global->DismountingVcbList.Flink;
@@ -495,10 +529,7 @@ Ext2IoManagerHoldsVolume(VOID)
 
         PEXT2_VCB Vcb = CONTAINING_RECORD(Link, EXT2_VCB, Next);
 
-        IoAcquireVpbSpinLock(&Irql);
-        Pending = Vcb->ReferenceCount == 0 &&
-                  Vcb->Vpb->ReferenceCount > (ULONG)(Vcb->Volume != NULL ? 1 : 0);
-        IoReleaseVpbSpinLock(Irql);
+        Pending = Vcb->ReferenceCount == 0;
     }
     ExReleaseResourceLite(&Ext2Global->Resource);
 
@@ -683,8 +714,15 @@ Ext2UnloadDrainThread(IN PVOID Context)
     DbgPrint("ext4: unload requested, file systems unregistered, "
              "removing the control devices\n");
 
-    /* step 2: no device object may be left on the driver object */
+    /* step 2: no device object may be left on the driver object, and the
+       control devices go last */
     Ext2UnloadStep(L"UnloadStep", EXT2_STEP_CONTROL_DEVICES);
+    while (Ext2VolumeDevicesLeft()) {
+        LARGE_INTEGER Delay;
+
+        Delay.QuadPart = -EXT2_UNLOAD_CLOSE_RECHECK;
+        KeDelayExecutionThread(KernelMode, FALSE, &Delay);
+    }
     Ext2DeleteControlDevices();
 
     /* step 3: closing the handle only drops the handle count, the extra

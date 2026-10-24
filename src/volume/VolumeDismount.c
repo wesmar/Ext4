@@ -94,6 +94,18 @@ Ext2DismountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
     return Status;
 }
 
+/* The volume device lets go of its VPB; IoAcquireVpbSpinLock is held. A
+   VPB the volume kept through a dismount (an sc stop) is still marked
+   mounted, and a mounted VPB without a device would send the next open
+   nowhere; the next mount, ours or not, finds no label of ours on it. */
+static VOID
+Ext2LeaveVpb(IN PVPB Vpb)
+{
+    Vpb->DeviceObject = NULL;
+    Vpb->VolumeLabelLength = 0;
+    ClearFlag(Vpb->Flags, VPB_MOUNTED | VPB_LOCKED);
+}
+
 BOOLEAN
 Ext2CheckDismount (
     IN PEXT2_IRP_CONTEXT IrpContext,
@@ -105,15 +117,15 @@ Ext2CheckDismount (
     BOOLEAN bDeleted = FALSE, bTearDown = FALSE;
     ULONG   UnCleanCount = 0;
 
-    NewVpb = Ext2AllocatePool(NonPagedPool, VPB_SIZE, TAG_VPB);
+    /* a plain pool block, zeroed: once published, the file system that
+       mounts it, or the I/O manager, may be the one to free it */
+    NewVpb = ExAllocatePool2(POOL_FLAG_NON_PAGED, VPB_SIZE, TAG_VPB);
     if (NewVpb == NULL) {
         DEBUG(DL_ERR, ( "Ext2CheckDismount: failed to allocate NewVpb.\n"));
         return FALSE;
     }
     DEBUG(DL_DBG, ("Ext2CheckDismount: NewVpb allocated: %p\n", NewVpb));
     INC_MEM_COUNT(PS_VPB, NewVpb, sizeof(VPB));
-    memset(NewVpb, '_', VPB_SIZE);
-    RtlZeroMemory(NewVpb, sizeof(VPB));
 
     ExAcquireResourceExclusiveLite(
         &Ext2Global->Resource, TRUE );
@@ -125,7 +137,7 @@ Ext2CheckDismount (
         ExReleaseResourceLite(&Vcb->MainResource);
         ExReleaseResourceLite(&Ext2Global->Resource);
         if (NewVpb != NULL) {
-            Ext2FreePool(NewVpb, TAG_VPB);
+            ExFreePoolWithTag(NewVpb, TAG_VPB);
             DEC_MEM_COUNT(PS_VPB, NewVpb, sizeof(VPB));
         }
         return FALSE;
@@ -169,7 +181,7 @@ Ext2CheckDismount (
             bTearDown = TRUE;
         } else {
             bDeleted = TRUE;
-            Vpb->DeviceObject = NULL;
+            Ext2LeaveVpb(Vpb);
         }
 
         DEBUG(DL_DBG, ("Ext2CheckDismount: Vpb: %p bDeleted=%d bTearDown=%d\n",
@@ -180,7 +192,15 @@ Ext2CheckDismount (
         DEBUG(DL_DBG, ( "Ext2CheckDismount: New/Old Vpb %p/%p Realdevice = %p\n",
                         NewVpb, Vcb->Vpb, Vpb->RealDevice));
 
-        if (!IsFlagOn(Vcb->Flags, VCB_NEW_VPB)) {
+        /* An sc stop leaves the volume its VPB, mounted, until the last
+           handle is gone: an open meanwhile reaches this volume and fails,
+           and nothing mounts the device. A fresh VPB published now, with
+           our own mounts refused, would go to RAW for the first raw open
+           a service makes - and RAW keeps it, swapping it out for one of
+           its own: an allocation of ours the unload could only leave
+           behind (VolumePointerOwnership.c). */
+        if (!IsFlagOn(Vcb->Flags, VCB_NEW_VPB) &&
+            Ext2Global->UnloadState != EXT2_UNLOAD_DRAINING) {
             NewVpb->Type = IO_TYPE_VPB;
             NewVpb->Size = sizeof(VPB);
             NewVpb->Flags = Vpb->Flags & VPB_REMOVE_PENDING;
@@ -194,7 +214,9 @@ Ext2CheckDismount (
             NewVpb = NULL;
             SetLongFlag(Vcb->Flags, VCB_NEW_VPB);
         }
-        ClearFlag(Vpb->Flags, VPB_MOUNTED);
+        if (IsFlagOn(Vcb->Flags, VCB_NEW_VPB)) {
+            ClearFlag(Vpb->Flags, VPB_MOUNTED);
+        }
         ClearLongFlag(Vcb->Flags, VCB_MOUNTED);
 
         if (!IsFlagOn(Vcb->Flags, VCB_DISMOUNT_PENDING)) {
@@ -245,7 +267,7 @@ ReleaseVpb:
            it - so finish it here */
         IoAcquireVpbSpinLock(&Irql);
         if (Vpb->ReferenceCount == 0 && Vcb->ReferenceCount == 0) {
-            Vpb->DeviceObject = NULL;
+            Ext2LeaveVpb(Vpb);
             bDeleted = TRUE;
         }
         IoReleaseVpbSpinLock(Irql);
@@ -266,7 +288,7 @@ ReleaseVpb:
 
     if (NewVpb != NULL) {
         DEBUG(DL_DBG, ( "Ext2CheckDismount: freeing new Vpb %p\n", NewVpb));
-        Ext2FreePool(NewVpb, TAG_VPB);
+        ExFreePoolWithTag(NewVpb, TAG_VPB);
         DEC_MEM_COUNT(PS_VPB, NewVpb, sizeof(VPB));
     }
 

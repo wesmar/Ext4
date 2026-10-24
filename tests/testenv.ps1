@@ -42,7 +42,10 @@ function Get-TestVmIp {
 }
 
 function Get-SshOptions {
-    @('-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes', '-i', $TestEnv.SshKey)
+    # keepalives: a guest that bugchecks under a running command fails it in
+    # two minutes instead of leaving ssh to wait for TCP to give up (hours)
+    @('-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes',
+      '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=8', '-i', $TestEnv.SshKey)
 }
 
 function Find-SignTool {
