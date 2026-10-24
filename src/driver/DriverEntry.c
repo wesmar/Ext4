@@ -419,6 +419,7 @@ DriverEntry (
     if (!NT_SUCCESS(Status)) {
         goto errorout;
     }
+    Ext2Global->Verified = MmIsDriverVerifying(DriverObject) != 0;
 
     /* for CD-ROM media - the I/O manager offers optical volumes only to CD
        file systems - and for disks, \ext4, the one mounts come through */

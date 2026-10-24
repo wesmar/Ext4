@@ -27,6 +27,18 @@ Ext2ExceptionFilter (
              ExceptionPointer->ContextRecord);
     DbgPrint("-------------------------------------------------------------\n");
 
+    /* A fault nobody raised - an access violation, a misaligned access - is
+       a bug, and what it leaves behind (a freed object read, a count or a
+       list half changed) goes on into the requests that follow. Caught, it
+       is only an error code: a name freed under an open Fcb showed as
+       nothing but ERROR_NOACCESS (998) and names left behind. Under Driver
+       Verifier, where the tests run, it bugchecks with its context
+       (.cxr <Arg3>); elsewhere the request fails as before. */
+    if (Ext2Global->Verified && !FsRtlIsNtstatusExpected(ExceptionCode)) {
+        Ext2BugCheck( EXT2_BUGCHK_EXCEPT, (ULONG_PTR)ExceptRecord,
+                      (ULONG_PTR)ExceptionPointer->ContextRecord,
+                      (ULONG_PTR)ExceptRecord->ExceptionAddress );
+    }
 
     /* Check IrpContext is valid or not */
 

@@ -143,6 +143,10 @@ typedef struct _EXT2_GLOBAL {
     PKEVENT                     LowMemory;
     HANDLE                      LowMemoryHandle;
 
+    /* loaded under Driver Verifier: a fault the driver did not expect
+       bugchecks instead of failing the request (ExceptionHandling.c) */
+    BOOLEAN                     Verified;
+
     /* bare "sc stop" support (DeviceControl.c, "Bare sc stop support") */
 #define EXT2_UNLOAD_IDLE        0   /* nothing seen yet */
 #define EXT2_UNLOAD_PROBING     1   /* probe work item queued or running */
