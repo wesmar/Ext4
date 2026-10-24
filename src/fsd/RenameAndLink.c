@@ -182,18 +182,30 @@ Ext2NewNameReplace(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PEXT2_C
         return STATUS_OBJECT_NAME_COLLISION;
     }
 
+    /* Referenced under the lock, as an open takes it: the name replaced may
+       have no handle, its Fcb only cached - idle, and the reaper frees an
+       idle Fcb whenever it runs. Read bare, it could go under the removal
+       check and the delete, which both take its resources. */
+    ExAcquireResourceSharedLite(&Vcb->FcbLock, TRUE);
     ExistingFcb = N->ExistingMcb->Icb->Fcb;
+    if (ExistingFcb != NULL) {
+        Ext2ReferXcb(&ExistingFcb->ReferenceCount);
+    }
+    ExReleaseResourceLite(&Vcb->FcbLock);
+
+    Status = STATUS_SUCCESS;
     if (ExistingFcb != NULL && !IsMcbSymLink(N->ExistingMcb)) {
         Status = Ext2IsFileRemovable(IrpContext, Vcb, ExistingFcb, Ccb);
-        if (!NT_SUCCESS(Status)) {
-            return Status;
+    }
+    if (NT_SUCCESS(Status)) {
+        Ext2NotifySaveName(Vcb, N->ExistingMcb, &N->Existing);
+        Status = Ext2DeleteFile(IrpContext, Vcb, ExistingFcb, N->ExistingMcb);
+        if (NT_SUCCESS(Status)) {
+            N->Replaced = TRUE;
         }
     }
-
-    Ext2NotifySaveName(Vcb, N->ExistingMcb, &N->Existing);
-    Status = Ext2DeleteFile(IrpContext, Vcb, ExistingFcb, N->ExistingMcb);
-    if (NT_SUCCESS(Status)) {
-        N->Replaced = TRUE;
+    if (ExistingFcb != NULL) {
+        Ext2ReleaseFcb(ExistingFcb);
     }
     return Status;
 }
