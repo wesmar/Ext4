@@ -275,7 +275,8 @@ Ext2JournalStepBlocks(IN PEXT2_VCB Vcb)
  * MainResource is fine, as it is for the handle a write activates. The
  * handle given up comes back at the thread's next modification, which is why
  * the step must be the last of it before a lock a handle may not wait for -
- * see Ext2JournalYield.
+ * see Ext2JournalYield. No more room is waited for than a transaction may
+ * have: more than the log can ever free would be waited for for ever.
  */
 VOID
 Ext2JournalJoinRoom(IN PEXT2_VCB Vcb, IN ULONG Buffers)
@@ -284,7 +285,7 @@ Ext2JournalJoinRoom(IN PEXT2_VCB Vcb, IN ULONG Buffers)
 
     if (J != NULL && (J->Flags & JF_ACTIVE) && !(J->Flags & JF_ABORTED)) {
         JnlDetachSelf(J);
-        JnlActivate(J, Buffers);
+        JnlActivate(J, min(Buffers, J->MaxTxnBlocks));
     }
 }
 
