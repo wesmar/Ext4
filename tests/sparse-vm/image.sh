@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: MIT
 # image.sh - the disk of tests/sparse-vm.ps1, run as root in WSL.
 #
-#   make    two empty ext4 volumes: 4 KiB blocks (sp4k) and 1 KiB blocks
-#           (sp1k: a block smaller than a page)
+#   make    three empty ext4 volumes: 4 KiB blocks (sp4k), 1 KiB blocks (sp1k:
+#           a block smaller than a page), and 1 KiB blocks with the smallest
+#           journal mke2fs makes (spjn: long changes must go in steps)
 #   check   each volume: e2fsck -fn, no error the driver recorded, every file
 #           of sums.txt as Linux reads it, the holes as Linux sees them, the
 #           sparse mark where it should be and a file Linux can go on changing
@@ -12,7 +13,7 @@ set -euo pipefail
 export LC_ALL=C
 mode=${1:?make or check}
 size=872415232
-labels=(sp4k sp1k)
+labels=(sp4k sp1k spjn)
 mapfile -t disks < <(lsblk -bdn -o NAME,SIZE,TYPE | awk -v s="$size" '$2==s && $3=="disk" {print "/dev/"$1}')
 [[ ${#disks[@]} == 1 ]] || { echo 'Expected exactly one dedicated 832 MiB disk'; exit 2; }
 dev=${disks[0]}
@@ -22,11 +23,12 @@ mkdir -p "$mnt"
 
 if [[ $mode == make ]]; then
     [[ -z $(wipefs -n "$dev") ]] || { echo 'Refusing a nonblank disk'; exit 2; }
-    printf 'label: gpt\nsize=400MiB, type=linux\nsize=400MiB, type=linux\n' | sfdisk -q "$dev"
+    printf 'label: gpt\nsize=270MiB, type=linux\nsize=270MiB, type=linux\nsize=270MiB, type=linux\n' | sfdisk -q "$dev"
     udevadm settle
     lazy=lazy_itable_init=0,lazy_journal_init=0
     mkfs.ext4 -q -F -b 4096 -E $lazy -L sp4k "${dev}1"
     mkfs.ext4 -q -F -b 1024 -E $lazy -L sp1k "${dev}2"
+    mkfs.ext4 -q -F -b 1024 -J size=1 -E $lazy -L spjn "${dev}3"
     exit 0
 fi
 
@@ -34,7 +36,7 @@ check() { # what, condition
     if eval "$2"; then echo "  ok   $label: $1"; else echo "  FAIL $label: $1"; fail=$((fail + 1)); fi
 }
 
-for i in 1 2; do
+for i in 1 2 3; do
     p=${dev}$i
     label=${labels[$((i - 1))]}
     if out=$(e2fsck -fn "$p" 2>&1); then

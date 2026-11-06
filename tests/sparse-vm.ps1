@@ -4,7 +4,8 @@
 # sparse-vm.ps1 - sparse files through ext4.sys, NTFS the reference.
 #
 # The guest (sparse-vm/guest.ps1) runs the same cases on an NTFS directory and
-# on two ext4 volumes, 4 KiB and 1 KiB blocks (sparse-vm/image.sh): error
+# on three ext4 volumes - 4 KiB blocks, 1 KiB blocks, the smallest journal
+# (sparse-vm/image.sh): error
 # codes, ranges and attributes must be the ones NTFS answers with, bytes and
 # space are checked in the guest. Files are left, the volumes go and come back
 # (the mark must be the disk's, not the driver's), a full volume is tried, then
@@ -24,7 +25,7 @@ $target = "$($TestEnv.User)@$Ip"
 $service = $TestEnv.Service
 $disk = Join-Path $PSScriptRoot 'sparse-test.vhdx'
 $slot = 6
-$labels = @('sp4k', 'sp1k')
+$labels = @('sp4k', 'sp1k', 'spjn')
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 New-Item -ItemType Directory (Join-Path $PSScriptRoot 'logs') -Force | Out-Null
 Start-Transcript -Path (Join-Path $PSScriptRoot "logs\sparse-vm-$stamp.log") | Out-Null
@@ -124,6 +125,18 @@ try {
             else { "   FAIL $k`: NTFS answers [$($reference[$k])], the driver [$($mine[$k])]"; $failed++ }
         }
         "   $same answers as NTFS gives them"
+    }
+
+    "== files at the limit"
+    if (-not $Cases) {
+        foreach ($label in $labels) {
+            $letter = $letters[$label]
+            $limit = if ($label -eq 'sp4k') { 'limit4k' } else { 'limit1k' }
+            "-- $label on ${letter}:"
+            Run "${letter}:\" "-Cases $limit"
+            $guestLines | Where-Object { $_ -notmatch '^(P )' } | ForEach-Object { "   $_" }
+            if ($guestRc) { $failed += $guestRc }
+        }
     }
 
     "== the volumes gone and back"

@@ -26,7 +26,8 @@ typedef enum _EXT2_IDENTIFIER_TYPE {
     EXT2MCB  = ':BCM',
     EXT2ICB  = ':BCI',
     EXT4CRY  = ':YRC',      /* disk device of an unlocked LUKS volume */
-    EXT4LVD  = ':DVL'       /* disk device of an LVM volume inside one */
+    EXT4LVD  = ':DVL',      /* disk device of an LVM volume inside one */
+    EXT4FIL  = ':LIF'       /* disk device over a file */
 #else
     EXT2FGD  = 0xE2FD0001,
     EXT2VCB  = 0xE2FD0002,
@@ -37,7 +38,8 @@ typedef enum _EXT2_IDENTIFIER_TYPE {
     EXT2MCB  = 0xE2FD0007,
     EXT2ICB  = 0xE2FD0008,
     EXT4CRY  = 0xE2FD0009,
-    EXT4LVD  = 0xE2FD000A
+    EXT4LVD  = 0xE2FD000A,
+    EXT4FIL  = 0xE2FD000B
 #endif
 } EXT2_IDENTIFIER_TYPE;
 

@@ -532,6 +532,48 @@ Ext2ReleaseInGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG G
     return Status;
 }
 
+NTSTATUS
+Ext2TrimGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group, IN ULONGLONG MinBlocks,
+              IN PEXT2_TRIM_ROUTINE Trim, IN PVOID Context)
+{
+    struct super_block     *sb = &Vcb->sb;
+    PERESOURCE              Held = Ext2LockGroupBlocks(Vcb, Group);
+    struct buffer_head     *gb = NULL, *bh = NULL;
+    struct ext4_group_desc *gd = ext4_get_group_desc(sb, Group, &gb);
+    NTSTATUS                Status = STATUS_SUCCESS;
+
+    if (gd == NULL) {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+    } else if (!(gd->bg_flags & cpu_to_le16(EXT4_BG_BLOCK_UNINIT))) {
+        Status = Ext2LoadBlockBitmap(IrpContext, Vcb, Group, gd, &bh);
+    }
+
+    if (NT_SUCCESS(Status) && bh != NULL) {
+        EXT2_BLOCK_VIEW View;
+        ULONGLONG       First = Ext2GroupFirst(Vcb, Group);
+        ULONG           Start, End;
+
+        Ext2DiskView(Vcb, Group, bh, &View);
+        Ext2FreedBlocksOf(Vcb, Group, View.Freed);
+        for (Start = Ext2ViewNext(&View, 0, TRUE); Start < View.Bits && NT_SUCCESS(Status);
+             Start = Ext2ViewNext(&View, End, TRUE)) {
+            End = Ext2ViewNext(&View, Start, FALSE);
+            if (End - Start >= MinBlocks && !Ext2MetadataOverlaps(Vcb, First + Start, End - Start)) {
+                Status = Trim(Context, First + Start, End - Start);
+            }
+        }
+    }
+
+    if (bh != NULL) {
+        fini_bh(&bh);
+    }
+    if (gb != NULL) {
+        fini_bh(&gb);
+    }
+    Ext2UnlockGroup(Held);
+    return Status;
+}
+
 /* [Block, Block + Number) group by group: checked (Apply FALSE) or released */
 static NTSTATUS
 Ext2ReleaseRange(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONGLONG Block,

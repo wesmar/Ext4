@@ -233,6 +233,10 @@ Ext2FillHoles(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PEXT2_FCB Fc
         LARGE_INTEGER   Reached;
         BOOLEAN         Main = FALSE, Paging = FALSE;
 
+        if (PsIsThreadTerminating(PsGetCurrentThread())) {
+            return STATUS_CANCELLED;
+        }
+
         __try {
             ExAcquireResourceExclusiveLite(&Fcb->MainResource, TRUE);
             Main = TRUE;
@@ -694,7 +698,7 @@ Ext2SetZeroData(IN PEXT2_IRP_CONTEXT IrpContext)
     PEXT2_FCB                   Fcb = NULL;
     PEXT2_CCB                   Ccb = NULL;
     LONGLONG                    Start, End, Step;
-    BOOLEAN                     Main = FALSE, OpPostIrp = FALSE, Changed = FALSE;
+    BOOLEAN                     Main = FALSE, OpPostIrp = FALSE, Changed = FALSE, Flushed = FALSE;
     NTSTATUS                    Status = STATUS_SUCCESS;
 
     __try {
@@ -723,14 +727,20 @@ Ext2SetZeroData(IN PEXT2_IRP_CONTEXT IrpContext)
         }
 
         /* Step by step, the locks let go between steps: a range may be the
-           whole of a very large file. After an oplock break the request
-           starts again from its offset: zeroing is the same done twice. */
+           whole of a very large file, and whoever asked may be gone before
+           it is through. After an oplock break the request starts again from
+           its offset: zeroing is the same done twice. */
         Step = Ext2SparseStep(Vcb);
 
         while (Start < End) {
 
             LARGE_INTEGER   Length;
             LONGLONG        Stop;
+
+            if (PsIsThreadTerminating(PsGetCurrentThread())) {
+                Status = STATUS_CANCELLED;
+                __leave;
+            }
 
             /* zeros through the cache are writes like any other: they wait
                for the cache to have room for them, with no lock held */
@@ -749,9 +759,6 @@ Ext2SetZeroData(IN PEXT2_IRP_CONTEXT IrpContext)
                 break;                      /* nothing to do past the end */
             }
 
-            Stop = (Start + Step) & ~((LONGLONG)BLOCK_SIZE - 1);
-            Stop = min(min(Stop, End), Fcb->Header.FileSize.QuadPart);
-
             Status = FsRtlCheckOplock(&Fcb->Oplock, Irp, IrpContext, Ext2OplockComplete, Ext2LockIrp);
             if (Status != STATUS_SUCCESS) {
                 OpPostIrp = TRUE;
@@ -759,6 +766,9 @@ Ext2SetZeroData(IN PEXT2_IRP_CONTEXT IrpContext)
             }
             Fcb->Header.IsFastIoPossible = Ext2IsFastIoPossible(Fcb);
 
+            /* all that is left of the range: what a jump over a hole below
+               passes is checked as well */
+            Stop = min(End, Fcb->Header.FileSize.QuadPart);
             Length.QuadPart = Stop - Start;
             if (!FsRtlFastCheckLockForWrite(&Fcb->FileLockAnchor, (PLARGE_INTEGER)&Start, &Length, 0,
                                             FileObject, PsGetCurrentProcess())) {
@@ -766,6 +776,37 @@ Ext2SetZeroData(IN PEXT2_IRP_CONTEXT IrpContext)
                 __leave;
             }
 
+            /* A hole has nothing to zero, and it may be terabytes long: over
+               it in one jump. Only what the cache holds could lie there, dirty
+               pages of a mapped view, so that goes to the disk first, once. */
+            if (Ext2InodeIsSparse(Fcb->Inode)) {
+                ULONG       Kind;
+                ULONGLONG   Next;
+
+                if (!Flushed && Fcb->SectionObject.DataSectionObject != NULL) {
+                    IO_STATUS_BLOCK Iosb;
+
+                    CcFlushCache(&Fcb->SectionObject, NULL, 0, &Iosb);
+                    if (!NT_SUCCESS(Iosb.Status)) {
+                        Status = Iosb.Status;
+                        __leave;
+                    }
+                }
+                Flushed = TRUE;
+
+                Status = Ext2ExtentRun(IrpContext, Fcb->Mcb, (ULONG)(Start >> BLOCK_BITS), &Kind, &Next);
+                if (!NT_SUCCESS(Status)) {
+                    __leave;
+                }
+                if (Kind == EXT2_RUN_HOLE) {
+                    ExReleaseResourceLite(&Fcb->MainResource);
+                    Main = FALSE;
+                    Start = (LONGLONG)(Next << BLOCK_BITS);
+                    continue;
+                }
+            }
+
+            Stop = min(Stop, (Start + Step) & ~((LONGLONG)BLOCK_SIZE - 1));
             if (Ext2InodeIsSparse(Fcb->Inode)) {
                 Status = Ext2PunchStep(IrpContext, Vcb, FileObject, Fcb, Start, Stop);
             } else {

@@ -118,6 +118,30 @@ Ext4LvCloseOn (IN ULONG Crypt);
 VOID
 Ext4LvTeardownAll (VOID);
 
+/* a file as a disk (FileDisk.c); called under the LUKS control lock */
+
+struct _EXT4_FILE_OPEN;
+struct _EXT4_FILE_CLOSE;
+struct _EXT4_FILE_QUERY;
+
+BOOLEAN
+Ext4IsFileDisk (IN PDEVICE_OBJECT DeviceObject);
+
+NTSTATUS
+Ext4FileDispatch (IN PDEVICE_OBJECT DeviceObject, IN PIRP Irp);
+
+NTSTATUS
+Ext4FileOpen (IN OUT struct _EXT4_FILE_OPEN *In);
+
+NTSTATUS
+Ext4FileClose (IN struct _EXT4_FILE_CLOSE *In);
+
+NTSTATUS
+Ext4FileQuery (OUT struct _EXT4_FILE_QUERY *Out);
+
+VOID
+Ext4FileTeardownAll (VOID);
+
 /* multi-mount protection (MultiMountProtection.c) */
 NTSTATUS
 Ext4MmpStart (IN PEXT2_VCB Vcb);

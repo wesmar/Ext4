@@ -16,7 +16,7 @@
 # mount, checks that what was left is still as it was.
 param(
     [Parameter(Mandatory = $true)][string]$Root,
-    [string]$Cases = 'volume,errors,access,basic,edges,grow,cached,unbuffered,locks,mapped,unsparse,overwrite,copy,links',
+    [string]$Cases = 'volume,errors,access,basic,edges,grow,cached,unbuffered,locks,mapped,unsparse,overwrite,copy,links,big',
     [switch]$Keep,
     [switch]$Verify,
     [switch]$Full
@@ -503,7 +503,10 @@ public static class Sg
         using (SafeFileHandle h = Rw(name, CreateAlways)) { WriteAt(h, 0, M); P("ow-mark", Sparse(h, null)); }
         using (SafeFileHandle h = Open(name, GenericRead | GenericWrite, TruncateExisting, 0)) P("ow-truncated", Attr(name));
         using (SafeFileHandle h = Rw(name, OpenExisting)) { P("ow-mark-2", Sparse(h, null)); }
-        using (SafeFileHandle h = Rw(name, CreateAlways)) P("ow-replaced", Attr(name));
+        using (SafeFileHandle h = Rw(name, CreateAlways)) { P("ow-replaced", Attr(name)); P("ow-mark-3", Sparse(h, null)); }
+        File.Delete(PathOf(name));
+        // the inode goes and may come back: nothing of the mark with it
+        using (SafeFileHandle h = Rw(name, CreateAlways)) P("ow-new-after-delete", Attr(name));
         File.Delete(PathOf(name));
     }
 
@@ -535,6 +538,57 @@ public static class Sg
         P("links-attribute", Attr(other));
         P("links-listed", Listed(other));
         File.Delete(PathOf(other));
+        File.Delete(PathOf(name));
+    }
+
+    // a file in thousands of pieces gone in one request: on a volume of the
+    // smallest journal one handle could not hold that, and the journal would
+    // abort (fsd\SparseFiles.c goes in steps). The volume must stay writable.
+    public static void Big() {
+        const string name = "big.bin";
+        const long size = 96 * M, piece = 8192;
+        using (SafeFileHandle h = Rw(name, CreateAlways)) {
+            WriteAt(h, 0, size);
+            FlushFileBuffers(h);
+            P("big-mark", Sparse(h, null));
+            int errors = 0;
+            for (long at = piece; at < size; at += 2 * piece) if (Zero(h, at, at + piece) != 0) errors++;
+            P("big-pieces", errors);
+            Content("every other piece zeros", h, 0, size, a => (a / piece) % 2 == 1);
+            FlushFileBuffers(h);
+            P("big-all", Zero(h, 0, size));
+            P("big-ranges", Ranges(h, 0, size));
+            if (!Ntfs) Check("all of it given back", OnDisk(name) < 2 * M, OnDisk(name).ToString());
+            WriteAt(h, M, M);
+            FlushFileBuffers(h);
+            Content("writable after it", h, 0, 4 * M, a => a < M || a >= 2 * M);
+        }
+        File.Delete(PathOf(name));
+    }
+
+    // a file as long as ext4 lets one be, on a small volume: the limit of its
+    // logical blocks, 16 TiB less a block of 4 KiB, 4 TiB of 1 KiB (the driver
+    // only: NTFS has its own)
+    public static void Limit(long block) {
+        const string name = "limit.bin";
+        long max = (0x100000000L - 1) * block;
+        using (SafeFileHandle h = Rw(name, CreateAlways)) {
+            P("limit-mark", Sparse(h, null));
+            SetLength(h, max);
+            Check("grown to the limit", new FileInfo(PathOf(name)).Length == max, max.ToString());
+            WriteAt(h, max - M, M);
+            WriteAt(h, max / 2, M);
+            FlushFileBuffers(h);
+            Check("two pieces, far apart, take no more", OnDisk(name) < 3 * M, OnDisk(name).ToString());
+            Content("bytes at the very end", h, max - 2 * M, 2 * M, a => a < max - M);
+            Content("bytes half way", h, max / 2 - M, 3 * M, a => a < max / 2 || a >= max / 2 + M);
+            string r = Ranges(h, 0, max);
+            Check("both are ranges", r.StartsWith("0:") && r.Split(',').Length == 2, r);
+            Check("a whole request over the file", Zero(h, 0, max) == 0, "");
+            Check("nothing left", OnDisk(name) < M, OnDisk(name).ToString());
+            Check("no range left", Ranges(h, 0, max) == "0", Ranges(h, 0, max));
+            SetLength(h, 0);
+        }
         File.Delete(PathOf(name));
     }
 
@@ -583,6 +637,7 @@ public static class Sg
         using (SafeFileHandle h = Rw(name, CreateAlways)) {
             Sparse(h, null);
             SetLength(h, (long)Free() + 256 * M);
+            WriteAt(h, 0, 64 * 1024);
         }
         using (SafeFileHandle f = Rw(filler, CreateAlways)) {
             long n = (long)Free();
@@ -590,7 +645,12 @@ public static class Sg
             catch (Win32Failure e) { Check("filler stopped by a full volume", e.Code == 112, e.Message); }
         }
         using (SafeFileHandle h = Rw(name, OpenExisting)) {
+            // a read first: a handle that caches is the one that could go the
+            // fast way, past the file system
             int error = 0;
+            uint got;
+            Seek(h, 0);
+            ReadFile(h, Io, 4096, out got, IntPtr.Zero);
             try { WriteAt(h, 16 * M, 8 * M); } catch (Win32Failure e) { error = e.Code; }
             Check("a cached write into a hole fails when made", error == 112, "error " + error);
             FlushFileBuffers(h);
@@ -629,6 +689,9 @@ if ($Verify) {
             'overwrite'  { [Sg]::Overwrite() }
             'copy'       { [Sg]::Copy() }
             'links'      { [Sg]::Links() }
+            'big'        { [Sg]::Big() }
+            'limit4k'    { [Sg]::Limit(4096) }
+            'limit1k'    { [Sg]::Limit(1024) }
             'none'       { }
             default      { throw "No case $case" }
         }

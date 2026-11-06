@@ -164,6 +164,10 @@ int  CmdLvList(ULONG Crypt);                                    /* lvm_cmd.c */
 int  CmdLvOpen(ULONG Crypt, const WCHAR *Volume, WCHAR Letter);
 int  CmdLvClose(const WCHAR *Which, BOOL Force);
 void LvStatus(void);
+int  CmdMount(int argc, WCHAR **argv);                          /* cmd_file.c */
+int  CmdUnmount(int argc, WCHAR **argv);
+int  CmdTrim(int argc, WCHAR **argv);
+ULONG FileStatus(void);
 int  CmdSelfTest(void);                                         /* selftest.c */
 
 /* the passphrase into Out (Room bytes): from KeyFile, a line of stdin, or

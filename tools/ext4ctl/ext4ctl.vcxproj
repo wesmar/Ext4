@@ -60,6 +60,7 @@
     <ClCompile Include="argon2.c" />
     <ClCompile Include="blake2b.c" />
     <ClCompile Include="cmd_crypt.c" />
+    <ClCompile Include="cmd_file.c" />
     <ClCompile Include="crypto.c" />
     <ClCompile Include="driver.c" />
     <ClCompile Include="json.c" />

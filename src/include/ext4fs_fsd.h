@@ -657,6 +657,10 @@ Ext2QueryAllocatedRanges(IN PEXT2_IRP_CONTEXT IrpContext);
 NTSTATUS
 Ext2SetZeroData(IN PEXT2_IRP_CONTEXT IrpContext);
 
+/* VolumeTrim.c */
+NTSTATUS
+Ext2TrimVolume(IN PEXT2_IRP_CONTEXT IrpContext);
+
 NTSTATUS
 Ext2UserFsRequest (IN PEXT2_IRP_CONTEXT IrpContext);
 

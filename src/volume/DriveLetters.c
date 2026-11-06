@@ -374,7 +374,7 @@ Ext2VolumePdo(IN PDEVICE_OBJECT RealDevice)
 {
     PDEVICE_OBJECT Pdo = IoGetDeviceAttachmentBaseRef(RealDevice);
 
-    if (Pdo && (!IsFlagOn(Pdo->Flags, DO_BUS_ENUMERATED_DEVICE) || Ext4IsCryptDevice(Pdo))) {
+    if (Pdo && (!IsFlagOn(Pdo->Flags, DO_BUS_ENUMERATED_DEVICE) || Ext4IsCryptDevice(Pdo) || Ext4IsFileDisk(Pdo))) {
         ObDereferenceObject(Pdo);
         Pdo = NULL;
     }

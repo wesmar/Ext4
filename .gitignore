@@ -21,3 +21,4 @@ release-now.md
 release/
 dist/
 narzedzia/
+tests/filedisk-work-*/

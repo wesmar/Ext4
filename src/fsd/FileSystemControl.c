@@ -8,6 +8,7 @@
 
 #include "ext4fs.h"
 #include "fsctl_internal.h"
+#include "ext4crypt.h"
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, Ext2AllowExtendedDasdIo)
@@ -476,6 +477,10 @@ Ext2UserFsRequest (IN PEXT2_IRP_CONTEXT IrpContext)
 
     case FSCTL_SET_ZERO_DATA:
         Status = Ext2SetZeroData(IrpContext);
+        break;
+
+    case FSCTL_EXT4_TRIM:
+        Status = Ext2TrimVolume(IrpContext);
         break;
 
     default:

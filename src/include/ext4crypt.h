@@ -176,4 +176,72 @@ typedef struct _EXT4_LV_QUERY {
     EXT4_LV_ENTRY Entries[EXT4_LV_MAX_VOLUMES];
 } EXT4_LV_QUERY, *PEXT4_LV_QUERY;
 
+/*
+ * A file as a disk (volume\FileDisk.c): an ext4 volume in an image file, on
+ * any file system but this driver's own. Path is the file's NT name.
+ */
+#define IOCTL_APP_FILE_OPEN \
+CTL_CODE(FILE_DEVICE_UNKNOWN, 2016, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define IOCTL_APP_FILE_CLOSE \
+CTL_CODE(FILE_DEVICE_UNKNOWN, 2017, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define IOCTL_APP_FILE_QUERY \
+CTL_CODE(FILE_DEVICE_UNKNOWN, 2018, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define EXT4_FILE_PATH_CHARS        512
+#define EXT4_FILE_MAX_DISKS         16
+#define EXT4_FILE_DEVICE_PREFIX     L"\\Device\\Ext4File"
+
+typedef struct _EXT4_FILE_OPEN {
+    ULONG       Magic;                      /* EXT4_CRYPT_MAGIC */
+    ULONG       Flags;                      /* EXT4_CRYPT_READ_ONLY */
+    ULONG       Command;                    /* 0 */
+    ULONG       Version;                    /* EXT4_CRYPT_VERSION */
+    WCHAR       Letter;                     /* wanted drive letter, 0: first free */
+    WCHAR       Reserved;
+    ULONG       Index;                      /* out: \Device\Ext4File<Index> */
+    ULONG       Sparse;                     /* out: the file is sparse, trims make holes */
+    ULONG       Padding;
+    ULONGLONG   Size;                       /* out: of the device, bytes */
+    WCHAR       Path[EXT4_FILE_PATH_CHARS];
+} EXT4_FILE_OPEN, *PEXT4_FILE_OPEN;
+
+typedef struct _EXT4_FILE_CLOSE {
+    ULONG       Magic;
+    ULONG       Flags;                      /* EXT4_CRYPT_FORCE */
+    ULONG       Command;
+    ULONG       Index;
+} EXT4_FILE_CLOSE, *PEXT4_FILE_CLOSE;
+
+typedef struct _EXT4_FILE_ENTRY {
+    ULONG       Index;
+    ULONG       Flags;
+    ULONG       Sparse;
+    ULONG       Reserved;
+    ULONGLONG   Size;
+    WCHAR       Path[EXT4_FILE_PATH_CHARS];
+} EXT4_FILE_ENTRY, *PEXT4_FILE_ENTRY;
+
+typedef struct _EXT4_FILE_QUERY {
+    ULONG       Magic;
+    ULONG       Flags;
+    ULONG       Command;
+    ULONG       Count;                      /* out */
+    EXT4_FILE_ENTRY Entries[EXT4_FILE_MAX_DISKS];
+} EXT4_FILE_QUERY, *PEXT4_FILE_QUERY;
+
+/*
+ * On a volume handle (\\.\X:, write access): the free blocks given back to
+ * the device, what fstrim does. MinLength: shorter free runs stay.
+ */
+#define FSCTL_EXT4_TRIM \
+CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 3000, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+typedef struct _EXT4_TRIM {
+    ULONGLONG   MinLength;                  /* in: bytes */
+    ULONGLONG   Bytes;                      /* out: trimmed */
+    ULONGLONG   Runs;                       /* out: in so many runs */
+} EXT4_TRIM, *PEXT4_TRIM;
+
 #endif /* _EXT4_EXT4CRYPT_H_ */

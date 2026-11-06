@@ -450,13 +450,16 @@ int
 CmdStatus(void)
 {
     EXT4_CRYPT_QUERY Q;
-    ULONG            i;
+    ULONG            i, Files;
 
     if (!CryptQuery(&Q)) {
         return 1;
     }
+    Files = FileStatus();
     if (Q.Count == 0) {
-        Say("no unlocked LUKS volumes");
+        if (Files == 0) {
+            Say("no unlocked LUKS volumes, no mounted files");
+        }
         return 0;
     }
     for (i = 0; i < Q.Count; i++) {

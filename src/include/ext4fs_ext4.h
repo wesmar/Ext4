@@ -193,6 +193,20 @@ Ext2ReleaseInodeBlocks(IN PEXT2_IRP_CONTEXT IrpContext, IN struct inode *Inode,
    of the stripe emptied first */
 VOID    Ext2FreedBlocksOf(IN PEXT2_VCB Vcb, IN ULONG Group, OUT const ULONG64 *Busy[EXT2_FREED_SLOTS]);
 
+/* the free runs of Group of at least MinBlocks, each to Trim with the group's
+   BlockLock held: nothing can be given them until it returns. Blocks whose
+   release has not committed are not free. */
+typedef NTSTATUS (*PEXT2_TRIM_ROUTINE)(IN PVOID Context, IN ULONGLONG Block, IN ULONG Count);
+NTSTATUS Ext2TrimGroup(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN ULONG Group, IN ULONGLONG MinBlocks,
+                       IN PEXT2_TRIM_ROUTINE Trim, IN PVOID Context);
+
+/* what a trim of the volume has done so far (fsd\VolumeTrim.c) */
+typedef struct _EXT4_TRIM_RUN {
+    PEXT2_VCB   Vcb;
+    ULONGLONG   Bytes;
+    ULONGLONG   Runs;
+} EXT4_TRIM_RUN, *PEXT4_TRIM_RUN;
+
 /* bits [Index, Index + Count) of Group freed, after the bitmap change was
    filed in the journal; FALSE: no memory for the overlay, reusable at once */
 BOOLEAN Ext2DeferFreedBlocks(IN PEXT2_VCB Vcb, IN ULONG Group, IN ULONG Index, IN ULONG Count);

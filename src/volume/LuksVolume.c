@@ -84,7 +84,10 @@ Ext4IsCryptControl(IN ULONG IoControlCode)
            IoControlCode == IOCTL_APP_CRYPT_QUERY ||
            IoControlCode == IOCTL_APP_LV_OPEN ||
            IoControlCode == IOCTL_APP_LV_CLOSE ||
-           IoControlCode == IOCTL_APP_LV_QUERY;
+           IoControlCode == IOCTL_APP_LV_QUERY ||
+           IoControlCode == IOCTL_APP_FILE_OPEN ||
+           IoControlCode == IOCTL_APP_FILE_CLOSE ||
+           IoControlCode == IOCTL_APP_FILE_QUERY;
 }
 
 /*
@@ -547,6 +550,29 @@ Ext4CryptControl(IN PIRP Irp)
         }
         break;
 
+    case IOCTL_APP_FILE_OPEN:
+        if (InLength < sizeof(EXT4_FILE_OPEN) || OutLength < sizeof(EXT4_FILE_OPEN)) {
+            Status = STATUS_INVALID_PARAMETER;
+        } else {
+            Status = Ext4FileOpen((PEXT4_FILE_OPEN)Buffer);
+            Information = NT_SUCCESS(Status) ? sizeof(EXT4_FILE_OPEN) : 0;
+        }
+        break;
+
+    case IOCTL_APP_FILE_CLOSE:
+        Status = InLength < sizeof(EXT4_FILE_CLOSE) ? STATUS_INVALID_PARAMETER :
+                 Ext4FileClose((PEXT4_FILE_CLOSE)Buffer);
+        break;
+
+    case IOCTL_APP_FILE_QUERY:
+        if (OutLength < sizeof(EXT4_FILE_QUERY)) {
+            Status = STATUS_BUFFER_TOO_SMALL;
+        } else {
+            Status = Ext4FileQuery((PEXT4_FILE_QUERY)Buffer);
+            Information = sizeof(EXT4_FILE_QUERY);
+        }
+        break;
+
     default:
         Status = STATUS_INVALID_DEVICE_REQUEST;
         break;
@@ -571,6 +597,7 @@ Ext4CryptTeardownAll(VOID)
 
     KeWaitForSingleObject(&Ext4CryptControlLock, Executive, KernelMode, FALSE, NULL);
     Ext4LvTeardownAll();
+    Ext4FileTeardownAll();
     for (;;) {
         PEXT4_CRYPT_DEVICE Crypt = NULL;
 

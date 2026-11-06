@@ -3,7 +3,8 @@
 # crash-workload.ps1 - the guest half of tests/crash-vm.ps1: a fixed mix of
 # namespace and data changes on the volume labelled crashlog - directories,
 # files of many sizes, overwrites, appends, truncation, renames, hard links,
-# deletes - with some files flushed (FlushFileBuffers) along the way. With
+# deletes, sparse files grown by holes and punched - with some files flushed
+# (FlushFileBuffers) along the way. With
 # -Churn, as many small files are then made, flushed, renamed and deleted,
 # one commit each: enough to wrap a small journal many times over. With
 # -Many, one directory gets that many names, flushed every 50: its index
@@ -20,7 +21,32 @@ $root = "$($volume.DriveLetter):\work"
 Add-Type -TypeDefinition @"
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 public static class CW {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool DeviceIoControl(SafeFileHandle h, uint code, byte[] input, int inputSize, byte[] output, int outputSize, out int returned, IntPtr overlapped);
+    // marked sparse, grown by a hole, written in pieces, punched
+    public static void Sparse(string path, int seed, bool flush) {
+        const int M = 1 << 20;
+        using (var f = new FileStream(path, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 4096)) {
+            int done;
+            byte[] range = new byte[16];
+            if (!DeviceIoControl(f.SafeFileHandle, 0x900C4, null, 0, null, 0, out done, IntPtr.Zero)) throw new Exception("sparse");
+            f.SetLength(64 * M);
+            for (int i = 0; i < 16; i++) {
+                f.Seek(i * 3L * M, SeekOrigin.Begin);
+                f.Write(Pattern(seed + i, 65536), 0, 65536);
+            }
+            if (flush) f.Flush(true);
+            for (int i = 0; i < 16; i += 2) {
+                BitConverter.GetBytes(i * 3L * M + 4096).CopyTo(range, 0);
+                BitConverter.GetBytes(i * 3L * M + 40000).CopyTo(range, 8);
+                if (!DeviceIoControl(f.SafeFileHandle, 0x980C8, range, 16, null, 0, out done, IntPtr.Zero)) throw new Exception("zero");
+            }
+            if (flush) f.Flush(true);
+        }
+    }
     public static byte[] Pattern(int seed, int count) {
         var b = new byte[count];
         for (int i = 0; i < count; i++) b[i] = (byte)((i * 31 + seed * 17 + 7) % 251);
@@ -51,6 +77,9 @@ for ($i = 0; $i -lt 20; $i++) { New-Item -ItemType HardLink -Path "$root\a\b\c\l
 for ($i = 0; $i -lt 10; $i++) { Remove-Item "$root\a\b\c\link-$i" }
 [CW]::Write("$root\big\seq.bin", 1000, 1024 * 1024, $true)
 Remove-Item "$root\a\b\c" -Recurse -Force
+[IO.Directory]::CreateDirectory("$root\sparse") | Out-Null
+for ($i = 0; $i -lt 6; $i++) { [CW]::Sparse("$root\sparse\s-$i.bin", $i, ($i % 2 -eq 0)) }
+Remove-Item "$root\sparse\s-1.bin"
 [IO.Directory]::CreateDirectory("$root\churn") | Out-Null
 for ($i = 0; $i -lt $Churn; $i++) {
     [CW]::Write("$root\churn\f-$i.bin", $i, 4096 + ($i % 3) * 5000, $true)

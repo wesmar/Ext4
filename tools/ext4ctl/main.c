@@ -15,6 +15,9 @@
  *   ext4ctl lv list <index>                   LVM volumes inside unlocked LUKS volume <index>
  *   ext4ctl lv open <index> <vg/lv> [--letter X]  map one read-only (linear or thin)
  *   ext4ctl lv close <X:|lv index> [--force]  unmap it
+ *   ext4ctl mount <file> [--letter X] [--read-only]  an image file as a volume
+ *   ext4ctl unmount <X:|index> [--force]      flush the file and let it go
+ *   ext4ctl trim <X:> [--min-bytes n]         free blocks given back to the device
  *   ext4ctl selftest                          RFC 9106 / IEEE 1619 / PBKDF2 test vectors
  *
  * <volume> is a partition's device: 5, HarddiskVolume5, \Device\HarddiskVolume5
@@ -23,7 +26,8 @@
  *
  *   cmd_crypt.c    list, unlock, lock, status      luks*.c   the LUKS formats
  *   lvm_cmd.c      lv list / open / close          lvm_*.c   LVM2 and dm-thin
- *   selftest.c     selftest                        driver.c  ext4.sys, letters, output
+ *   cmd_file.c     mount, unmount, trim            selftest.c  selftest
+ *   driver.c       ext4.sys, letters, output
  */
 
 #include "ext4ctl.h"
@@ -39,6 +43,9 @@ Usage(void)
          "       ext4ctl lv list <index>\n"
          "       ext4ctl lv open <index> <vg/lv> [--letter X]   (read-only)\n"
          "       ext4ctl lv close <X:|lv index> [--force]\n"
+         "       ext4ctl mount <file> [--letter X] [--read-only]\n"
+         "       ext4ctl unmount <X:|index> [--force]\n"
+         "       ext4ctl trim <X:> [--min-bytes n]\n"
          "       ext4ctl selftest\n"
          "<volume>: 5, HarddiskVolume5, \\Device\\HarddiskVolume5, \\Device\\Harddisk1\\Partition2\n"
          "          or UUID=<uuid> of the LUKS header (see ext4ctl list)");
@@ -76,6 +83,9 @@ wmain(int argc, WCHAR **argv)
     if (_wcsicmp(argv[1], L"unlock") == 0)   return CmdUnlock(argc - 2, argv + 2);
     if (_wcsicmp(argv[1], L"lock") == 0)     return CmdLock(argc - 2, argv + 2);
     if (_wcsicmp(argv[1], L"status") == 0)   return CmdStatus();
+    if (_wcsicmp(argv[1], L"mount") == 0)    return CmdMount(argc - 2, argv + 2);
+    if (_wcsicmp(argv[1], L"unmount") == 0)  return CmdUnmount(argc - 2, argv + 2);
+    if (_wcsicmp(argv[1], L"trim") == 0)     return CmdTrim(argc - 2, argv + 2);
     if (_wcsicmp(argv[1], L"selftest") == 0) return CmdSelfTest();
     if (_wcsicmp(argv[1], L"lv") == 0)       return CmdLv(argc - 2, argv + 2);
     Usage();

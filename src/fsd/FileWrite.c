@@ -408,10 +408,15 @@ Ext2WriteCheck(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEXT2_W
         return Ext2WriteDone(W, 0);
     }
 
-    /* Check subtraction before any offset+length arithmetic or cache update. */
-    Status = Ext4CheckWriteRange(Vcb, Fcb->Inode, W->ByteOffset.QuadPart, W->Length);
-    if (!NT_SUCCESS(Status)) {
-        return Status;
+    /* Check subtraction before any offset+length arithmetic or cache update.
+       Not a paging write: the last page of a file that ends at the limit runs
+       past it when blocks are smaller than pages, it could never be flushed,
+       and Ext2WritePagingRange cuts it to the file anyway. */
+    if (!W->PagingIo) {
+        Status = Ext4CheckWriteRange(Vcb, Fcb->Inode, W->ByteOffset.QuadPart, W->Length);
+        if (!NT_SUCCESS(Status)) {
+            return Status;
+        }
     }
 
     /* an append-only file (chattr +a) grows at its end only; the I/O

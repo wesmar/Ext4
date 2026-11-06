@@ -368,6 +368,9 @@ Ext2BuildRequest (PDEVICE_OBJECT   DeviceObject, PIRP Irp)
     if (Ext4IsLvDevice(DeviceObject)) {
         return Ext4LvDispatch(DeviceObject, Irp);
     }
+    if (Ext4IsFileDisk(DeviceObject)) {
+        return Ext4FileDispatch(DeviceObject, Irp);
+    }
 
     /* unlocking and locking LUKS volumes mount and dismount file systems,
        ours included: handled before this request becomes one of them */
