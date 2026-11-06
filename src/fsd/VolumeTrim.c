@@ -3,7 +3,7 @@
  * device below, what fstrim does on Linux.
  *
  * Copyright (c) 2026 Marek Wesolowski (WESMAR)
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-2.0-only
  *
  * Group by group, the free runs go down as trims
  * (IOCTL_STORAGE_MANAGE_DATA_SET_ATTRIBUTES): an SSD can erase them, and a

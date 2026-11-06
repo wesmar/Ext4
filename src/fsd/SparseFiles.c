@@ -3,7 +3,7 @@
  * it, FSCTL_SET_SPARSE, FSCTL_QUERY_ALLOCATED_RANGES, FSCTL_SET_ZERO_DATA.
  *
  * Copyright (c) 2026 Marek Wesolowski (WESMAR)
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-2.0-only
  *
  * ext4 has holes by nature: a block no extent maps reads as zeros and costs
  * nothing. A file is sparse when it was marked so, or when it lacks blocks
