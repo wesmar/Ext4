@@ -618,6 +618,45 @@ Ext2GetRetrievalPointers(IN PEXT2_IRP_CONTEXT IrpContext);
 NTSTATUS
 Ext2GetRetrievalPointerBase(IN PEXT2_IRP_CONTEXT IrpContext);
 
+/* SparseFiles.c */
+
+/* fewer blocks than the size asks for: part of the file lies in holes */
+BOOLEAN
+Ext2InodeHasHoles(IN struct inode *Inode);
+
+/* extent-mapped, and marked sparse or with holes */
+BOOLEAN
+Ext2InodeIsSparse(IN struct inode *Inode);
+
+/* Attributes as the file shows them, sparse or not */
+ULONG
+Ext2SparseAttributes(IN struct inode *Inode, IN ULONG Attributes);
+
+/* what a query reports as allocated: what the file holds when it has holes,
+   else Allocation */
+LONGLONG
+Ext2InodeAllocation(IN struct inode *Inode, IN LONGLONG Allocation);
+
+/* the mark among the attributes in an inode's body: no I/O, no pool */
+BOOLEAN
+Ext2BodyHasSparseMark(IN struct ext4_inode *Raw, IN ULONG Extra, IN ULONG InodeSize);
+
+/* the mark of a file that found no room for it in its inode */
+VOID
+Ext2LoadSparseMark(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb);
+
+NTSTATUS
+Ext2ClearSparseMark(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb);
+
+NTSTATUS
+Ext2SetSparse(IN PEXT2_IRP_CONTEXT IrpContext);
+
+NTSTATUS
+Ext2QueryAllocatedRanges(IN PEXT2_IRP_CONTEXT IrpContext);
+
+NTSTATUS
+Ext2SetZeroData(IN PEXT2_IRP_CONTEXT IrpContext);
+
 NTSTATUS
 Ext2UserFsRequest (IN PEXT2_IRP_CONTEXT IrpContext);
 
@@ -716,8 +755,20 @@ Ext2WriteInode (
     OUT PULONG              dwReturn
 );
 
+/* where zeroing the gap after the valid data length has to end, Target at
+   most */
+LONGLONG
+Ext2GapEnd(IN PEXT2_FCB Fcb, IN LONGLONG Target);
+
 NTSTATUS
 Ext2ZeroData (
+    IN PEXT2_IRP_CONTEXT IrpContext,
+    IN PFILE_OBJECT FileObject,
+    IN PLARGE_INTEGER Start,
+    IN PLARGE_INTEGER End );
+
+NTSTATUS
+Ext2OverwriteZeros (
     IN PEXT2_IRP_CONTEXT IrpContext,
     IN PFILE_OBJECT FileObject,
     IN PLARGE_INTEGER Start,

@@ -90,6 +90,62 @@ Ext2ZeroData (
     return Status;
 }
 
+/*
+ * Zeros over data that stands, as a write puts them there. CcZeroData is for
+ * what lies past the valid data length: below it the bytes stayed as they
+ * were, in the cache and in a mapped view (tests/sparse-vm.ps1).
+ */
+NTSTATUS
+Ext2OverwriteZeros (
+    IN PEXT2_IRP_CONTEXT IrpContext,
+    IN PFILE_OBJECT      FileObject,
+    IN PLARGE_INTEGER    Start,
+    IN PLARGE_INTEGER    End
+    )
+{
+    PEXT2_FCB   Fcb = (PEXT2_FCB)FileObject->FsContext;
+    NTSTATUS    Status = STATUS_SUCCESS;
+
+    UNREFERENCED_PARAMETER(IrpContext);
+
+    __try {
+        if (FileObject->PrivateCacheMap == NULL) {
+            CcInitializeCacheMap(FileObject, (PCC_FILE_SIZES)&Fcb->Header.AllocationSize, FALSE,
+                                 &Ext2Global->CacheManagerCallbacks, Fcb);
+            CcSetReadAheadGranularity(FileObject, READ_AHEAD_GRANULARITY);
+        }
+        (void)Ext2CopyZeros(FileObject, Start, End, TRUE);
+    } __except (FsRtlIsNtstatusExpected(GetExceptionCode()) ?
+                EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        Status = GetExceptionCode();
+    }
+
+    return Status;
+}
+
+/*
+ * Where zeroing the gap between the valid data length and Target has to end.
+ * ext4 keeps no valid data length on disk, so all of the gap must read as
+ * zeros, and in an extent-mapped file it does: past the old end of file a
+ * block is a hole or unwritten, and a write converts exactly the blocks it
+ * covers. Only the block the end of file lay in can carry bytes past it, left
+ * by an earlier truncation (Linux zeroes them in ext4_block_truncate_page).
+ * An indirect map has plain blocks there: all of the gap goes through the
+ * cache.
+ */
+LONGLONG
+Ext2GapEnd(IN PEXT2_FCB Fcb, IN LONGLONG Target)
+{
+    if (INODE_HAS_EXTENT(Fcb->Inode)) {
+        LONGLONG BlockEnd = CEILING_ALIGNED(LONGLONG, Fcb->Header.ValidDataLength.QuadPart,
+                                            (LONGLONG)Fcb->Vcb->BlockSize);
+        if (BlockEnd < Target) {
+            return BlockEnd;
+        }
+    }
+    return Target;
+}
+
 VOID
 Ext2DeferWrite(IN PEXT2_IRP_CONTEXT IrpContext, PIRP Irp)
 {
@@ -478,13 +534,63 @@ Ext2WriteFlushCached(IN PEXT2_VCB Vcb, IN PEXT2_WRITE W)
                                CEILING_ALIGNED(ULONG, W->Length, BLOCK_SIZE), &W->Irp->IoStatus);
 }
 
+/* Blocks Start..End-1 for a write: the holes among them get unwritten blocks.
+   Ext2WriteFinish lowers MajorFunction again after an exception. */
+static NTSTATUS
+Ext2WriteReserve(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PEXT2_FCB Fcb,
+                 IN ULONG Start, IN ULONG End)
+{
+    LARGE_INTEGER   Reached;
+    NTSTATUS        Status;
+
+    IrpContext->MajorFunction += IRP_MJ_MAXIMUM_FUNCTION;
+    Status = Ext2ExpandExtent(IrpContext, Vcb, Fcb->Mcb, Start, End, &Reached);
+    IrpContext->MajorFunction -= IRP_MJ_MAXIMUM_FUNCTION;
+    return Status;
+}
+
+/* A cached write inside a sparse file that falls on a hole: the blocks now,
+   while somebody can be told the volume is full. Left to the lazy writer the
+   write has succeeded long before, and the data has nowhere to go. */
+static NTSTATUS
+Ext2WriteFillHoles(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEXT2_WRITE W)
+{
+    PEXT2_FCB   Fcb = W->Fcb;
+    ULONG       Start = (ULONG)(W->ByteOffset.QuadPart >> BLOCK_BITS);
+    ULONG       End = (ULONG)((W->ByteOffset.QuadPart + W->Length + BLOCK_SIZE - 1) >> BLOCK_BITS);
+    ULONG       Block = Start, Kind = EXT2_RUN_WRITTEN;
+    ULONGLONG   Next;
+    NTSTATUS    Status;
+
+    while (Block < End && Kind != EXT2_RUN_HOLE) {
+        Status = Ext2ExtentRun(IrpContext, Fcb->Mcb, Block, &Kind, &Next);
+        if (!NT_SUCCESS(Status)) {
+            return Status;
+        }
+        Block = (ULONG)min(Next, (ULONGLONG)End);
+    }
+    if (Kind != EXT2_RUN_HOLE) {
+        return STATUS_SUCCESS;
+    }
+
+    SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
+    ExAcquireResourceExclusiveLite(&Fcb->PagingIoResource, TRUE);
+    W->PagingIoResourceAcquired = TRUE;
+    Status = Ext2WriteReserve(IrpContext, Vcb, Fcb, Start, End);
+    ExReleaseResourceLite(&Fcb->PagingIoResource);
+    W->PagingIoResourceAcquired = FALSE;
+    return Status;
+}
+
 /* A write past the end of file: the blocks first, then the new size,
    saved before a byte is written. All or nothing, as NTFS and FAT do it:
    a write that does not fit fails with STATUS_DISK_FULL and changes no
    size. It used to be cut to what could be allocated and reported as a
    success, and the next write then failed with
    STATUS_INSUFFICIENT_RESOURCES. What was allocated stays beyond the end
-   of file, like any preallocation. */
+   of file, like any preallocation. In a sparse file the gap stays a hole:
+   only this write's blocks are allocated - by a non-cached write itself, as
+   it writes them. */
 static NTSTATUS
 Ext2WriteExtend(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEXT2_WRITE W)
 {
@@ -508,10 +614,17 @@ Ext2WriteExtend(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEXT2_
     /* growth outside a paging write: unwritten extents (or zeroed
        blocks on indirect-mapped files), so the gap reads as zeros.
        Ext2WriteFinish lowers MajorFunction again after an exception. */
-    IrpContext->MajorFunction += IRP_MJ_MAXIMUM_FUNCTION;
-    Status = Ext2ExpandFile(IrpContext, Vcb, Fcb->Mcb, &AllocationSize);
-    IrpContext->MajorFunction -= IRP_MJ_MAXIMUM_FUNCTION;
-    if (AllocationSize.QuadPart > Last.QuadPart) {
+    if (!Ext2InodeIsSparse(Fcb->Inode)) {
+        IrpContext->MajorFunction += IRP_MJ_MAXIMUM_FUNCTION;
+        Status = Ext2ExpandFile(IrpContext, Vcb, Fcb->Mcb, &AllocationSize);
+        IrpContext->MajorFunction -= IRP_MJ_MAXIMUM_FUNCTION;
+    } else if (!W->Nocache) {
+        Status = Ext2WriteReserve(IrpContext, Vcb, Fcb, (ULONG)(W->ByteOffset.QuadPart >> BLOCK_BITS),
+                                  (ULONG)(AllocationSize.QuadPart >> BLOCK_BITS));
+    } else {
+        Status = STATUS_SUCCESS;
+    }
+    if (NT_SUCCESS(Status) && AllocationSize.QuadPart > Last.QuadPart) {
         Fcb->Header.AllocationSize.QuadPart = AllocationSize.QuadPart;
         SetLongFlag(Fcb->Flags, FCB_ALLOC_IN_WRITE);
     }
@@ -557,11 +670,12 @@ Ext2WriteUserRange(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEX
         return STATUS_ACCESS_DENIED;
     }
 
-    /* growth past the allocation needs blocks; any that only a
-       commit can free are waited for here, before any lock
-       (ext4\FreedBlocks.c) - the read of the size is a hint */
+    /* growth past the allocation needs blocks, and in a sparse file so may
+       any write; those that only a commit can free are waited for here,
+       before any lock (ext4\FreedBlocks.c) - what is read is a hint */
     if (IrpContext->IsTopLevel && IsFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT)) {
-        Ext2WaitForFreedBlocks(Vcb, Fcb->Header.AllocationSize.QuadPart,
+        Ext2WaitForFreedBlocks(Vcb, Ext2InodeIsSparse(Fcb->Inode) ? W->ByteOffset.QuadPart :
+                                    Fcb->Header.AllocationSize.QuadPart,
                                W->ByteOffset.QuadPart + W->Length);
     }
 
@@ -612,6 +726,11 @@ Ext2WriteUserRange(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEX
     if (W->ByteOffset.QuadPart + W->Length > Fcb->Header.FileSize.QuadPart) {
         Status = Ext2WriteExtend(IrpContext, Vcb, W);
         if (Status != STATUS_SUCCESS) {
+            return Status;
+        }
+    } else if (!W->Nocache && Ext2InodeIsSparse(Fcb->Inode)) {
+        Status = Ext2WriteFillHoles(IrpContext, Vcb, W);
+        if (!NT_SUCCESS(Status)) {
             return Status;
         }
     }
@@ -665,12 +784,17 @@ Ext2WriteCached(IN PEXT2_IRP_CONTEXT IrpContext, IN OUT PEXT2_WRITE W)
         }
 
         if (W->ByteOffset.QuadPart > Fcb->Header.ValidDataLength.QuadPart) {
-            /* let this irp wait, since it has to be synchronous */
-            SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
-            Status = Ext2ZeroData(IrpContext, FileObject,
-                                  &Fcb->Header.ValidDataLength, &W->ByteOffset);
-            if (Status != STATUS_SUCCESS) {
-                return Status;
+            LARGE_INTEGER GapEnd;
+
+            GapEnd.QuadPart = Ext2GapEnd(Fcb, W->ByteOffset.QuadPart);
+            if (GapEnd.QuadPart > Fcb->Header.ValidDataLength.QuadPart) {
+                /* let this irp wait, since it has to be synchronous */
+                SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
+                Status = Ext2ZeroData(IrpContext, FileObject,
+                                      &Fcb->Header.ValidDataLength, &GapEnd);
+                if (Status != STATUS_SUCCESS) {
+                    return Status;
+                }
             }
         }
 
@@ -697,14 +821,15 @@ Ext2WriteNoncached(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN OUT PEX
 {
     PEXT2_FCB   Fcb = W->Fcb;
     BOOLEAN     Outer = !W->RecursiveWriteThrough && !IsLazyWriter(Fcb);
+    LARGE_INTEGER GapEnd;
     NTSTATUS    Status;
 
-    if (!W->PagingIo && Outer &&
-        W->ByteOffset.QuadPart > Fcb->Header.ValidDataLength.QuadPart) {
+    GapEnd.QuadPart = W->PagingIo ? 0 : Ext2GapEnd(Fcb, W->ByteOffset.QuadPart);
+    if (!W->PagingIo && Outer && GapEnd.QuadPart > Fcb->Header.ValidDataLength.QuadPart) {
         /* let this irp wait, since it has to be synchronous */
         SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
         Status = Ext2ZeroData(IrpContext, W->FileObject,
-                              &Fcb->Header.ValidDataLength, &W->ByteOffset);
+                              &Fcb->Header.ValidDataLength, &GapEnd);
         if (Status != STATUS_SUCCESS) {
             return Status;
         }

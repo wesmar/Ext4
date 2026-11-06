@@ -189,6 +189,15 @@ int ext4_ext_truncate(void *icb, struct inode *inode, unsigned long start)
     return EfDone(&e, ExTruncate(&e.T, (unsigned int)start));
 }
 
+int ext4_ext_punch(void *icb, struct inode *inode, unsigned long start, unsigned long long end)
+{
+    EXT4_EXTENTS e;
+
+    /* a range that was a hole already writes nothing, not even the inode */
+    EfSetup(&e, (PEXT2_IRP_CONTEXT)icb, inode);
+    return EfDone(&e, ExPunch(&e.T, (unsigned int)start, end));
+}
+
 /*
  * Block iblock of inode and the blocks after it, up to max_blocks: the
  * count (bh_result->b_blocknr the first physical block, 0 for a hole or
@@ -451,4 +460,58 @@ Ext2TruncateExtent(
     if (!Ext2SaveInode(IrpContext, Vcb, Mcb->Inode) && NT_SUCCESS(Status))
         Status = STATUS_UNEXPECTED_IO_ERROR;
     return Status;
+}
+
+NTSTATUS
+Ext2PunchExtent(
+    IN PEXT2_IRP_CONTEXT IrpContext,
+    IN PEXT2_VCB         Vcb,
+    IN PEXT2_MCB         Mcb,
+    IN ULONG             Start,
+    IN ULONGLONG         End
+    )
+{
+    int err;
+
+    if (get_ext4_header(Mcb->Inode)->eh_magic != EXT4_EXT_MAGIC)
+        return STATUS_SUCCESS;              /* no tree yet: nothing is mapped */
+
+    /* as in a truncation: one that failed part way has lost some of the
+       blocks and the cached runs cannot tell which, so they all go */
+    err = ext4_ext_punch(IrpContext, Mcb->Inode, Start, End);
+    if (err || !Ext2RemoveBlockExtent(Vcb, Mcb, Start, (ULONG)(End - Start)))
+        Ext2InvalidateZone(Mcb);
+    return err ? Ext2WinntError(err) : STATUS_SUCCESS;
+}
+
+NTSTATUS
+Ext2ExtentRun(
+    IN PEXT2_IRP_CONTEXT IrpContext,
+    IN PEXT2_MCB         Mcb,
+    IN ULONG             Block,
+    OUT PULONG           Kind,
+    OUT PULONGLONG       Next
+    )
+{
+    EXT4_EXTENTS        e;
+    EX_EXTENT           x;
+    unsigned long long  next = EX_END, goal;
+    int                 err;
+
+    *Kind = EXT2_RUN_HOLE;
+    *Next = EX_END;
+    if (get_ext4_header(Mcb->Inode)->eh_magic != EXT4_EXT_MAGIC)
+        return STATUS_SUCCESS;
+
+    EfSetup(&e, IrpContext, Mcb->Inode);
+    err = ExMap(&e.T, Block, &x, &next, &goal);
+    if (err == EX_ENOENT) {
+        *Next = next;
+        return STATUS_SUCCESS;
+    }
+    if (err)
+        return Ext2WinntError(err);
+    *Kind = x.Unwritten ? EXT2_RUN_UNWRITTEN : EXT2_RUN_WRITTEN;
+    *Next = x.Block + (ULONGLONG)x.Length;
+    return STATUS_SUCCESS;
 }

@@ -466,6 +466,18 @@ Ext2UserFsRequest (IN PEXT2_IRP_CONTEXT IrpContext)
         Status = Ext2GetRetrievalPointerBase(IrpContext);
         break;
 
+    case FSCTL_SET_SPARSE:
+        Status = Ext2SetSparse(IrpContext);
+        break;
+
+    case FSCTL_QUERY_ALLOCATED_RANGES:
+        Status = Ext2QueryAllocatedRanges(IrpContext);
+        break;
+
+    case FSCTL_SET_ZERO_DATA:
+        Status = Ext2SetZeroData(IrpContext);
+        break;
+
     default:
 
         DEBUG(DL_INF, ( "Ext2UserFsRequest: Invalid User Request: %xh.\n", FsControlCode));

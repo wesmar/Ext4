@@ -74,9 +74,11 @@ static PEXT2_JSCOPE JnlCurrentScope(PEXT2_JOURNAL J, PULONG Slot)
  * locked-but-unsealed transaction is fine; a sealed one means the copy is
  * in progress, so wait for the next transaction (a bounded wait).
  * Returns the transaction joined, or NULL when the engine is not accepting
- * (aborted / stopping), in which case the caller files nothing.
+ * (aborted / stopping), in which case the caller files nothing. Room is how
+ * many more buffers the log must have space for: one, a change of ordinary
+ * size is covered by the slack.
  */
-static PEXT2_JTXN JnlActivate(PEXT2_JOURNAL J)
+static PEXT2_JTXN JnlActivate(PEXT2_JOURNAL J, ULONG Room)
 {
     PEXT2_JSCOPE    s;
     ULONG           slot = 0;
@@ -125,7 +127,7 @@ static PEXT2_JTXN JnlActivate(PEXT2_JOURNAL J)
            log could hold, and the commit aborted the journal. */
         full = (t->State == JTXN_RUNNING) &&
                (t->NumRecords >= J->MaxTxnBlocks * 2 ||
-                JnlLogBlocksNeeded(J, t->NumNormal + 1, t->NumRevokes) + JNL_LOG_SLACK
+                JnlLogBlocksNeeded(J, t->NumNormal + Room, t->NumRevokes) + JNL_LOG_SLACK
                     > J->Log->Free);
         if (full) {
             /* the thread commits it, or checkpoints until the log has
@@ -248,7 +250,51 @@ Ext2JournalJoin(IN PEXT2_VCB Vcb)
     PEXT2_JOURNAL J = Vcb->Journal;
 
     if (J != NULL && (J->Flags & JF_ACTIVE) && !(J->Flags & JF_ABORTED)) {
-        JnlActivate(J);
+        JnlActivate(J, 1);
+    }
+}
+
+/*
+ * A long change goes in steps, or one handle could outgrow the log: nothing
+ * bounds what it dirties once it has joined, and a transaction the log cannot
+ * hold aborts the journal at its commit. A step is at most this many blocks
+ * of a file; MAXULONG when no journal is logging.
+ */
+ULONG
+Ext2JournalStepBlocks(IN PEXT2_VCB Vcb)
+{
+    PEXT2_JOURNAL J = Vcb->Journal;
+
+    return (J != NULL && (J->Flags & JF_ACTIVE) && !(J->Flags & JF_ABORTED)) ? J->MaxTxnBlocks / 2 : MAXULONG;
+}
+
+/*
+ * Between two steps, whatever they changed whole: this thread's handle goes,
+ * so that a commit can take the step done, and a new one joins once the log
+ * has room for Buffers more. It may wait for a commit: holding a file's
+ * MainResource is fine, as it is for the handle a write activates. The
+ * handle given up comes back at the thread's next modification, which is why
+ * the step must be the last of it before a lock a handle may not wait for -
+ * see Ext2JournalYield.
+ */
+VOID
+Ext2JournalJoinRoom(IN PEXT2_VCB Vcb, IN ULONG Buffers)
+{
+    PEXT2_JOURNAL J = Vcb->Journal;
+
+    if (J != NULL && (J->Flags & JF_ACTIVE) && !(J->Flags & JF_ABORTED)) {
+        JnlDetachSelf(J);
+        JnlActivate(J, Buffers);
+    }
+}
+
+/* the handle given up after a step: a file's MainResource is taken before a
+   handle, never with one (its holders wait for commits) */
+VOID
+Ext2JournalYield(IN PEXT2_VCB Vcb)
+{
+    if (Vcb->Journal != NULL) {
+        JnlDetachSelf(Vcb->Journal);
     }
 }
 
@@ -401,7 +447,7 @@ Ext2JournalDirtyBuffer(IN PEXT2_VCB Vcb, IN struct buffer_head *bh)
     }
 
     /* count this thread's handle in the running transaction */
-    if (JnlActivate(J) == NULL) {
+    if (JnlActivate(J, 1) == NULL) {
         ExFreeToNPagedLookasideList(&J->RecLookaside, r);
         return TRUE;
     }
@@ -504,7 +550,7 @@ Ext2JournalRevokeBlocks(IN PEXT2_VCB Vcb, IN ULONGLONG Block, IN ULONG Count)
     if (J->Flags & JF_ABORTED)
         return FALSE;
 
-    if (JnlActivate(J) == NULL)
+    if (JnlActivate(J, 1) == NULL)
         return FALSE;
 
     /* only blocks with a buffer can have a copy in the live log window:

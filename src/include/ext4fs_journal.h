@@ -86,6 +86,24 @@ Ext2JournalJoin(
     IN PEXT2_VCB        Vcb
 );
 
+/* a long change in steps (JournalScope.c): how many blocks of a file one step
+   may take, the new handle of a step, the old one given up after it */
+ULONG
+Ext2JournalStepBlocks(
+    IN PEXT2_VCB        Vcb
+);
+
+VOID
+Ext2JournalJoinRoom(
+    IN PEXT2_VCB        Vcb,
+    IN ULONG            Buffers
+);
+
+VOID
+Ext2JournalYield(
+    IN PEXT2_VCB        Vcb
+);
+
 VOID
 Ext2JournalBufferReleased(
     IN PEXT2_VCB        Vcb

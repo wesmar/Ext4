@@ -172,7 +172,7 @@ Ext2QueryTimes(IN PEXT2_QUERY Q, OUT PLARGE_INTEGER Times)
 static ULONG
 Ext2QueryAttributes(IN PEXT2_QUERY Q)
 {
-    ULONG Attributes = Q->Mcb->FileAttr;
+    ULONG Attributes = Ext2SparseAttributes(Q->Fcb->Inode, Q->Mcb->FileAttr);
 
     if (Q->Dangling) {
         ClearFlag(Attributes, FILE_ATTRIBUTE_DIRECTORY);
@@ -194,8 +194,19 @@ Ext2QuerySizes(IN PEXT2_QUERY Q, OUT PLARGE_INTEGER AllocationSize, OUT PLARGE_I
         AllocationSize->QuadPart = 0;
         EndOfFile->QuadPart = 0;
     } else {
-        *AllocationSize = Q->Fcb->Header.AllocationSize;
+        AllocationSize->QuadPart = Ext2InodeAllocation(Q->Fcb->Inode, Q->Fcb->Header.AllocationSize.QuadPart);
         *EndOfFile = Q->Fcb->Header.FileSize;
+    }
+}
+
+/* FileCompressionInformation, which GetCompressedFileSize asks: the size on
+   the disk, which only a file with holes does not have from its size. A
+   compression format ext4 has none of stays zero with the rest. */
+static VOID
+Ext2QueryCompression(IN PEXT2_QUERY Q, OUT PFILE_COMPRESSION_INFORMATION FCI)
+{
+    if (!Q->Dangling && !IsMcbDirectory(Q->Mcb)) {
+        FCI->CompressedFileSize.QuadPart = Ext2InodeAllocation(Q->Fcb->Inode, Q->Fcb->Header.FileSize.QuadPart);
     }
 }
 
@@ -302,6 +313,7 @@ Ext2QueryFixedSize(IN FILE_INFORMATION_CLASS Class)
     case FileAttributeTagInformation:   return sizeof(FILE_ATTRIBUTE_TAG_INFORMATION);
     case FileStandardLinkInformation:   return sizeof(FILE_STANDARD_LINK_INFORMATION);
     case FileIdInformation:             return sizeof(FILE_ID_INFORMATION);
+    case FileCompressionInformation:    return sizeof(FILE_COMPRESSION_INFORMATION);
     default:                            return 0;
     }
 }
@@ -376,6 +388,10 @@ Ext2QueryClass(IN PEXT2_QUERY Q, IN FILE_INFORMATION_CLASS Class,
 
     case FileAttributeTagInformation:
         Ext2QueryAttributeTag(Q, (PFILE_ATTRIBUTE_TAG_INFORMATION)Buffer);
+        break;
+
+    case FileCompressionInformation:
+        Ext2QueryCompression(Q, (PFILE_COMPRESSION_INFORMATION)Buffer);
         break;
 
     case FileHardLinkInformation:

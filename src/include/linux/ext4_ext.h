@@ -217,5 +217,6 @@ int ext4_ext_get_blocks(void *icb, handle_t *handle, struct inode *inode, ext4_l
 			int create, int flags);
 int ext4_ext_tree_init(void *icb, handle_t *handle, struct inode *inode);
 int ext4_ext_truncate(void *icb, struct inode *inode, unsigned long start);
+int ext4_ext_punch(void *icb, struct inode *inode, unsigned long start, unsigned long long end);
 
 #endif	/* _LINUX_EXT4_EXT */

@@ -38,6 +38,33 @@ Ext2TruncateExtent(
     PLARGE_INTEGER    Size
     );
 
+/* blocks Start..End-1 unmapped and freed: holes. STATUS_DISK_FULL, with
+   nothing changed, when an extent across them cannot be split for want of a
+   new node. */
+NTSTATUS
+Ext2PunchExtent(
+    IN PEXT2_IRP_CONTEXT IrpContext,
+    IN PEXT2_VCB         Vcb,
+    IN PEXT2_MCB         Mcb,
+    IN ULONG             Start,
+    IN ULONGLONG         End
+    );
+
+/* what the blocks from Block on are, and *Next the first block after the run
+   (past every block when nothing is mapped after it) */
+#define EXT2_RUN_HOLE       0
+#define EXT2_RUN_UNWRITTEN  1       /* allocated, reads as zeros */
+#define EXT2_RUN_WRITTEN    2
+
+NTSTATUS
+Ext2ExtentRun(
+    IN PEXT2_IRP_CONTEXT IrpContext,
+    IN PEXT2_MCB         Mcb,
+    IN ULONG             Block,
+    OUT PULONG           Kind,
+    OUT PULONGLONG       Next
+    );
+
 static inline ext3_fsblk_t ext3_blocks_count(struct ext3_super_block *es)
 {
     return ((ext3_fsblk_t)le32_to_cpu(es->s_blocks_count_hi) << 32) |

@@ -664,6 +664,11 @@ Ext2CreateCheckFcb(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb,
         }
     }
 
+    /* a file new to the driver: its sparse mark, if its inode had no room */
+    if (C->FcbAllocated && !C->Created) {
+        Ext2LoadSparseMark(IrpContext, Vcb, Fcb->Mcb);
+    }
+
     if (C->Created) {
         /* just made: EAs, label, "." and ".." (a failure takes the name
            away again, in Ext2CreateFinish) */

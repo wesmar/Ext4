@@ -231,6 +231,9 @@
     <ClCompile Include="fsd\RetrievalPointers.c">
       <Filter>fsd</Filter>
     </ClCompile>
+    <ClCompile Include="fsd\SparseFiles.c">
+      <Filter>fsd</Filter>
+    </ClCompile>
     <ClCompile Include="fsd\FileLocks.c">
       <Filter>fsd</Filter>
     </ClCompile>

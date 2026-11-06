@@ -118,6 +118,10 @@ Ext2QueryFsClass(IN PEXT2_VCB Vcb, IN FS_INFORMATION_CLASS Class, OUT PVOID Buff
         FFAI->FileSystemAttributes = FILE_SUPPORTS_HARD_LINKS |
             FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES |
             FILE_SUPPORTS_REPARSE_POINTS | FILE_SUPPORTS_EXTENDED_ATTRIBUTES;
+        /* holes can be made in extent trees only (SparseFiles.c) */
+        if (IsFlagOn(Vcb->SuperBlock->s_feature_incompat, EXT4_FEATURE_INCOMPAT_EXTENTS)) {
+            SetFlag(FFAI->FileSystemAttributes, FILE_SUPPORTS_SPARSE_FILES);
+        }
         if (IsVcbReadOnly(Vcb)) {
             SetFlag(FFAI->FileSystemAttributes, FILE_READ_ONLY_VOLUME);
         }

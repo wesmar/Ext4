@@ -295,8 +295,12 @@ Ext2SetEndOfFileInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE
 
     if (NewSize.QuadPart > OldSize.QuadPart) {
 
+        /* a sparse file grows by a hole, whatever the size: nothing is
+           allocated, so nothing can fail for want of room */
         Fcb->Header.AllocationSize = NewSize;
-        Status = Ext2ExpandFile(IrpContext, Vcb, Mcb, &(Fcb->Header.AllocationSize));
+        if (!Ext2InodeIsSparse(Mcb->Inode)) {
+            Status = Ext2ExpandFile(IrpContext, Vcb, Mcb, &(Fcb->Header.AllocationSize));
+        }
         *NotifyFilter = FILE_NOTIFY_CHANGE_SIZE;
         SetLongFlag(Fcb->Flags, FCB_ALLOC_IN_SETINFO);
 
@@ -338,30 +342,12 @@ Ext2SetEndOfFileInfo(IN PEXT2_IRP_CONTEXT IrpContext, IN PEXT2_VCB Vcb, IN PFILE
         Fcb->Header.FileSize.QuadPart = Mcb->Inode->i_size = EndOfFile.QuadPart;
         Ext2SetCacheSizes(FileObject, Fcb);
 
-        /* ext4 keeps no valid data length on disk, so everything up
-           to the new end must read as zeros from now on. Blocks past
-           the old end are either not allocated or unwritten extents
-           (allocated by Ext2ExpandFile outside a write): both read
-           as zeros, and a write converts exactly the blocks it
-           covers. Only the old last block can carry bytes past the
-           old end, left by an earlier truncation - Linux zeroes them
-           in ext4_block_truncate_page. So an extent-mapped file gets
-           that block tail zeroed, not the whole range; an indirect-
-           mapped file (ext2/ext3) allocates plain blocks and gets
-           all of it zeroed. */
+        /* everything up to the new end reads as zeros from now on */
         if (EndOfFile.QuadPart > Fcb->Header.ValidDataLength.QuadPart) {
 
-            LARGE_INTEGER ZeroEnd = EndOfFile;
+            LARGE_INTEGER ZeroEnd;
 
-            if (INODE_HAS_EXTENT(Mcb->Inode)) {
-                LONGLONG BlockEnd = CEILING_ALIGNED(LONGLONG,
-                                        Fcb->Header.ValidDataLength.QuadPart,
-                                        (LONGLONG)BLOCK_SIZE);
-                if (BlockEnd < ZeroEnd.QuadPart) {
-                    ZeroEnd.QuadPart = BlockEnd;
-                }
-            }
-
+            ZeroEnd.QuadPart = Ext2GapEnd(Fcb, EndOfFile.QuadPart);
             if (ZeroEnd.QuadPart > Fcb->Header.ValidDataLength.QuadPart &&
                 !Ext2ZeroResizeRange(FileObject, &Fcb->Header.ValidDataLength, &ZeroEnd)) {
                 return STATUS_UNEXPECTED_IO_ERROR;

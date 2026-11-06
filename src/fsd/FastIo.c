@@ -209,9 +209,11 @@ Ext2FastIoWrite (
         }
         Locked = TRUE;
 
+        /* a write to a sparse file may need blocks reserved: not this way */
         if (IsWritingToEof(*FileOffset) ||
             Fcb->Header.ValidDataLength.QuadPart < FileOffset->QuadPart + Length ||
-            Fcb->Header.FileSize.QuadPart < FileOffset->QuadPart + Length ) {
+            Fcb->Header.FileSize.QuadPart < FileOffset->QuadPart + Length ||
+            Ext2InodeIsSparse(Fcb->Inode)) {
             Status = FALSE;
             __leave;
         }
@@ -310,7 +312,7 @@ Ext2FastIoQueryBasicInfo (
             Buffer->LastAccessTime = Mcb->Icb->LastAccessTime;
             Buffer->LastWriteTime = Mcb->Icb->LastWriteTime;
             Buffer->ChangeTime = Mcb->Icb->ChangeTime;
-            Buffer->FileAttributes = Mcb->FileAttr;
+            Buffer->FileAttributes = Ext2SparseAttributes(Fcb->Inode, Mcb->FileAttr);
             if (Buffer->FileAttributes == 0) {
                 Buffer->FileAttributes = FILE_ATTRIBUTE_NORMAL;
             }
@@ -429,7 +431,7 @@ Ext2FastIoQueryStandardInfo (
                 Buffer->EndOfFile.QuadPart = 0;
             } else {
                 Buffer->Directory = FALSE;
-                Buffer->AllocationSize = Fcb->Header.AllocationSize;
+                Buffer->AllocationSize.QuadPart = Ext2InodeAllocation(Fcb->Inode, Fcb->Header.AllocationSize.QuadPart);
                 Buffer->EndOfFile = Fcb->Header.FileSize;
             }
 
@@ -536,11 +538,11 @@ Ext2FastIoQueryNetworkOpenInfo (
             PFNOI->AllocationSize.QuadPart = 0;
             PFNOI->EndOfFile.QuadPart = 0;
         } else {
-            PFNOI->AllocationSize = Fcb->Header.AllocationSize;
+            PFNOI->AllocationSize.QuadPart = Ext2InodeAllocation(Fcb->Inode, Fcb->Header.AllocationSize.QuadPart);
             PFNOI->EndOfFile      = Fcb->Header.FileSize;
         }
 
-        PFNOI->FileAttributes = Mcb->FileAttr;
+        PFNOI->FileAttributes = Ext2SparseAttributes(Fcb->Inode, Mcb->FileAttr);
         if (PFNOI->FileAttributes == 0) {
             PFNOI->FileAttributes = FILE_ATTRIBUTE_NORMAL;
         }

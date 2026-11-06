@@ -67,6 +67,7 @@ typedef struct _EXT2_ENTRY_INFO {
     LARGE_INTEGER   LastWriteTime;
     LARGE_INTEGER   ChangeTime;
     LONGLONG        FileSize;
+    LONGLONG        AllocationSize;
     ULONG           Attributes;
     BOOLEAN         Symlink;
 } EXT2_ENTRY_INFO, *PEXT2_ENTRY_INFO;
@@ -82,11 +83,12 @@ Ext2EntryFromName(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, OUT PEXT2_ENTRY_INFO E)
     E->LastAccessTime = Mcb->Icb->LastAccessTime;
     E->LastWriteTime = Mcb->Icb->LastWriteTime;
     E->ChangeTime = Mcb->Icb->ChangeTime;
-    E->Attributes = Mcb->FileAttr;
+    E->Attributes = Ext2SparseAttributes(Mcb->Inode, Mcb->FileAttr);
     E->Symlink = IsInodeSymLink(Mcb->Inode);
 
     if (!IsMcbSymLink(Mcb)) {
         E->FileSize = IsMcbDirectory(Mcb) ? 0 : Mcb->Inode->i_size;
+        E->AllocationSize = Ext2InodeAllocation(Mcb->Inode, CEILING_ALIGNED(ULONGLONG, E->FileSize, BLOCK_SIZE));
         return;
     }
 
@@ -99,6 +101,7 @@ Ext2EntryFromName(IN PEXT2_VCB Vcb, IN PEXT2_MCB Mcb, OUT PEXT2_ENTRY_INFO E)
         SetFlag(E->Attributes, FILE_ATTRIBUTE_DIRECTORY);
     } else {
         E->FileSize = Target->Inode->i_size;
+        E->AllocationSize = Ext2InodeAllocation(Target->Inode, CEILING_ALIGNED(ULONGLONG, E->FileSize, BLOCK_SIZE));
     }
     if (Target != NULL) {
         Ext2DerefMcb(Target);
@@ -122,10 +125,11 @@ Ext2EntryFromInode(IN PEXT2_VCB Vcb, IN struct inode *Inode, OUT PEXT2_ENTRY_INF
         E->Symlink = TRUE;
         E->FileSize = Inode->i_size;
     } else {
-        E->Attributes = FILE_ATTRIBUTE_NORMAL;
+        E->Attributes = Ext2SparseAttributes(Inode, FILE_ATTRIBUTE_NORMAL);
         /* a device node, a fifo, a socket: no size to show */
         E->FileSize = S_ISREG(Inode->i_mode) ? Inode->i_size : 0;
     }
+    E->AllocationSize = Ext2InodeAllocation(Inode, CEILING_ALIGNED(ULONGLONG, E->FileSize, BLOCK_SIZE));
 
     if (!Ext2IsOwnerWritable(Inode->i_mode) || Ext4IsImmutable(Inode) ||
         !Ext2CheckInodeAccess(Vcb, Inode, Ext2FileCanWrite)) {
@@ -268,7 +272,7 @@ Ext2ProcessEntry(
         FDI->LastWriteTime = E.LastWriteTime;
         FDI->ChangeTime = E.ChangeTime;
         FDI->EndOfFile.QuadPart = E.FileSize;
-        FDI->AllocationSize.QuadPart = CEILING_ALIGNED(ULONGLONG, E.FileSize, BLOCK_SIZE);
+        FDI->AllocationSize.QuadPart = E.AllocationSize;
         FDI->FileAttributes = E.Attributes;
         FDI->FileNameLength = NameLength;
 

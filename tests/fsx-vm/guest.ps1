@@ -8,7 +8,10 @@
 # through and unbuffered - mixed as programs mix them: writes anywhere
 # (holes, appends, across the end of file), reads, the end of file moved
 # down and up, the allocation size set (preallocation, or a cut), writes
-# and reads through a mapped view, flushes, handles closed and opened again.
+# and reads through a mapped view, flushes, handles closed and opened again,
+# a file marked sparse or not, ranges zeroed (holes punched in a sparse file,
+# any handle, any bytes), and what the file says it holds compared with what
+# it does.
 # After every operation the result is compared with the model: the bytes a
 # read returns and how many, the size; every 40 operations and at the end
 # the whole file is read back through two handles. The first difference
@@ -66,8 +69,11 @@ public static class Fsx {
     static extern int RtlGetLastNtStatus();
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern bool GetDiskFreeSpaceW(string root, out uint sectorsPerCluster, out uint bytesPerSector, out uint freeClusters, out uint clusters);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool DeviceIoControl(SafeFileHandle h, uint code, byte[] input, int inputSize, byte[] output, int outputSize, out int returned, IntPtr overlapped);
 
     const uint GenericRW = 0xC0000000, ShareAll = 7, OpenAlways = 4;
+    const uint SetSparseCode = 0x900C4, SetZeroCode = 0x980C8, QueryRangesCode = 0x940CF;
     const uint NoBuffering = 0x20000000, WriteThrough = 0x80000000;
     const int FileAllocationInfo = 5, FileEndOfFileInfo = 6;
     const int Sector = 4096, Granularity = 65536, MaxIo = 196608;
@@ -210,6 +216,48 @@ public static class Fsx {
         }
     }
 
+    static void Control(FileState f, int k, uint code, byte[] input, byte[] output, out int done, string what) {
+        if (!DeviceIoControl(f.H[k], code, input, input.Length, output, output == null ? 0 : output.Length, out done, IntPtr.Zero))
+            throw Win32(what);
+    }
+
+    static void Sparse(FileState f, int k, bool on) {
+        int done;
+        Control(f, k, SetSparseCode, new byte[] { on ? (byte)1 : (byte)0 }, null, out done, "sparse " + on);
+    }
+
+    // [at, at + n) zeroed: any handle, any bytes, past the end of file too;
+    // the size stays
+    static void Punch(FileState f, int k, long at, long n) {
+        byte[] range = new byte[16];
+        BitConverter.GetBytes(at).CopyTo(range, 0);
+        BitConverter.GetBytes(at + n).CopyTo(range, 8);
+        int done;
+        Control(f, k, SetZeroCode, range, null, out done, "zero " + Kinds[k] + " " + at + "+" + n);
+        long end = Math.Min(at + n, f.Length);
+        if (at < end) Array.Clear(f.Model, (int)at, (int)(end - at));
+    }
+
+    // the ranges the file says hold data: in order, inside the file, and no
+    // byte that is not zero outside them
+    static void Ranges(FileState f, int k) {
+        byte[] input = new byte[16], output = new byte[65536];
+        BitConverter.GetBytes(f.Length).CopyTo(input, 8);
+        int done;
+        Control(f, k, QueryRangesCode, input, output, out done, "ranges");
+        long at = 0;
+        for (int i = 0; i + 16 <= done; i += 16) {
+            long start = BitConverter.ToInt64(output, i), length = BitConverter.ToInt64(output, i + 8);
+            if (start < at || length <= 0 || start + length > f.Length)
+                throw Fail(f.Path + ": range " + start + "+" + length + " after " + at + ", size " + f.Length);
+            for (long a = at; a < start; a++)
+                if (f.Model[a] != 0) throw Fail(f.Path + ": byte " + a + " is " + f.Model[a] + ", outside every range");
+            at = start + length;
+        }
+        for (long a = at; a < f.Length; a++)
+            if (f.Model[a] != 0) throw Fail(f.Path + ": byte " + a + " is " + f.Model[a] + ", past the last range");
+    }
+
     static void Whole(FileState f, string after) {
         CheckSize(f, after);
         foreach (int k in new int[] { 0, 2 }) {
@@ -235,6 +283,24 @@ public static class Fsx {
 
     static void Step(FileState f, int max) {
         int what = Below(100);
+        if (Below(8) == 0) {                                // sparse files
+            int k = Below(3), how = Below(10);
+            if (how == 0) {
+                bool on = Below(4) != 0;
+                Log("sparse " + Kinds[k] + " " + on + " (size " + f.Length + ")");
+                Sparse(f, k, on);
+            } else if (how < 4) {
+                Log("ranges " + Kinds[k] + " (size " + f.Length + ")");
+                Ranges(f, k);
+            } else {
+                long at = Offset(f, max, false);
+                long n = Below(4) == 0 ? 1 + Below(max) : 1 + Below(131072);
+                Log("zero " + Kinds[k] + " " + at + "+" + n + " (size " + f.Length + ")");
+                Punch(f, k, at, n);
+            }
+            CheckSize(f, "sparse");
+            return;
+        }
         if (what < 34) {                                    // write
             int k = Below(10) < 5 ? 0 : Below(2) == 0 ? 1 : 2;
             long at = Offset(f, max - Sector, k == 2);
@@ -311,6 +377,15 @@ public static class Fsx {
             return;
         case "reopen":
             Close(f); Open(f); CheckSize(f, "reopen"); return;
+        case "sparse":
+            Sparse(f, Array.IndexOf(Kinds, w[1]), bool.Parse(w[2])); CheckSize(f, "sparse"); return;
+        case "ranges":
+            Ranges(f, Array.IndexOf(Kinds, w[1])); return;
+        case "zero": {
+            string[] r = w[2].Split('+');
+            Punch(f, Array.IndexOf(Kinds, w[1]), long.Parse(r[0]), long.Parse(r[1])); CheckSize(f, "sparse");
+            return;
+        }
         case "whole":
             Whole(f, "check"); return;
         }

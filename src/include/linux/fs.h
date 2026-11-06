@@ -69,6 +69,7 @@ struct inode {
     __u32               i_mtime_extra;      /* extra Modification time  (nsec << 2 | epoch) */
     __u32               i_crtime_extra;     /* extra File creation time (nsec << 2 | epoch) */
     __u64               i_file_acl;
+    __u8                i_sparse;           /* marked sparse: an attribute's, not a field on disk (fsd\SparseFiles.c) */
 };
 
 /* Inode state bits */

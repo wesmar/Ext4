@@ -321,6 +321,12 @@ Ext2SupersedeOrOverWriteFile(
         return STATUS_UNEXPECTED_IO_ERROR;
     }
 
+    /* a new file in the old one's place is not sparse, as on NTFS */
+    Status = Ext2ClearSparseMark(IrpContext, Vcb, Fcb->Mcb);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+
     /* See if we need to overwrite EA of the file */
     return Ext2OverwriteEa(IrpContext, Vcb, Fcb, &IrpContext->Irp->IoStatus);
 }

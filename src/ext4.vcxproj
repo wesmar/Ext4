@@ -135,6 +135,7 @@
     <ClCompile Include="fsd\FileFlush.c" />
     <ClCompile Include="fsd\FileSystemControl.c" />
     <ClCompile Include="fsd\RetrievalPointers.c" />
+    <ClCompile Include="fsd\SparseFiles.c" />
     <ClCompile Include="fsd\FileLocks.c" />
     <ClCompile Include="fsd\PathLookup.c" />
     <ClCompile Include="fsd\PlugAndPlay.c" />

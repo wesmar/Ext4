@@ -207,6 +207,8 @@ Ext2LoadInode (IN PEXT2_VCB Vcb,
             Ext2ReportCorruption(Vcb, Inode->i_ino, bh->b_blocknr, -EFSBADCRC);
             Valid = FALSE;
         }
+        Inode->i_sparse = S_ISREG(Inode->i_mode) &&
+                          Ext2BodyHasSparseMark(raw, extra, EXT4_INODE_SIZE(Inode->i_sb));
     } else {
         Ext2ReportCorruption(Vcb, Inode->i_ino, bh->b_blocknr, -EFSCORRUPTED);
     }
