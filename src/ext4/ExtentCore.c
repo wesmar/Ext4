@@ -39,6 +39,11 @@
  *      backwards: an extent past it whole, one across it shortened (still
  *      of its kind); a node left empty goes with its entry in the parent;
  *      a root left empty is a leaf again.
+ *  N7  A punch frees a range the same way, from its end backwards: an extent
+ *      inside it whole, one across an end shortened from that side. Only an
+ *      extent across both ends takes a new entry, its part past the range;
+ *      that comes first, so a want of room changes nothing. A first key that
+ *      goes changes in the parents, as N4 has it.
  *
  * Tested by tests/extent-model.ps1: trees built and cut at random against a
  * flat map of every block, every rule checked after every change.
@@ -817,4 +822,125 @@ int ExTruncate(const EX_TREE *T, unsigned int From)
         if (err)
             return err;
     }
+}
+
+/* entry At of the node out, those after it moved down; its first key goes up
+   to the parents when that was the entry that held it */
+static int RemoveEntry(const EX_TREE *T, EX_PATH *P, unsigned int Level, unsigned int At)
+{
+    EX_FRAME     *f = &P->Frame[Level];
+    unsigned int  entries = Entries(f->Node);
+    int           err;
+
+    Move(Entry(f->Node, At), Entry(f->Node, At + 1), (entries - At - 1) * EX_ENTRY);
+    Zero(Entry(f->Node, entries - 1), EX_ENTRY);
+    SetEntries(f->Node, entries - 1);
+    err = Dirty(T, f);
+    if (!err && At == 0 && entries > 1)
+        err = FixKeys(T, P, Level);
+    return err;
+}
+
+int ExPunch(const EX_TREE *T, unsigned int From, unsigned long long To)
+{
+    if (To > EX_END)
+        return EX_EIO;
+
+    while (From < To) {
+        EX_PATH       p;
+        EX_FRAME     *leaf;
+        EX_EXTENT     x;
+        unsigned long long end;
+        unsigned int  level, at;
+        int           err = Find(T, (unsigned int)(To - 1), &p);
+
+        if (err)
+            return err;
+        leaf = &p.Frame[p.Depth];
+        if (leaf->At < 0 && p.Depth == 0) {
+            Release(T, &p);
+            return EX_OK;                   /* nothing is mapped */
+        }
+        if (leaf->At >= 0) {
+            at = (unsigned int)leaf->At;
+            ReadExtent(Entry(leaf->Node, at), &x);
+            end = x.Block + (unsigned long long)x.Length;
+            if (x.Block >= To || end <= From) {
+                Release(T, &p);
+                return EX_OK;               /* nothing is mapped in what is left */
+            }
+
+            if (end > To && x.Block < From) {
+                /* across both ends: the part past the range its own extent
+                   first; then this one ends with the range */
+                Release(T, &p);
+                err = SplitAt(T, (unsigned int)To);
+                if (err)
+                    return err;
+                continue;
+            }
+
+            if (end > To) {
+                /* across the end: the part inside goes from its front */
+                unsigned int cut = (unsigned int)To - x.Block;
+
+                To = x.Block;
+                err = T->Io.Free(T->Io.Context, x.Start, cut, 0);
+                if (!err) {
+                    x.Block += cut;
+                    x.Start += cut;
+                    x.Length -= cut;
+                    WriteExtent(Entry(leaf->Node, at), &x);
+                    err = Dirty(T, leaf);
+                }
+                if (!err && at == 0)
+                    err = FixKeys(T, &p, p.Depth);
+                Release(T, &p);
+                if (err)
+                    return err;
+                continue;
+            }
+
+            if (x.Block < From) {
+                /* across the start: its end goes, and that is the last of it */
+                unsigned int keep = From - x.Block;
+
+                err = T->Io.Free(T->Io.Context, x.Start + keep, x.Length - keep, 0);
+                if (!err) {
+                    x.Length = keep;
+                    WriteExtent(Entry(leaf->Node, at), &x);
+                    err = Dirty(T, leaf);
+                }
+                Release(T, &p);
+                return err;
+            }
+
+            /* inside: the whole of it */
+            err = T->Io.Free(T->Io.Context, x.Start, x.Length, 0);
+            if (!err)
+                err = RemoveEntry(T, &p, p.Depth, at);
+            To = x.Block;
+        }
+
+        /* the nodes left empty, as in a truncation (N6), from wherever they
+           stand in their parents */
+        for (level = p.Depth; level > 0 && !err && Entries(p.Frame[level].Node) == 0; level--) {
+            EX_FRAME *f = &p.Frame[level], *up = &p.Frame[level - 1];
+
+            err = RemoveEntry(T, &p, level - 1, (unsigned int)up->At);
+            T->Io.Put(T->Io.Context, f->Handle);
+            f->Handle = 0;
+            if (!err)
+                err = T->Io.Free(T->Io.Context, f->Block, 1, 1);
+        }
+        if (!err && Entries(T->Root) == 0 && Depth(T->Root) > 0) {
+            Put16(T->Root + EX_H_DEPTH, 0);
+            Put16(T->Root + EX_H_MAX, EX_ROOT_MAX);
+            err = T->Io.Dirty(T->Io.Context, 0);
+        }
+        Release(T, &p);
+        if (err)
+            return err;
+    }
+    return EX_OK;
 }

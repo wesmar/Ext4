@@ -9,8 +9,8 @@
  * of the file. Files are written the way the driver writes them - holes
  * filled with new extents (next to the last one, or anywhere: merges and
  * fragments), preallocated (unwritten) ranges, written parts of those
- * converted - and truncated, at offsets low and at the top of the 32-bit
- * range, while new nodes fail now and then (a full volume). After a change
+ * converted - truncated and punched, at offsets low and at the top of the
+ * 32-bit range, while new nodes fail now and then (a full volume). After a change
  * the tree is walked whole:
  *   every node sound (N1) - checked by the code's own rules and by a
  *   statement of Linux's, each block of the tree reached once, none empty;
@@ -43,7 +43,7 @@ static unsigned char   Unw[SPAN];
 static unsigned int    Base, BlockSize, NodesHeld, DataHeld, FailNew, Outstanding;
 static unsigned char   RootBytes[EX_ROOT_BYTES];
 static EX_TREE         Tree;
-static unsigned long long Rng, Checks, Ops, Inserts, Converts, Truncates, Lookups, NewFailures, MaxDepth;
+static unsigned long long Rng, Checks, Ops, Inserts, Converts, Truncates, Punches, PunchesRefused, Lookups, NewFailures, MaxDepth;
 
 static unsigned int Rand(void)
 {
@@ -265,6 +265,25 @@ static void Truncate(unsigned int From)
         Map[i] = 0;
 }
 
+/* N7: From..To-1 a hole, the rest as it was; or, for want of a node, no change at all */
+static void Punch(unsigned int From, unsigned int To)
+{
+    unsigned int i, held = DataHeld, nodes = NodesHeld;
+    int err = ExPunch(&Tree, Base + From, Base + (unsigned long long)To);
+
+    Punches++;
+    if (err) {
+        CHECK(err == EX_ENOSPC, "a punch failed otherwise than for room");
+        CHECK(DataHeld == held && NodesHeld == nodes, "a punch refused room and freed blocks");
+        PunchesRefused++;
+        return;
+    }
+    for (i = From; i < To; i++) {
+        Map[i] = 0;
+        Unw[i] = 0;
+    }
+}
+
 /* ---- the whole tree, walked ---- */
 
 static unsigned int Walked, WalkedNodes;
@@ -420,18 +439,21 @@ static void Run(unsigned int Bs, unsigned int TreeBase, unsigned int Ops0, unsig
                in the middle of full leaves, extents going into the next */
             unsigned int l = op < Ops0 / 2 ? (op * 2) % SPAN : (Rand() % (Ops0 / 2)) * 2 + 1;
             Write(l % SPAN, 1, Rand() % 4 == 0, 0);
-        } else if (r < 45) {
+        } else if (r < 40) {
             unsigned int l = Rand() % SPAN, n = 1 + (Rand() % 4 ? Rand() % 64 : Rand() % 4000);
             Write(l, l + n <= SPAN ? n : SPAN - l, 0, Rand() % 3 != 0);
-        } else if (r < 70) {
+        } else if (r < 62) {
             unsigned int l = Rand() % SPAN, n = 1 + (Rand() % 4 ? Rand() % 256 : Rand() % 40000);
             Write(l, l + n <= SPAN ? n : SPAN - l, 1, Rand() % 2);
-        } else if (r < 85) {
+        } else if (r < 74) {
             /* written into what was preallocated */
             unsigned int l = Rand() % SPAN, n = 1 + Rand() % 300;
             Write(l, l + n <= SPAN ? n : SPAN - l, 0, 1);
-        } else if (r < 92) {
+        } else if (r < 80) {
             Truncate(Rand() % 3 ? Rand() % SPAN : SPAN - 1 - Rand() % 1000);
+        } else if (r < 92) {
+            unsigned int l = Rand() % SPAN, n = 1 + (Rand() % 4 ? Rand() % 64 : Rand() % 40000);
+            Punch(l, l + n <= SPAN ? l + n : SPAN);
         } else {
             /* appends, next to the last extent */
             unsigned int l, n = 1 + Rand() % 100;
@@ -445,6 +467,12 @@ static void Run(unsigned int Bs, unsigned int TreeBase, unsigned int Ops0, unsig
     }
     FailNew = 0;
     CheckAll(1);
+    /* holes across whatever was built, a deep tree's first keys among them */
+    for (op = 0; op < 16; op++) {
+        unsigned int l = Rand() % SPAN, n = 1 + (Rand() % 2 ? Rand() % 8 : Rand() % 20000);
+        Punch(l, l + n <= SPAN ? l + n : SPAN);
+        CheckAll(0);
+    }
     /* and everything goes, down to an empty root */
     Truncate(Rand() % 2 ? 0 : Rand() % 64);
     CheckAll(0);
@@ -521,6 +549,75 @@ static void NextLeaf(void)
     Write(4 * per - 1, 1, 0, 0);        /* between the next two */
     CheckAll(0);
 }
+/* N7 at its edges: each cut of one extent; whole leaves and the first keys
+   above them; an extent across both ends with no room for its new entry */
+static void Holes(void)
+{
+    unsigned int per = (1024 - EX_HEADER) / EX_ENTRY, l, depth;
+
+    NewTree(1024, 0);
+    Write(100, 1000, 0, 0);
+    Punch(50, 50);                      /* nothing asked */
+    Punch(0, 100);                      /* nothing there */
+    Punch(1100, SPAN);
+    CheckAll(0);
+    CHECK(Entries(RootBytes) == 1, "a punch of holes changed a tree");
+    Punch(100, 110);                    /* its front */
+    CheckAll(0);
+    Punch(1090, 1100);                  /* its end */
+    CheckAll(0);
+    Punch(500, 600);                    /* its middle: two extents */
+    CheckAll(0);
+    CHECK(Entries(RootBytes) == 2, "a punch inside an extent is two extents");
+    Punch(0, SPAN);                     /* all of it */
+    CheckAll(1);
+    CHECK(Entries(RootBytes) == 0, "a punch of everything left extents");
+
+    /* four full leaves, then every way a leaf can lose its first key */
+    NewTree(1024, 0);
+    for (l = 0; l < 2 * per * 4; l += 2)
+        Write(l, 1, 0, 0);
+    CheckAll(0);
+    CHECK(Depth(RootBytes) == 1 && Entries(RootBytes) == 4, "four full leaves");
+    Punch(2 * per, 2 * per + 1);        /* the first extent of the second leaf */
+    CheckAll(1);
+    Punch(4 * per, 6 * per);            /* the third leaf, whole */
+    CheckAll(1);
+    CHECK(Entries(RootBytes) == 3, "a leaf left empty stayed");
+    Punch(0, 2 * per);                  /* the first leaf, whole: the tree's first key */
+    CheckAll(1);
+    CHECK(Entries(RootBytes) == 2, "the first leaf left empty stayed");
+    Punch(3 * per, 7 * per);            /* across two leaves */
+    CheckAll(1);
+    Punch(0, SPAN);
+    CheckAll(1);
+    CHECK(Depth(RootBytes) == 0 && Entries(RootBytes) == 0 && NodesHeld == 0, "a punch of everything left nodes");
+
+    /* a full leaf: a hole in an extent takes a new leaf, and none comes */
+    NewTree(1024, 0);
+    Write(0, 40, 0, 0);
+    for (l = 42; l < 42 + 2 * (per - 1); l += 2)
+        Write(l, 1, 0, 0);
+    CheckAll(0);
+    depth = Depth(RootBytes);
+    CHECK(depth == 1 && Entries(RootBytes) == 1, "one full leaf");
+    FailNew = 1;
+    {
+        unsigned long long refused = PunchesRefused;
+
+        Punch(10, 20);
+        CHECK(PunchesRefused == refused + 1, "a punch went through with no room for its entry");
+    }
+    CheckAll(1);
+    Punch(0, 20);                       /* its front takes no entry */
+    CheckAll(1);
+    Punch(30, 40);                      /* nor does its end */
+    CheckAll(1);
+    FailNew = 0;
+    Punch(0, SPAN);
+    CheckAll(1);
+}
+
 /* N1 against Linux's statement: nodes made at the edge of each test */
 static void Nodes(unsigned int Rounds)
 {
@@ -634,6 +731,7 @@ int main(int argc, char **argv)
     Nodes(2000000);
     Lengths();
     NextLeaf();
+    Holes();
 
     /* every block size, low and at the top of the 32-bit range, nodes
        failing now and then: small trees checked after every change */
@@ -648,8 +746,8 @@ int main(int argc, char **argv)
     CHECK(MaxDepth >= 3, "no tree three levels deep");
     Damage(20);
 
-    printf("EXTENT-MODEL: seed %llu: %llu ops, %llu inserts, %llu conversions, %llu truncations, %llu lookups, "
-           "%llu nodes refused room, depth %llu, %llu checks\n",
-           seed, Ops, Inserts, Converts, Truncates, Lookups, NewFailures, MaxDepth, Checks);
+    printf("EXTENT-MODEL: seed %llu: %llu ops, %llu inserts, %llu conversions, %llu truncations, %llu punches "
+           "(%llu refused), %llu lookups, %llu nodes refused room, depth %llu, %llu checks\n",
+           seed, Ops, Inserts, Converts, Truncates, Punches, PunchesRefused, Lookups, NewFailures, MaxDepth, Checks);
     return 0;
 }

@@ -109,4 +109,9 @@ int ExConvert(const EX_TREE *T, unsigned int Block, unsigned int Count);
 /* every block from From on unmapped and freed, the tree shrunk with them */
 int ExTruncate(const EX_TREE *T, unsigned int From);
 
+/* blocks From..To-1 unmapped and freed, whatever lies around them mapped as
+   it was: a hole. EX_ENOSPC, with nothing changed, when an extent across the
+   whole range cannot be split in two for want of a new node. */
+int ExPunch(const EX_TREE *T, unsigned int From, unsigned long long To);
+
 #endif /* _EXT4_EXTENT_CORE_H_ */
