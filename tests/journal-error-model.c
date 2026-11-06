@@ -51,7 +51,7 @@ static void get_bh(struct buffer_head *b) { b->b_count++; }
 static void put_bh(struct buffer_head *b) { b->b_count--; }
 static struct rb_node *rb_first(struct rb_root *r) { return r->rb_node; }
 static struct rb_node *rb_next(struct rb_node *n) { (void)n;return NULL; }
-static TXN *JnlActivate(JOURNAL *j) { return fail_activate?NULL:j->Running; }
+static TXN *JnlActivate(JOURNAL *j, unsigned long Room) { (void)Room; return fail_activate?NULL:j->Running; }
 #define JnlLock(j,irql) do { (void)(j);(irql)=0; } while(0)
 #define JnlUnlock(j,irql) do { (void)(j);(void)(irql); } while(0)
 static void JnlAbort(JOURNAL *j,NTSTATUS s) { (void)s;aborts++;j->Flags|=JF_ABORTED; }
