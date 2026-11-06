@@ -59,10 +59,12 @@
 - [Physical Addressing and File Bounds](#physical-addressing-and-file-bounds)
 - [Write Path and the Journal](#write-path-and-the-journal)
 - [Unwritten Extents](#unwritten-extents)
+- [Sparse Files](#sparse-files)
 - [Performance Engineering](#performance-engineering)
 - [Stopping on Demand — `sc stop`](#stopping-on-demand--sc-stop)
 - [Drive Letters for Linux Partitions](#drive-letters-for-linux-partitions)
 - [Encrypted Volumes — LUKS](#encrypted-volumes--luks)
+- [Image Files and TRIM](#image-files-and-trim)
 - [Security Boundaries](#security-boundaries)
 - [Source Layout](#source-layout)
 - [Testing and Validation](#testing-and-validation)
@@ -292,6 +294,18 @@ Windows lets programs read and write one file through the cache and around it (`
 
 ---
 
+## Sparse Files
+
+A block no extent maps reads as zeros and takes no room: ext4 has always had holes, and Linux makes them with `truncate` and `fallocate -p`. Windows reaches them as it reaches NTFS's: `FSCTL_SET_SPARSE`, `FSCTL_SET_ZERO_DATA`, `FSCTL_QUERY_ALLOCATED_RANGES` and `FILE_SUPPORTS_SPARSE_FILES`, on every extent-mapped file. `fsutil sparse`, `GetCompressedFileSize` and the `SEEK_DATA` / `SEEK_HOLE` of Cygwin and MSYS2 work as they do on NTFS. `tests/sparse-vm.ps1` runs the same cases on NTFS and on the driver and compares 100 answers - error codes, ranges, attributes; Linux then finds the same holes through its own `SEEK_HOLE`.
+
+- **What sparse means.** A file is sparse when it was marked so, or when it lacks blocks for its size, which is how the sparse files Linux makes look. The mark is the attribute `system.sparse`: Linux neither lists nor copies it, `e2fsck` leaves it alone, and it lies in the inode's body wherever there is room, so a directory listing reads it for nothing.
+- **Growth.** A sparse file grows by a hole of any size up to the [per-file bound](#physical-addressing-and-file-bounds): only the blocks of the write that grows it are allocated, and a size change allocates none, so twice the free space is a size like any other.
+- **A full volume is told to whoever can act on it.** A cached write into a hole gets its blocks when it is made, as unwritten ones: `ERROR_DISK_FULL` reaches the writer, not the lazy writer minutes later. Such a write never takes the fast I/O path, and a write that needs blocks only a commit can free waits for that commit first.
+- **Punching.** `FSCTL_SET_ZERO_DATA` frees whole blocks, zeroes the parts of blocks at the ends and leaves the size alone; on a file that is not sparse it only writes zeros, as on NTFS. A mapped view cannot be purged, and an extent across the range may have no node to split into: the bytes then go zero through the cache, which is all the request promises. A request works in steps, each with room in the journal for its worst case, and jumps over holes, so one call over a file of 16 TiB is fine on the smallest journal `mke2fs` makes.
+- **Ordinary files gain as well.** Past the end of file a block is a hole or unwritten in every extent-mapped file, so the gap of a write past the end is no longer written with zeros through the cache.
+
+---
+
 ## Performance Engineering
 
 The design reduces work per I/O and contention between independent files.
@@ -443,6 +457,26 @@ Tested on the LVM partition of the test disk, made by LVM in Linux (a linear vol
 
 ---
 
+## Image Files and TRIM
+
+`ext4ctl mount` puts a disk device of the driver's over a file on any other file system, as a loop device does on Linux. The file system mounts on it like on any partition, with a drive letter of its own, and up to 16 files can be mounted at once. The driver does not format: an image is made by `mkfs.ext4`, in WSL for one.
+
+```bat
+ext4ctl mount D:\images\data.img --letter R     :: a drive letter, as for any volume
+ext4ctl status                                  :: what is mounted, from where
+ext4ctl trim R:                                 :: free blocks go back to the file's volume
+ext4ctl unmount R:                              :: dismount, flush the file, let it go (--force with open files)
+```
+
+- **No cache in between.** The file is read and written unbuffered by workers of the device's own, so the journal above keeps its write ordering and a flush above reaches the disk below. A request that is not whole sectors of the file's volume - blocks of 1 KiB on 4 KiB sectors - goes through a buffer, read and merged first.
+- **Filled on demand, given back on demand.** A sparse file grows as the volume in it is written. `ext4ctl trim` gives the volume's free blocks to the device, as `fstrim` does; on a sparse file a trim becomes `FSCTL_SET_ZERO_DATA`, and `fsutil sparse queryrange` shows the holes. A file that is not sparse says it takes no trims, rather than being written with zeros.
+- **Trim on a real disk.** `ext4ctl trim` works on every volume whose device takes trims, SSDs among them. LUKS devices do not: a trim would show which blocks are in use.
+- **What is dropped stays dropped.** A run is trimmed with its group's `BlockLock` held, so no write can be given a block of it first; blocks whose release has not committed stay out, as their old owner still has them after a crash; a bitmap that calls metadata free is not believed. `tests/filedisk-vm.ps1` runs its random operations with trims running all the time.
+- **Refused:** a file on a volume of this driver, whose I/O would wait for itself, and a file open for writing. Others may read a mounted file; nobody may write it.
+- **How large.** ext4 itself is the smallest limit only for one file. An image is bounded by the file system it lies on: by Microsoft's figures NTFS holds 16 TB in a file with clusters of 4 KiB and 8 PB with clusters of 2 MiB, ReFS 35 PB.
+
+---
+
 ## Security Boundaries
 
 A file system driver runs every request of every process in kernel mode, so each input a caller controls is checked before it is used:
@@ -475,7 +509,8 @@ Ext4/
 │   ├── fsd/           # IRP handlers split by responsibility: create, read, write, cleanup, close,
 │   │                  # fileinfo, dirctl, fsctl, lock, ea, reparse, pnp, fast I/O ...
 │   ├── volume/        # Mount and verify, VCB, dismount, volume lock, drive letters,
-│   │                  # LUKS disk devices (LuksVolume.c), LVM volumes inside them (LvmVolume.c)
+│   │                  # LUKS disk devices (LuksVolume.c), LVM volumes inside them (LvmVolume.c),
+│   │                  # image files as disks (FileDisk.c)
 │   ├── crypto/        # AES-XTS over CNG, shared by the driver and ext4ctl
 │   ├── unicode/       # Casefolded directories: Unicode 12.1 case folding tables, normalizer
 │   ├── core/          # FCB/CCB, MCB name cache, ICB inode table, 64-bit run maps, reapers
@@ -491,7 +526,7 @@ Ext4/
 │   ├── ext4.vcxproj   # WDK kernel-mode driver project
 │   └── ext4.rc        # Version resource, generated from include/version.h
 ├── tools/ext4ctl/     # LUKS unlock and driver control: LUKS1/2, Argon2, BLAKE2b, JSON,
-│                      # LVM metadata and dm-thin mappings
+│                      # LVM metadata and dm-thin mappings, image files, trim
 ├── tools/lineage/     # Share of new code: token runs shared with Ext2Fsd, Ext4Fsd and Linux
 ├── tools/nls/         # Code page converters generator, the differences kept from the inherited maps
 ├── tools/unicode/     # Generator of the case folding tables from the Unicode Character Database
@@ -500,7 +535,7 @@ Ext4/
 └── ext4.slnx
 ```
 
-The driver and control tool are split by responsibility. LUKS header formats, keyslots, metadata parsing, LVM mappings, passphrase handling and driver control have separate modules; on-disk layouts have compile-time offset checks.
+The driver and control tool are split by responsibility. sd\SparseFiles.c holds the sparse mark and its requests, sd\VolumeTrim.c the trim of a volume. LUKS header formats, keyslots, metadata parsing, LVM mappings, passphrase handling and driver control have separate modules; on-disk layouts have compile-time offset checks.
 
 `FreedBlocks.c` owns transaction-bound block-reuse protection. `MetadataMap.c` builds the volume-wide system-zone map, including relocated `flex_bg` bitmaps and inode tables. `BlockSearch.h` contains the word-at-a-time bitmap search shared with its independent host model, `BlockPlacement.c` the choice of group and run and `BlockWindows.c` the windows kept after growing files, both portable and run by their own model over simulated volumes. Ext2/ext3 truncation is isolated in `IndirectTruncate.c`.
 
@@ -656,6 +691,11 @@ pwsh tests\extent-vm.ps1
 # against a model of every file (-FirstSeed repeats a run), then Linux checks
 pwsh tests\fsx-vm.ps1 -Seeds 40
 
+# Sparse files on NTFS and on the driver, answer for answer, then Linux; images
+# on NTFS mounted, filled, trimmed, with random operations through it all
+pwsh tests\sparse-vm.ps1
+pwsh tests\filedisk-vm.ps1
+
 # Damage planted on purpose: refused, recorded in the superblock, contained
 pwsh tests\corrupt-vm.ps1 -Image <new .vhdx>
 
@@ -676,6 +716,8 @@ Configure the disposable guest and test-image paths in `tests/testenv.local.psd1
 | Linux interoperability | Ownership, modes, nanosecond timestamps, links, xattrs, SELinux labels and inherited inode flags |
 | Encryption and LVM | LUKS1/LUKS2 key derivation and digest checks, sector-boundary I/O, lock/unlock, read-only linear and thin logical volumes |
 | Linux features | Casefolded and large indexed directories, immutable/append-only flags, MMP, shared xattrs, `ea_inode` and `inline_data` |
+| Sparse files | The same cases on NTFS and the driver, 100 answers compared, on 4 KiB, 1 KiB and smallest-journal volumes; files at the size limit; the mark across a remount; a full volume; SEEK_DATA / SEEK_HOLE, 2fsck and Linux changing the file afterwards |
+| Image files and trim | Images on NTFS mounted two at once, filled on demand, trimmed down, sc stop with one mounted; random operations with trims running all the time; blocks of 1 KiB on an NTFS of 4 KiB sectors; 2fsck and every file by SHA-256 from Linux |
 | Tree copies | System folders copied by robocopy (`/DCOPY:DAT`), xcopy (`/K`) and .NET - read-only folders among them - compared name by name and byte by byte, then deleted; 2000 subdirectories in one directory |
 | Media integrity | Linux `e2fsck`, no error recorded in the superblock by the driver (`e2fsck -fn` alone passes such a volume), and manifest-based content verification after Windows writes |
 | Crash states | Every state a power cut can leave in a recorded run, writes lost between two flushes included, judged by `e2fsck` after its journal replay; files whose flush returned held to what they hold at the end; the driver's own journal replay compared with `e2fsck`'s, name for name and byte for byte |
@@ -704,6 +746,7 @@ Driver Verifier runs are correctness checks. Throughput measurements use a separ
 | `orphan_file` (the `mkfs.ext4` default since e2fsprogs 1.47) | Read / write; the orphans in it are finished at mount and `orphan_present` cleared. An inode the driver cannot finish releasing goes on the classic orphan list, which Linux and `e2fsck` empty with or without the orphan file |
 | `casefold` (`mkfs -O casefold`, `chattr +F`; SteamOS formats its microSD cards so) | Read / write. Names in a casefolded directory are folded as Linux folds them (NFD and full case folding, Unicode 12.1, with tables generated from the Unicode Character Database and equal to the kernel's for every code point): the index is hashed on the folded names, `ŁÓDŹ.TXT` finds `Łódź.txt` and `STRASSE.TXT` finds `straße.txt`, a name that folds to an existing one is refused, strict mode refuses names that are not UTF-8, and directories made inside inherit the flag |
 | Unwritten (preallocated) extents | Read / write |
+| Holes, sparse files | Read / write. Marked, grown, punched and queried as on NTFS on extent-mapped files (see [Sparse Files](#sparse-files)); an indirect-mapped file reads and writes across its holes, shows what it holds on the disk and cannot be marked |
 | Extended attributes | Read / write, exposed as Windows EAs in the `user.` namespace, names matched without regard to case as Windows expects; other namespaces (POSIX ACLs, security labels, `trusted.`) are neither shown nor touched - replacing a file's EA set replaces its `user.` attributes only. A value longer than an EA can carry (65 535 bytes) is kept but not shown |
 | SELinux labels (`security.selinux`) | A file or directory made from Windows takes the label of its directory, as the kernel labels when the policy names no transition, so Fedora sees a labelled file, not `unlabeled_t` |
 | `chattr +i`, `+a` and the inherited flags | Honoured as on Linux: an immutable file is not written, truncated, renamed, deleted or linked, its extended attributes are not changed, and it shows as read-only; an append-only file only grows at its end; an immutable directory takes and loses no entries, an append-only one only takes them. New inodes inherit their directory's flags (`EXT4_FL_INHERITED`) |
@@ -728,7 +771,9 @@ The old 16 TiB volume ceiling is removed. Disk-format and per-file bounds are de
 3. **POSIX permissions are mapped, not enforced as ACLs.** Ownership can be overridden per volume (`uid`, `gid` in the registry); Windows security descriptors are not stored.
 4. **LUKS and LVM.** Ciphers other than AES-XTS are not supported. Logical volumes inside LUKS open read-only, linear (one stripe) and thin ones; striped, mirrored and RAID volumes, a volume group spanning several containers, and a partition table inside a volume (the root volumes of Qubes OS qubes) are not handled — the private volumes of Qubes OS qubes hold ext4 directly and open.
 5. **x64 only.** Only x64 is built and tested.
-6. **No repair.** Damage found on disk is refused, recorded and contained, never repaired: that remains `e2fsck`'s work. Orphans are finished at a writable mount only, as Linux finishes them; a volume switched to writable while orphans wait stays read-only. A file whose inode cannot be read is listed by name, as an empty read-only file, and opening it fails.
+6. **No online discard.** Free blocks go back with xt4ctl trim, not as they are freed.
+7. **Indirect-mapped files cannot be punched.** A hole cannot be cut in an ext2/ext3 block map: FSCTL_SET_SPARSE is refused on such a file.
+8. **No repair.** Damage found on disk is refused, recorded and contained, never repaired: that remains `e2fsck`'s work. Orphans are finished at a writable mount only, as Linux finishes them; a volume switched to writable while orphans wait stays read-only. A file whose inode cannot be read is listed by name, as an empty read-only file, and opening it fails.
 
 ---
 
